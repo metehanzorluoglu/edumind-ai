@@ -1,0 +1,184 @@
+# Raspberry Pi 5 deployment — backend (FastAPI), Ollama, Qdrant.
+#
+# Usage on the Pi (after rpi5-setup.sh has been run on the host and the package
+# extracted into $PI_DIR):
+#   cd $PI_DIR
+#   docker compose -f docker-compose.rpi5.yml --env-file .env.rpi5 up -d
+#
+# Image naming convention: services are prefixed with the project name
+# (`docker compose -p edumind-rpi5 ...` or via the `name:` field), so
+# container / volume names show up as `edumind-rpi5-{backend,ollama,qdrant}-1`
+# in `docker ps` and `docker volume ls`.
+#
+# All services declare `platform: linux/arm64` so an accidental `docker compose
+# up` on a Mac dev box never substitutes the `linux/arm64` layer for an
+# emulation-slow `linux/amd64` layer. This is the same set that Hugging Face,
+# GitHub Actions and most CI vendors use today.
+name: edumind-rpi5
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    platform: linux/arm64
+    # 6333 = HTTP API, 6334 = gRPC. We only expose 6333 internally; nothing
+    # is published to the host because everything goes through the backend
+    # container's HTTP client. qdrant has no auth on its default config —
+    # acceptable here because the Qdrant port is reachable *only* from
+    # the `edumind-rpi5-net` internal network (see `networks:` below), and
+    # the only consumer (the backend) already trusts it as a sibling.
+    ports:
+      - "127.0.0.1:6333:6333"   # loopback-only publish for qdrant HTTP API (operator-side debugging)
+    volumes:
+      - qdrant-data:/qdrant/storage
+    mem_limit: 2g
+    cpus: "1.5"
+    healthcheck:
+      # qdrant exposes /healthz since v1.x; `/` returns 200 with a body
+      # but does not reflect readiness. Use /healthz which returns 200
+      # only when qdrant is ready to serve search.
+      test:
+        [
+          "CMD-SHELL",
+          "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333'",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - edumind-rpi5-net
+
+  ollama:
+    image: ollama/ollama:latest
+    platform: linux/arm64
+    # Ollama 0.x defaults to 11434 — same default used by the backend's
+    # OLLAMA_BASE_URL=http://ollama:11434 in .env.rpi5.example.
+    volumes:
+      - ollama-data:/root/.ollama
+    mem_limit: 6g
+    cpus: "3"
+    restart: unless-stopped
+    # Pi 5 (8 GB) memory tuning. The 4B text model + 3B vision model + the
+    # embedding model together exceed 8 GB at full load; the four env
+    # vars below make Ollama unload idle models instead of keeping every
+    # one resident, which is the actual bottleneck on a Pi.
+    #   OLLAMA_NUM_PARALLEL=1      : serialize requests; a single inference
+    #                                is already a multi-second workload, and
+    #                                parallel inference compounds memory
+    #                                pressure.
+    #   OLLAMA_MAX_LOADED_MODELS=1 : one model resident at a time; mxbai is
+    #                                tiny and only used during retrieval,
+    #                                so a swap out / in is acceptable.
+    #   OLLAMA_KEEP_ALIVE=5m       : auto-unload after 5 minutes idle. The
+    #                                Pi's default would otherwise pin
+    #                                models in VRAM indefinitely.
+    #   OLLAMA_DEBUG=0             : suppress request-by-request trace logs
+    #                                so INFO-level /health/ready keeps
+    #                                returning quickly.
+    environment:
+      OLLAMA_HOST: "0.0.0.0:11434"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_KEEP_ALIVE: "5m"
+      OLLAMA_DEBUG: "0"
+    expose:
+      - "11434"
+    healthcheck:
+      # GET /api/tags returns a JSON list of pulled models — perfect as a
+      # "is Ollama even up" probe because it does NOT require any model
+      # to be loaded into VRAM. Returns 200 even on a freshly-installed
+      # host with no models yet pulled.
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 60s   # ollama serve takes a moment even on Pi 5's NVMe
+    networks:
+      - edumind-rpi5-net
+
+  # One-shot migration runner. Re-runs `alembic upgrade head` every time
+  # the stack is brought up — alembic is idempotent against an up-to-date
+  # DB, so a re-run is a no-op. backend service `depends_on` this with
+  # `service_completed_successfully`, guaranteeing migrations finish BEFORE
+  # uvicorn handles its first request.
+  #
+  # We deliberately do NOT depend on ollama: alembic only needs the database
+  # (sqlite at /data/app.db) and qdrant's vector store — neither touches the
+  # LLM. Loosening this dependency means a Pi that pulled an LLM model
+  # before this service ran still gets its migrations applied.
+  backend-migrate:
+    build:
+      context: ../../rag-backend
+      dockerfile: ../deploy/rpi5/Dockerfile.rpi5
+    platform: linux/arm64
+    # `up --exit-code-from` consumers see the migrate container's exit. If
+    # alembic fails the migration, `service_completed_successfully` below
+    # blocks backend from starting and the operator reads the migrate logs
+    # to investigate.
+    command: ["alembic", "upgrade", "head"]
+    env_file:
+      - .env.rpi5
+    environment:
+      PYTHONPATH: "/app"
+    volumes:
+      - backend-data:/data
+    # `restart: "no"` is the official Compose spelling for "do not restart
+    # under any condition" — alembic idempotency means a re-run is fine
+    # if you `up --force-recreate`, but we never want auto-restart loops
+    # on a real schema-data mismatch.
+    restart: "no"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    networks:
+      - edumind-rpi5-net
+
+  backend:
+    build:
+      context: ../../rag-backend
+      dockerfile: ../deploy/rpi5/Dockerfile.rpi5
+    platform: linux/arm64
+    # 2 uvicorn workers: Pi 5 has 4 cores; reserve ~1.5 cores for qdrant
+    # + Ollama (the Ollama container gets cpus: 3, qdrant cpus: 1.5 — they
+    # share the same cores via CFS quotas, so the cap matters less than
+    # absolute count). 2 workers × ~1.0 CPU ≈ 2.0 effective cores, leaving
+    # the rest for the LLM and qdrant under contention.
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+    env_file:
+      - .env.rpi5
+    environment:
+      PYTHONPATH: "/app"
+    # 8000 published on 0.0.0.0 so the Expo frontend (anywhere on the LAN)
+    # can reach the API. If the Pi's host firewall is on, this port still
+    # needs to be opened in iptables/nftables — that's outside Docker's
+    # purview and the operator's responsibility.
+    ports:
+      - "8000:8000"
+    mem_limit: 4g
+    cpus: "2.5"
+    volumes:
+      - backend-data:/data
+    restart: unless-stopped
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+      backend-migrate:
+        condition: service_completed_successfully
+    networks:
+      - edumind-rpi5-net
+
+volumes:
+  backend-data:
+    name: edumind-rpi5_backend-data
+  qdrant-data:
+    name: edumind-rpi5_qdrant-data
+  ollama-data:
+    name: edumind-rpi5_ollama-data
+
+networks:
+  edumind-rpi5-net:
+    name: edumind-rpi5_net
+    driver: bridge

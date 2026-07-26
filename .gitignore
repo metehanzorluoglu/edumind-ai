@@ -1,0 +1,59 @@
+# Environment files and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Raspberry Pi real deployment environment
+deploy/rpi5/.env.rpi5
+deploy/rpi5/.env.development
+deploy/rpi5/.env.production
+
+# Expo local environments
+examples/expo-education-assistant/.env
+examples/expo-education-assistant/.env.local
+examples/expo-education-assistant/.env.development
+examples/expo-education-assistant/.env.production
+
+# macOS metadata
+.DS_Store
+._*
+__MACOSX/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Node / Expo
+node_modules/
+.expo/
+dist/
+web-build/
+coverage/
+
+# Local databases and runtime data
+*.db
+*.sqlite
+*.sqlite3
+data/
+uploads/
+chat-attachments/
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Generated Raspberry Pi deployment packages
+edumind-rpi5-pkg-*/
+PACKAGE_MANIFEST.txt
+*.tar
+*.tar.gz
+*.tgz

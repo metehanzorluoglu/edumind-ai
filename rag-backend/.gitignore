@@ -1,0 +1,23 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.coverage
+
+# Everything under data/ is private corpus/runtime state, except the
+# committed template below (documents columns/enums, no real content).
+data/*
+!data/metadata-template.csv
+
+# Generated evaluation run output (timestamped reports) — not source.
+evaluation/reports/*
+!evaluation/reports/.gitkeep
+
+# Local backup output (scripts/backup.sh) — contains private corpus data.
+backups/

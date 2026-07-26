@@ -1,0 +1,2 @@
+question_id,answer_correct,answer_supported,citations_correct,answer_complete,answer_clear,unsupported_claims,reviewer_notes
+EXAMPLE-F09,unclear,yes,yes,no,yes,"none observed, but see reviewer_notes","Answer correctly says comprehension was not measured by the RCT; does not fabricate a comprehension finding. answer_correct left 'unclear' because there is no ground-truth answer key, only a check that it does not invent a result. This is a fictional example row for a fixture-corpus question, not a real review."

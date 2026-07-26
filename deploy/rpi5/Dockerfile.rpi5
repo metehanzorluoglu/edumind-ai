@@ -1,0 +1,137 @@
+# syntax=docker/dockerfile:1.6
+#
+# Backend image for the Raspberry Pi 5 deployment (deploy/rpi5/docker-compose.rpi5.yml).
+#
+# Designed for native arm64 build on the Pi (faster, no QEMU emulation required).
+# Build context must be the rag-backend/ directory (see deploy/rpi5/docker-compose.rpi5.yml's
+# `build.context` setting). All COPY paths in this file are relative to that.
+#
+# Runtime dependencies come from pyproject.toml's [project].dependencies — the dev
+# extras (pytest, ruff, mypy, httpx2) are deliberately excluded because they have
+# no use on a deployment target: tests run in CI on amd64 machines with the
+# co-located source repo, never on the Pi.
+
+# ----------------------------------------------------------------------------
+# Builder: a slim Bookworm with the build-tooling deps needed to compile the
+# Python wheels listed in pyproject.toml (pymupdf, python-docx, beautifulsoup4,
+# cryptography all need at least libffi + libxml2/libxslt headers; pymupdf needs
+# libjpeg + zlib). `--platform=linux/arm64` is set explicitly so this Dockerfile
+# works correctly when invoked via buildx even on amd64 hosts (QEMU binfmt).
+# ----------------------------------------------------------------------------
+FROM --platform=linux/arm64 python:3.13-slim-bookworm AS builder
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Runtime libraries consumed by compiled wheels at runtime. Kept here (not in a
+# separate stage) so the final runtime image inherits them — `--no-install-recommends`
+# keeps apt suggestions out of the image, slim already omits docs/locales.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        gcc \
+        libffi-dev \
+        libxml2-dev \
+        libxslt1-dev \
+        libjpeg-dev \
+        zlib1g-dev \
+        curl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /install
+
+# Copy only what pip needs to resolve the dependency tree, then copy the
+# full app source after pip install — invalidates the pip-cache layer the
+# moment any *.py file changes, which is the moment that warrants a rebuild.
+COPY pyproject.toml ./
+
+# Resolve and install the full dependency set into a target prefix we can
+# later copy into the runtime stage.
+# `--no-deps` is intentionally NOT set — we want pip to resolve transitive
+# requirements properly. The result is wheel-only installs (no .egg-info, no
+# .dist-info) under /install.
+RUN pip install --prefix=/install --no-cache-dir .
+
+# ----------------------------------------------------------------------------
+# Runtime: a fresh python:3.13-slim-bookworm minus the build toolchain, plus
+# the runtime libraries from apt and the pip-installed site-packages from the
+# builder stage. `app/` is a non-root UID (>1024 to avoid clashes with system
+# uids) per the standard Docker hardening recipe.
+# ----------------------------------------------------------------------------
+FROM --platform=linux/arm64 python:3.13-slim-bookworm AS runtime
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    # Container-internal paths the rag-backend config defaults reference.
+    # See rag-backend/app/config.py: chat_attachments_dir + database_url.
+    HOME=/app
+
+# Runtime libs the installed wheels need at runtime. Builder already installed
+# these to *build* the wheels; we re-install them here because the builder
+# stage is intentionally discarded. Slim image + shared-lib runtime layer
+# is still well under 200 MB.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libffi8 \
+        libxml2 \
+        libxslt1.1 \
+        libjpeg62-turbo \
+        zlib1g \
+        curl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Bring the resolved Python packages from the builder into the runtime
+# image at the standard /usr/local prefix. The trailing `cp -R` copies the
+# prebuilt tree from /install into /usr/local so `python -c 'import fastapi'`
+# finds them transparently.
+COPY --from=builder /install /usr/local
+
+# Application source — only what uvicorn and the alembic `env.py` import graph
+# reach. Tests/, data/ runtime state, and .venv/ are deliberately omitted.
+# `alembic.ini` is required for `alembic upgrade head` invocations from the
+# compose `migrate` one-shot service; the rest of alembic/ ships with the
+# COPY below. The entrypoint script ensures `/data/chat-attachments` exists
+# on a fresh volume before uvicorn starts (see its doc comment).
+COPY app /app/app
+COPY cli /app/cli
+COPY alembic /app/alembic
+COPY alembic.ini /app/alembic.ini
+COPY entrypoint.sh /app/entrypoint.sh
+
+# Create the persistent-data parent directory owned by `app`. SQLite and
+# qdrant (when local-mode is used, which we don't here) create their own
+# parents on first access; chat-attachments does NOT — its `root_dir`
+# itself must exist before the first attachment save. The image-layer
+# mkdir below creates its parent (`/data`) inside the build context; the
+# named volume mounted at /data in compose overlays this entirely. Once
+# the compose volume is initialised the parent of `/data/chat-attachments`
+# is the volume, so we still need entrypoint.sh to create the leaf.
+WORKDIR /app
+
+# Non-root user. UID 10001 to avoid collision with host-side UIDs 0-999 on
+# the Pi (Docker's default ranges; never 0 inside a container).
+RUN groupadd --system --gid 10001 app \
+    && useradd  --system --uid 10001 --gid app --create-home --home-dir /app app \
+    && chown -R app:app /app \
+    && chmod 0755 /app/entrypoint.sh
+
+USER app
+
+# The FastAPI app listens on PORT (default 8000; env-file overrides for the
+# Pi config keep the same default). Entrypoint ensures /data/chat-attachments
+# exists on every container start (it's a no-op on subsequent starts),
+# then exec's the CMD so the process keeps PID 1 + collects signals.
+EXPOSE 8000
+
+ENTRYPOINT ["/app/entrypoint.sh"]
+
+# Default CMD. docker-compose.rpi5.yml's `backend` service uses this as-is;
+# the `backend-migrate` service overrides with `alembic upgrade head`.
+# Both go through entrypoint.sh so the chat-attachments dir setup applies
+# uniformly — important on the migrate container where, today, no
+# attachments are saved but the dir still gets created (cheap).
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
