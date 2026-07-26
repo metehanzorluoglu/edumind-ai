@@ -321,3 +321,11 @@ invalid `API_KEY`, an out-of-range port, or an unrecognized `LOG_LEVEL`/`QDRANT_
   Testing Library against jsdom, not a real engine), and manual browser testing only. Native-only
   behavior (the platform image-picker sheet, RN's `Image` `headers` source field, gesture
   timing) is exercised by mocks in tests, not a physical/simulated device.
+
+
+## Deploy
+
+```
+git pull origin main
+docker compose up -d --build
+```
