@@ -57,3 +57,11 @@ PACKAGE_MANIFEST.txt
 *.tar
 *.tar.gz
 *.tgz
+
+# Environment-specific local secrets
+deploy/dev/.env.dev
+deploy/prod/.env.prod
+
+# Keep safe environment templates
+!**/.env.example
+!**/.env.*.example
