@@ -14,7 +14,7 @@
 # up` on a Mac dev box never substitutes the `linux/arm64` layer for an
 # emulation-slow `linux/amd64` layer. This is the same set that Hugging Face,
 # GitHub Actions and most CI vendors use today.
-name: edumind-prod
+name: edumind-rpi5
 
 services:
   frontend:
