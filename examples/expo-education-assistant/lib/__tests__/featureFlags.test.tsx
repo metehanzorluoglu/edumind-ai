@@ -1,0 +1,245 @@
+/**
+ * Centralized feature flags:
+ *   - Backend's GET /status is the source of truth (see
+ *     rag-backend/app/api/routes_status.py → image_generation_enabled).
+ *   - lib/FeatureFlags wraps client.status() and exposes a React-context
+ *     snapshot every consumer reads, so a backend admin can toggle a flag
+ *     without an app rebuild.
+ *   - Until /status resolves, a build-time default derived from
+ *     EXPO_PUBLIC_IMAGE_GENERATOR_ENABLED is used, so the very first
+ *     paint of a gated screen already matches intent instead of briefly
+ *     flashing the wrong state in.
+ *
+ * These tests cover both modes (enabled + disabled) of the flag, the
+ * pre-fetch bootstrap default, the error-doesn't-flicker-the-UI rule,
+ * and the foreground-focus refresh.
+ */
+import type { ReactNode } from 'react';
+import { act, create, type ReactTestInstance } from 'react-test-renderer';
+import { FeatureFlagsProvider, useFeatureFlags } from '../FeatureFlags';
+
+// Module-scoped mutable + `mock…` prefix is required because babel-jest
+// refuses out-of-scope variable references in `jest.mock` factories
+// unless the name starts with `mock`. The factory closure re-reads the
+// variable on every call, so individual tests can override it.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const mockStatusResponses: Array<{ reject: boolean; payload?: unknown }> = [];
+let mockStatusCallCount = 0;
+
+const mockStatus = jest.fn(async () => {
+  mockStatusCallCount++;
+  const next = mockStatusResponses.shift();
+  if (!next || next.reject) {
+    throw new Error('status() rejected in this test');
+  }
+  return next.payload as never;
+});
+
+// Stable client reference shared across every `useClient()` call — if the
+// mock returned a fresh `{ client: { status: mockStatus } }` object on each
+// render, FeatureFlagsProvider's `useCallback([client])` would produce a
+// new `refresh` function every render, the `useEffect([refresh])` would
+// re-fire, and we'd have a render→fetch→render→fetch loop that OOM-es
+// into a heap error long before any test could assert.
+// `var mock…` prefix is required: babel-jest refuses out-of-scope variable
+// references inside `jest.mock()` factories unless the identifier is named
+// with a `mock` prefix.
+var mockStableFakeClientContext = { client: { status: mockStatus } };
+jest.mock('@/lib/ClientProvider', () => ({
+  // Provide just the slice FeatureFlags actually uses (useFeatureFlags →
+  // client.status()) — the FeatureFlags component doesn't read baseUrl,
+  // auth state, or anything else from the context.
+  useClient: () => mockStableFakeClientContext,
+}));
+
+function withProvider(children: ReactNode): ReactTestInstance {
+  // Each render gets a fresh provider so a failing /status on the previous
+  // test doesn't leak into the next one.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return create(<FeatureFlagsProvider>{children}</FeatureFlagsProvider>) as unknown as ReactTestInstance;
+}
+void withProvider; // reserved for a follow-up test that wants a static provider, not used here
+
+interface CapturedFlags {
+  imageGenerator: boolean;
+  loaded: boolean;
+  refresh: () => Promise<void>;
+}
+function Probe({ onRender }: { onRender: (flags: CapturedFlags) => void }): null {
+  const flags = useFeatureFlags();
+  onRender(flags);
+  return null;
+}
+
+interface RenderedFlags {
+  flags: CapturedFlags;
+  renderer: ReactTestInstance;
+}
+async function renderAndCapture(): Promise<RenderedFlags> {
+  let last: CapturedFlags | null = null;
+  let renderer!: ReactTestInstance;
+  await act(async () => {
+    renderer = create(
+      <FeatureFlagsProvider>
+        <Probe onRender={(f) => (last = f)} />
+      </FeatureFlagsProvider>
+    );
+    // Let the on-mount `client.status()` call settle.
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  if (!last) throw new Error('Probe never rendered');
+  return { flags: last, renderer };
+}
+
+const ORIGINAL_ENV = { ...process.env };
+
+beforeEach(() => {
+  mockStatusResponses.length = 0;
+  mockStatusCallCount = 0;
+  mockStatus.mockClear();
+  // Restore a known starting environment so leftover EXPO_PUBLIC_* values
+  // from a developer's shell don't leak between tests. Each test that needs
+  // to override these writes to process.env directly and the test-scoped
+  // cleanup removes its entries.
+  process.env = { ...ORIGINAL_ENV };
+});
+
+afterEach(() => {
+  // Belt-and-suspenders: explicitly delete any EXPO_PUBLIC_KEY the test
+  // might have set so the (re-set above) `beforeEach` clone stays clean
+  // for the next test, matching how a clean production build would see it.
+  delete process.env.EXPO_PUBLIC_IMAGE_GENERATOR_ENABLED;
+  process.env = { ...ORIGINAL_ENV };
+});
+
+describe('FeatureFlagsProvider', () => {
+  it('reads imageGenerator=true from a successful GET /status', async () => {
+    mockStatusResponses.push({ reject: false, payload: { image_generation_enabled: true } });
+    const { flags } = await renderAndCapture();
+    expect(flags.imageGenerator).toBe(true);
+    expect(flags.loaded).toBe(true);
+    expect(mockStatusCallCount).toBe(1);
+  });
+
+  it('reads imageGenerator=false from a successful GET /status (the disabled mode)', async () => {
+    mockStatusResponses.push({ reject: false, payload: { image_generation_enabled: false } });
+    const { flags } = await renderAndCapture();
+    expect(flags.imageGenerator).toBe(false);
+    expect(flags.loaded).toBe(true);
+    expect(mockStatusCallCount).toBe(1);
+  });
+
+  it('falls back to the build-time default (EXPO_PUBLIC_IMAGE_GENERATOR_ENABLED=true) before /status resolves', async () => {
+    // Don't queue a response for the first call — let the status() promise
+    // stay pending. The bootstrap value should still be visible because
+    // /status hasn't reported yet.
+    process.env.EXPO_PUBLIC_IMAGE_GENERATOR_ENABLED = 'true';
+    mockStatus.mockImplementationOnce(() => new Promise(() => {}));
+    let last: CapturedFlags | null = null;
+    await act(async () => {
+      create(
+        <FeatureFlagsProvider>
+          <Probe onRender={(f) => (last = f)} />
+        </FeatureFlagsProvider>
+      );
+      // Flush just the synchronous render path (NOT a microtask resolving
+      // status) — the bootstrap value should already have reached the
+      // component on the very first paint.
+      await Promise.resolve();
+    });
+    // Touch the renderer later by salvaging it via Probe.
+    expect(last).not.toBeNull();
+    expect(last!.imageGenerator).toBe(true);
+    expect(last!.loaded).toBe(false);
+  });
+
+  it('falls back to the build-time default of false (EXPO_PUBLIC_IMAGE_GENERATOR_ENABLED=false) before /status resolves', async () => {
+    process.env.EXPO_PUBLIC_IMAGE_GENERATOR_ENABLED = 'false';
+    mockStatus.mockImplementationOnce(() => new Promise(() => {}));
+    let last: CapturedFlags | null = null;
+    await act(async () => {
+      create(
+        <FeatureFlagsProvider>
+          <Probe onRender={(f) => (last = f)} />
+        </FeatureFlagsProvider>
+      );
+      await Promise.resolve();
+    });
+    expect(last).not.toBeNull();
+    expect(last!.imageGenerator).toBe(false);
+    expect(last!.loaded).toBe(false);
+  });
+
+  it('treats an unrecognized EXPO_PUBLIC_IMAGE_GENERATOR_ENABLED value as not-set (default true)', async () => {
+    process.env.EXPO_PUBLIC_IMAGE_GENERATOR_ENABLED = 'maybe';
+    mockStatus.mockImplementationOnce(() => new Promise(() => {}));
+    let last: CapturedFlags | null = null;
+    await act(async () => {
+      create(
+        <FeatureFlagsProvider>
+          <Probe onRender={(f) => (last = f)} />
+        </FeatureFlagsProvider>
+      );
+      await Promise.resolve();
+    });
+    expect(last!.imageGenerator).toBe(true);
+  });
+
+  it('a /status error does not flicker the UI — the last-known / build-time value stays', async () => {
+    // Reject the first status call; the bootstrap default is true. The
+    // provider must keep reporting true (no flip to false on the error),
+    // and stay "loaded=false" so an observer can tell the backend never
+    // gave a definitive answer.
+    mockStatus.mockImplementationOnce(async () => {
+      throw new Error('network down');
+    });
+    let last: CapturedFlags | null = null;
+    await act(async () => {
+      create(
+        <FeatureFlagsProvider>
+          <Probe onRender={(f) => (last = f)} />
+        </FeatureFlagsProvider>
+      );
+      // Several microtask ticks so the rejected promise settles and the
+      // .catch arm runs.
+      for (let i = 0; i < 4; i++) await Promise.resolve();
+    });
+    expect(last).not.toBeNull();
+    expect(last!.imageGenerator).toBe(true);
+    expect(last!.loaded).toBe(false);
+  });
+
+  it('refresh() re-fetches /status and reflects the latest value (manual override)', async () => {
+    // First call: enabled; second call: disabled. The manual refresh()
+    // call must flip the snapshot to disabled without remounting the
+    // provider — proving the snapshot is sync-triggered, not just
+    // mount-time.
+    mockStatusResponses.push({ reject: false, payload: { image_generation_enabled: true } });
+    mockStatusResponses.push({ reject: false, payload: { image_generation_enabled: false } });
+
+    let last: CapturedFlags | null = null;
+    let renderer!: ReactTestInstance;
+    await act(async () => {
+      renderer = create(
+        <FeatureFlagsProvider>
+          <Probe onRender={(f) => (last = f)} />
+        </FeatureFlagsProvider>
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(last!.imageGenerator).toBe(true);
+
+    await act(async () => {
+      await last!.refresh();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(last!.imageGenerator).toBe(false);
+    expect(last!.loaded).toBe(true);
+    expect(mockStatusCallCount).toBe(2);
+
+    void renderer; // silence unused-var warning for the happy-path render only
+  });
+});

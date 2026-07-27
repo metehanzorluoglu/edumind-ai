@@ -1,0 +1,356 @@
+import {
+  EducationAssistantClient,
+  type AuthProviderInfo,
+  type AuthTokenResponse,
+  type AuthUser,
+} from 'education-assistant-client';
+import * as Linking from 'expo-linking';
+import * as WebBrowser from 'expo-web-browser';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
+import { Platform } from 'react-native';
+import { DEFAULT_BASE_URL } from './ClientProvider';
+import { getStoredBaseUrl } from './authStore';
+import { getStoredRefreshToken, setStoredRefreshToken } from './authTokenStore';
+
+export type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated';
+
+/** The web/native landing path GET /auth/{provider}/authorize redirects back to once login completes. */
+export const AUTH_CALLBACK_PATH = 'auth-callback';
+
+interface AuthContextValue {
+  status: AuthStatus;
+  user: AuthUser | null;
+  accessToken: string | null;
+  error: string | null;
+  providers: AuthProviderInfo[];
+  devLoginEnabled: boolean;
+  providersLoading: boolean;
+  refreshProviders: () => void;
+  /** Starts one provider's OAuth flow — opens a system browser session on native, a top-level redirect on web. */
+  startOAuth: (provider: string) => Promise<void>;
+  /**
+   * Redeems the single-use auth_code the web callback route
+   * (app/auth-callback.tsx) receives as a query param. Native never calls
+   * this directly — startOAuth's own openAuthSessionAsync round trip
+   * handles the exchange internally.
+   */
+  exchangeCode: (authCode: string) => Promise<void>;
+  devLogin: (email: string, displayName?: string) => Promise<void>;
+  logout: () => Promise<void>;
+  clearError: () => void;
+}
+
+const AuthContext = createContext<AuthContextValue | null>(null);
+
+function stripTrailingSlashes(url: string): string {
+  return url.replace(/\/+$/, '');
+}
+
+/** Maps the `auth_error` query param GET /auth/{provider}/callback appends to its redirect into copy a user can act on — see rag-backend's app/api/routes_auth.py for the full set of values. */
+export function describeAuthError(code: string): string {
+  switch (code) {
+    case 'email_required':
+      return "This sign-in provider didn't share an email address, which is required to create an account here. Please try a different sign-in method, or check that provider's permissions.";
+    case 'provider_error':
+      return 'Sign-in failed while contacting the identity provider. Please try again.';
+    default:
+      return 'Sign-in failed. Please try again.';
+  }
+}
+
+/**
+ * App-level authentication state — mounted above <ClientProvider> in
+ * app/_layout.tsx, since ClientProvider's own request client needs to read
+ * the access token this provider holds. Deliberately hydrates its own copy
+ * of the stored base URL (see lib/authStore.ts) rather than reading it from
+ * ClientProvider: this provider sits above ClientProvider in the tree, so
+ * it cannot consume useClient(). A base URL changed later in the dev-only
+ * Settings screen takes effect here after the next app reload, not live —
+ * an acceptable limitation for a dev convenience knob.
+ */
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);
+  const [baseUrlHydrated, setBaseUrlHydrated] = useState(false);
+  const [status, setStatus] = useState<AuthStatus>('loading');
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [providers, setProviders] = useState<AuthProviderInfo[]>([]);
+  const [devLoginEnabled, setDevLoginEnabled] = useState(false);
+  const [providersLoading, setProvidersLoading] = useState(false);
+
+  // Guards against silentRefresh() — fired once on mount to restore an
+  // existing session — resolving *after* a later, explicit auth action
+  // (devLogin/exchangeCode/logout) has already settled the real outcome.
+  // Every action that establishes or clears a session bumps this before
+  // doing any async work; a callback whose captured generation no longer
+  // matches when it resolves has been superseded and must not apply its
+  // result. Same shape as the SDK's internal useAsyncGuard, reimplemented
+  // locally here since that hook isn't exported for app code to reuse.
+  const authGenerationRef = useRef(0);
+  const beginAuthAction = useCallback((): number => {
+    authGenerationRef.current += 1;
+    return authGenerationRef.current;
+  }, []);
+
+  // Its own, separate counter from authGenerationRef — see
+  // refreshProviders' own comment for why sharing one would be wrong.
+  const providersGenerationRef = useRef(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const stored = await getStoredBaseUrl();
+      if (cancelled) return;
+      if (stored) setBaseUrl(stripTrailingSlashes(stored));
+      setBaseUrlHydrated(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // None of this provider's own calls (providers/session-exchange/refresh/
+  // logout/dev-login) carry a bearer token — the credential in each is
+  // either a one-time auth_code, a refresh token, or nothing — so this
+  // client's getAccessToken is permanently null. It is NOT the client the
+  // rest of the app uses for chat/search/documents (see ClientProvider).
+  const authClient = useMemo(
+    () =>
+      new EducationAssistantClient({
+        baseUrl,
+        getAccessToken: async () => null,
+        timeoutMs: 30_000,
+      }),
+    [baseUrl]
+  );
+
+  const applySession = useCallback(async (tokens: AuthTokenResponse) => {
+    setAccessToken(tokens.access_token);
+    setUser(tokens.user);
+    setStatus('authenticated');
+    setError(null);
+    if (Platform.OS !== 'web') {
+      await setStoredRefreshToken(tokens.refresh_token);
+    }
+  }, []);
+
+  const silentRefresh = useCallback(async () => {
+    const generation = beginAuthAction();
+    const stored = Platform.OS === 'web' ? null : await getStoredRefreshToken();
+    try {
+      const response = await authClient.refreshSession(stored ?? undefined);
+      if (authGenerationRef.current !== generation) return;
+      await applySession(response);
+    } catch {
+      if (authGenerationRef.current !== generation) return;
+      // No valid session to restore — this is the ordinary "not logged in
+      // yet" outcome on first launch, not a surfaced error.
+      setAccessToken(null);
+      setUser(null);
+      setStatus('unauthenticated');
+      if (Platform.OS !== 'web') await setStoredRefreshToken(null);
+    }
+  }, [authClient, applySession, beginAuthAction]);
+
+  useEffect(() => {
+    if (!baseUrlHydrated) return;
+    silentRefresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseUrlHydrated]);
+
+  const refreshProviders = useCallback(() => {
+    // A generation guard of its own — deliberately NOT sharing
+    // authGenerationRef with the session-establishing actions below
+    // (devLogin/exchangeCode/silentRefresh/logout): those bump that
+    // counter to invalidate a *stale session-restore* racing a newer
+    // login/logout, which is a different concern from "is this the latest
+    // providers fetch". Without some guard here, refreshProviders had no
+    // protection at all against overlapping calls (e.g. a Fast Refresh
+    // remount re-firing the mount effect, or a user pressing Retry while
+    // the initial fetch was still in flight): whichever call's promise
+    // settled *last* won, so a slower, failed call could silently
+    // overwrite a faster, successful call's correct
+    // providers/devLoginEnabled — "fetch success replaced by fallback
+    // state" — even though the UI had briefly shown the right thing.
+    const generation = ++providersGenerationRef.current;
+    setProvidersLoading(true);
+    authClient
+      .getAuthProviders()
+      // getAuthProviders() already normalizes the raw snake_case wire
+      // response into { providers, devLoginEnabled } once, at the SDK's
+      // API boundary (see EducationAssistantClient.getAuthProviders) — this
+      // callback only ever sees that normalized shape, never a raw
+      // dev_login_enabled field it would have to re-derive itself.
+      .then((response) => {
+        if (__DEV__) {
+          console.log('[AuthProvider] getAuthProviders() parsed response:', response);
+          console.log('[AuthProvider] response.providers:', response.providers);
+          console.log('[AuthProvider] response.devLoginEnabled:', response.devLoginEnabled);
+          if (providersGenerationRef.current !== generation) {
+            console.log(
+              '[AuthProvider] discarding this response — a newer refreshProviders() call is already in flight (generation',
+              generation,
+              'vs current',
+              providersGenerationRef.current,
+              ')'
+            );
+          }
+        }
+        if (providersGenerationRef.current !== generation) return;
+        setProviders(response.providers);
+        setDevLoginEnabled(response.devLoginEnabled);
+      })
+      .catch((err) => {
+        if (__DEV__) {
+          console.log('[AuthProvider] getAuthProviders() failed:', err);
+        }
+        if (providersGenerationRef.current !== generation) return;
+        setProviders([]);
+        setDevLoginEnabled(false);
+        // Previously silent: a failed request looked identical to "the
+        // backend genuinely has no providers/dev login configured" — same
+        // providers: [], devLoginEnabled: false — with nothing to tell
+        // them apart. Surfacing it here reuses the login screen's existing
+        // error banner (no new UI, no changed render logic there).
+        setError(
+          err instanceof Error
+            ? `Could not load sign-in options: ${err.message}`
+            : 'Could not load sign-in options.'
+        );
+      })
+      .finally(() => {
+        if (providersGenerationRef.current !== generation) return;
+        setProvidersLoading(false);
+      });
+  }, [authClient]);
+
+  useEffect(() => {
+    if (!baseUrlHydrated) return;
+    refreshProviders();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseUrlHydrated]);
+
+  const exchangeCode = useCallback(
+    async (authCode: string) => {
+      const generation = beginAuthAction();
+      try {
+        const response = await authClient.exchangeAuthCode(authCode);
+        if (authGenerationRef.current !== generation) return;
+        await applySession(response);
+      } catch (err) {
+        if (authGenerationRef.current !== generation) return;
+        setError(err instanceof Error ? err.message : 'Sign-in failed.');
+        setStatus('unauthenticated');
+      }
+    },
+    [authClient, applySession, beginAuthAction]
+  );
+
+  const startOAuth = useCallback(
+    async (provider: string) => {
+      setError(null);
+
+      if (Platform.OS === 'web') {
+        // Top-level navigation, not a popup: Google/Facebook/LinkedIn's own
+        // iframe/popup restrictions and third-party-cookie blocking make
+        // popups unreliable for this. Execution ends here — the rest of
+        // the flow resumes on the next page load, at app/auth-callback.tsx.
+        const redirectUri = `${window.location.origin}/${AUTH_CALLBACK_PATH}`;
+        window.location.assign(authClient.buildOAuthAuthorizeUrl(provider, redirectUri));
+        return;
+      }
+
+      const redirectUri = Linking.createURL(AUTH_CALLBACK_PATH);
+      const authorizeUrl = authClient.buildOAuthAuthorizeUrl(provider, redirectUri);
+      const result = await WebBrowser.openAuthSessionAsync(authorizeUrl, redirectUri);
+      if (result.type !== 'success') {
+        // 'cancel' / 'dismiss': the user backed out — not an error worth surfacing.
+        return;
+      }
+
+      const parsed = Linking.parse(result.url);
+      const authErrorParam = parsed.queryParams?.auth_error;
+      if (typeof authErrorParam === 'string') {
+        setError(describeAuthError(authErrorParam));
+        return;
+      }
+      const authCode = parsed.queryParams?.auth_code;
+      if (typeof authCode !== 'string') {
+        setError('Sign-in failed: no authorization code was returned.');
+        return;
+      }
+      await exchangeCode(authCode);
+    },
+    [authClient, exchangeCode]
+  );
+
+  const devLogin = useCallback(
+    async (email: string, displayName?: string) => {
+      const generation = beginAuthAction();
+      setError(null);
+      try {
+        const response = await authClient.devLogin(email, displayName);
+        if (authGenerationRef.current !== generation) return;
+        await applySession(response);
+      } catch (err) {
+        if (authGenerationRef.current !== generation) return;
+        setError(err instanceof Error ? err.message : 'Dev login failed.');
+      }
+    },
+    [authClient, applySession, beginAuthAction]
+  );
+
+  const logout = useCallback(async () => {
+    beginAuthAction();
+    const stored = Platform.OS === 'web' ? null : await getStoredRefreshToken();
+    try {
+      await authClient.logout(stored ?? undefined);
+    } catch {
+      // Logging out locally must still succeed even if the network call
+      // fails — never leave the user stuck "logged in" on this device
+      // just because the backend was briefly unreachable. This never
+      // touches stored chats or documents — only session/token state.
+    }
+    setAccessToken(null);
+    setUser(null);
+    setStatus('unauthenticated');
+    setError(null);
+    if (Platform.OS !== 'web') await setStoredRefreshToken(null);
+  }, [authClient, beginAuthAction]);
+
+  const clearError = useCallback(() => setError(null), []);
+
+  const value: AuthContextValue = {
+    status,
+    user,
+    accessToken,
+    error,
+    providers,
+    devLoginEnabled,
+    providersLoading,
+    refreshProviders,
+    startOAuth,
+    exchangeCode,
+    devLogin,
+    logout,
+    clearError,
+  };
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+export function useAuth(): AuthContextValue {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error('useAuth() must be used within an <AuthProvider>');
+  return ctx;
+}

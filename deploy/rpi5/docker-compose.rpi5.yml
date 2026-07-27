@@ -17,6 +17,21 @@
 name: edumind-rpi5
 
 services:
+  frontend:
+    build:
+      context: ../..
+      dockerfile: deploy/frontend/Dockerfile
+      args:
+        EXPO_PUBLIC_API_BASE_URL: ${EXPO_PUBLIC_API_BASE_URL}
+    platform: linux/arm64
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - edumind-rpi5-net
   qdrant:
     image: qdrant/qdrant:latest
     platform: linux/arm64
@@ -27,7 +42,7 @@ services:
     # the `edumind-rpi5-net` internal network (see `networks:` below), and
     # the only consumer (the backend) already trusts it as a sibling.
     ports:
-      - "127.0.0.1:6333:6333"   # loopback-only publish for qdrant HTTP API (operator-side debugging)
+      - "127.0.0.1:6333:6333" # loopback-only publish for qdrant HTTP API (operator-side debugging)
     volumes:
       - qdrant-data:/qdrant/storage
     mem_limit: 2g
@@ -36,11 +51,7 @@ services:
       # qdrant exposes /healthz since v1.x; `/` returns 200 with a body
       # but does not reflect readiness. Use /healthz which returns 200
       # only when qdrant is ready to serve search.
-      test:
-        [
-          "CMD-SHELL",
-          "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333'",
-        ]
+      test: [ "CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333'" ]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -89,11 +100,11 @@ services:
       # "is Ollama even up" probe because it does NOT require any model
       # to be loaded into VRAM. Returns 200 even on a freshly-installed
       # host with no models yet pulled.
-      test: ["CMD", "ollama", "list"]
+      test: [ "CMD", "ollama", "list" ]
       interval: 10s
       timeout: 10s
       retries: 6
-      start_period: 60s   # ollama serve takes a moment even on Pi 5's NVMe
+      start_period: 60s # ollama serve takes a moment even on Pi 5's NVMe
     networks:
       - edumind-rpi5-net
 
@@ -116,7 +127,7 @@ services:
     # alembic fails the migration, `service_completed_successfully` below
     # blocks backend from starting and the operator reads the migrate logs
     # to investigate.
-    command: ["alembic", "upgrade", "head"]
+    command: [ "alembic", "upgrade", "head" ]
     env_file:
       - .env.rpi5
     environment:
@@ -144,7 +155,7 @@ services:
     # share the same cores via CFS quotas, so the cap matters less than
     # absolute count). 2 workers × ~1.0 CPU ≈ 2.0 effective cores, leaving
     # the rest for the LLM and qdrant under contention.
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2" ]
     env_file:
       - .env.rpi5
     environment:
