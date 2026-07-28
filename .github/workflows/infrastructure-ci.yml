@@ -1,0 +1,246 @@
+name: Infrastructure CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/infrastructure-ci.yml"
+      - "deploy/**"
+      - "Dockerfile*"
+      - "**/Dockerfile*"
+
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/infrastructure-ci.yml"
+      - "deploy/**"
+      - "Dockerfile*"
+      - "**/Dockerfile*"
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: infrastructure-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shell-validation:
+    name: Validate operations scripts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Validate Bash syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t scripts < <(
+            find deploy \
+              -type f \
+              -name "*.sh" \
+              -print |
+            sort
+          )
+
+          if [[ ${#scripts[@]} -eq 0 ]]; then
+            echo "No shell scripts found."
+            exit 1
+          fi
+
+          for script in "${scripts[@]}"; do
+            echo "Checking Bash syntax: $script"
+            bash -n "$script"
+          done
+
+      - name: Run ShellCheck
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t scripts < <(
+            find deploy \
+              -type f \
+              -name "*.sh" \
+              -print |
+            sort
+          )
+
+          shellcheck \
+            --severity=warning \
+            --external-sources \
+            "${scripts[@]}"
+
+      - name: Verify production script permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          failed=0
+
+          for script in deploy/prod/scripts/prod-*.sh; do
+            if [[ ! -x "$script" ]]; then
+              echo "::error file=$script::$script is not executable"
+              failed=1
+            else
+              echo "Executable: $script"
+            fi
+          done
+
+          exit "$failed"
+
+  compose-validation:
+    name: Validate Docker Compose
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare production environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f deploy/prod/.env.prod.example
+          cp deploy/prod/.env.prod.example deploy/prod/.env.prod
+
+      - name: Validate production Compose file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker compose \
+            --env-file deploy/prod/.env.prod \
+            -f deploy/prod/docker-compose.prod.yml \
+            config --quiet
+
+          echo "Production Compose configuration is valid."
+
+      - name: Prepare development environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -f deploy/dev/.env.dev.example ]]; then
+            cp deploy/dev/.env.dev.example deploy/dev/.env.dev
+          fi
+
+      - name: Validate development Compose file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f deploy/dev/docker-compose.dev.yml ]]; then
+            echo "Development Compose file not found; skipping."
+            exit 0
+          fi
+
+          args=(
+            -f deploy/dev/docker-compose.dev.yml
+          )
+
+          if [[ -f deploy/dev/.env.dev ]]; then
+            args=(
+              --env-file deploy/dev/.env.dev
+              "${args[@]}"
+            )
+          fi
+
+          docker compose "${args[@]}" config --quiet
+
+          echo "Development Compose configuration is valid."
+
+  repository-validation:
+    name: Validate deployment structure
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify required files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required_files=(
+            "deploy/README.md"
+            "deploy/prod/docker-compose.prod.yml"
+            "deploy/prod/.env.prod.example"
+            "deploy/prod/scripts/lib/common.sh"
+            "deploy/prod/scripts/prod-start.sh"
+            "deploy/prod/scripts/prod-stop.sh"
+            "deploy/prod/scripts/prod-restart.sh"
+            "deploy/prod/scripts/prod-status.sh"
+            "deploy/prod/scripts/prod-logs.sh"
+            "deploy/prod/scripts/prod-healthcheck.sh"
+            "deploy/prod/scripts/prod-backup.sh"
+            "deploy/prod/scripts/prod-restore.sh"
+            "deploy/prod/scripts/prod-update.sh"
+          )
+
+          missing=0
+
+          for file in "${required_files[@]}"; do
+            if [[ ! -f "$file" ]]; then
+              echo "::error file=$file::Required file is missing"
+              missing=1
+            else
+              echo "Found: $file"
+            fi
+          done
+
+          exit "$missing"
+
+      - name: Check for committed runtime environment files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tracked_env_files="$(
+            git ls-files |
+            grep -E '(^|/)\.env($|\.)' |
+            grep -vE '\.example$' ||
+            true
+          )"
+
+          if [[ -n "$tracked_env_files" ]]; then
+            echo "::error::Runtime environment files are committed:"
+            echo "$tracked_env_files"
+            exit 1
+          fi
+
+          echo "No runtime environment files are tracked."
+
+      - name: Scan deployment files for obvious secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          secret_pattern='(sk-[A-Za-z0-9_-]{20,}|nvapi-[A-Za-z0-9_-]{20,}|BEGIN (RSA |OPENSSH )?PRIVATE KEY|password[[:space:]]*=[[:space:]]*[^$<{[:space:]]+)'
+
+          if grep \
+            -RInE \
+            --exclude=".env.prod" \
+            --exclude=".env.dev" \
+            --exclude-dir=".git" \
+            "$secret_pattern" \
+            deploy; then
+            echo "::error::Possible secret detected in deployment files."
+            exit 1
+          fi
+
+          echo "No obvious secrets detected."
