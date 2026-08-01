@@ -84,7 +84,6 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 UTC_TS="$(rpi5_utc_ts)"
-COMPOSE_PROJECT="edumind-rpi5"
 
 # Map target name -> named-volume name (matches docker-compose.rpi5.yml).
 declare -A VOL_FOR_TARGET
@@ -124,10 +123,10 @@ cat <<EOF
 $(ls -la "${OUTPUT_DIR}"/rpi5-*-"${UTC_TS}".tgz 2>/dev/null | awk '{printf "    %s\n", $NF}')
 
   Restore is manual:
-    1. `docker compose -p edumind-rpi5 down` on the Pi first.
-    2. `ssh $PI_HOST 'cd <pkg-dir> && tar -xzf rpi5-data-${UTC_TS}.tgz -C /var/lib/docker/volumes/edumind-rpi5_backend-data/_data/'`
+    1. 'docker compose -p edumind-rpi5 down' on the Pi first.
+    2. ssh $PI_HOST 'cd <pkg-dir> && tar -xzf rpi5-data-${UTC_TS}.tgz -C /var/lib/docker/volumes/edumind-rpi5_backend-data/_data/'
        (the volume driver may have nested intermediate dirs; the
-       `--strip-components` or path layout depends on docker's bind
+       '--strip-components' or path layout depends on docker's bind
        mount.)
 
   For a quick, all-in-one restore, the manual commands are documented

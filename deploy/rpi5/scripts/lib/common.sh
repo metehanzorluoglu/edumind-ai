@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
 # Shared shell utilities for the deploy/rpi5/scripts/* helpers.
 #
 # Sourced (`source "${SCRIPT_DIR}/lib/common.sh"`) by every public script.

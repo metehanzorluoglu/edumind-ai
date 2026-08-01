@@ -78,10 +78,16 @@ rpi5_info "[3/3] summary"
 
 # python3 is already required for jq-less parsing of the body. Use it to
 # do an aggregate decision.
-SUMMARY="$(printf '%s' "$READINESS_JSON" | python3 <<'PYEOF'
-import json, sys
+#
+# READINESS_JSON is passed via an environment variable rather than piped
+# stdin: python3 here reads its own script from a heredoc on stdin, so a
+# pipe feeding the same stdin would be silently overridden (the heredoc
+# always wins) and json.loads(sys.stdin.read()) would parse an empty
+# string every time.
+SUMMARY="$(READINESS_JSON="$READINESS_JSON" python3 <<'PYEOF'
+import json, os, sys
 try:
-    body = json.loads(sys.stdin.read())
+    body = json.loads(os.environ["READINESS_JSON"])
 except Exception as exc:
     print(f"error: could not parse /health/ready body: {exc}")
     sys.exit(0)
