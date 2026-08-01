@@ -47,6 +47,12 @@ class DocumentUploadAcceptedResponse(BaseModel):
     source_url: str | None = None
     page_count: int
     total_chunks: int
+    # Optional JSON debug output (see app/core/request_timing.py): the
+    # synchronous phase's stages only (file_save, pdf_parsing, chunking) —
+    # embedding/qdrant_upload/database happen later in the background job,
+    # see DocumentJobResponse.timings below. Null unless
+    # PERFORMANCE_PROFILING=true.
+    timings: dict[str, float] | None = None
 
 
 class DocumentJobResponse(BaseModel):
@@ -61,6 +67,13 @@ class DocumentJobResponse(BaseModel):
     embedded_chunks: int
     document: DocumentUploadResponse | None = None
     error: str | None = None
+    # Optional JSON debug output: the full pipeline breakdown (file_save
+    # through database, plus total_ms covering the whole upload from
+    # POST /documents to this job completing) — populated once the job
+    # reaches "completed" or "failed", only when the original upload ran
+    # with PERFORMANCE_PROFILING=true (see
+    # app/core/document_ingestion_jobs.py's in-process _JOB_TIMINGS).
+    timings: dict[str, float] | None = None
 
 
 class DocumentSummary(BaseModel):

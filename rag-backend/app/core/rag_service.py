@@ -15,6 +15,7 @@ from app.core.context_preparation import (
 )
 from app.core.llm_provider import LLMProvider
 from app.core.prompt_builder import NO_EVIDENCE_ANSWER, build_chat_prompt
+from app.core.request_timing import get_current_timer
 from app.core.retrieval_schemas import RetrievalFilters, RetrievedChunk
 from app.core.scoped_retrieval import execute_scope_plan, resolve_scope_plan
 
@@ -95,13 +96,18 @@ def retrieve_and_cite(
     raw_sources = execute_scope_plan(retriever, query, plan, user_id=user_id, filters=filters)[
         :top_k
     ]
-    prepared_sources = prepare_context(
-        raw_sources,
-        max_per_document=max_chunks_per_document,
-        max_total_chars=max_total_context_chars,
-        similarity_threshold=dedup_similarity_threshold,
-    )
-    citations = build_citations(prepared_sources)
+    # "prompt_construction" starts here (context dedup/trim + citation
+    # building) and continues in RagService.prepare() below (the actual
+    # system/user prompt strings) — both recorded under the same stage
+    # name, summed together in RequestTimer.as_dict().
+    with get_current_timer().stage("prompt_construction"):
+        prepared_sources = prepare_context(
+            raw_sources,
+            max_per_document=max_chunks_per_document,
+            max_total_chars=max_total_context_chars,
+            similarity_threshold=dedup_similarity_threshold,
+        )
+        citations = build_citations(prepared_sources)
     return CorpusEvidence(sources=prepared_sources, citations=citations)
 
 
@@ -185,9 +191,10 @@ class RagService:
             include_general=include_general,
         )
         insufficient_evidence = len(evidence.sources) == 0
-        system_prompt, user_prompt = build_chat_prompt(
-            query, evidence.sources, project_context=project_context
-        )
+        with get_current_timer().stage("prompt_construction"):
+            system_prompt, user_prompt = build_chat_prompt(
+                query, evidence.sources, project_context=project_context
+            )
 
         return PreparedChat(
             system_prompt=system_prompt,

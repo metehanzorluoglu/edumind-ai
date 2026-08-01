@@ -22,9 +22,9 @@ deploy/
 │   │   ├── prod-status.sh
 │   │   ├── prod-healthcheck.sh
 │   │   ├── prod-logs.sh
-│   │   ├── prod-backup.sh        (planned)
-│   │   ├── prod-restore.sh       (planned)
-│   │   └── prod-update.sh        (planned)
+│   │   ├── prod-backup.sh
+│   │   ├── prod-restore.sh
+│   │   └── prod-update.sh
 │   │
 │   └── README.md
 │

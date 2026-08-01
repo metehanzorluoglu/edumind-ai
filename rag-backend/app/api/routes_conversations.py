@@ -1,4 +1,5 @@
 import json
+import time
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -24,6 +25,7 @@ from app.core.project_context import format_project_context
 from app.core.prompt_builder import NO_EVIDENCE_ANSWER
 from app.core.rag_service import CorpusEvidence, RagService, RetrieverLike, retrieve_and_cite
 from app.core.rate_limiter import RateLimiter
+from app.core.request_timing import RequestTimer
 from app.core.retrieval_schemas import RetrievalFilters, RetrievedChunk
 from app.core.security import CurrentUserDep, get_current_user
 from app.core.vision_prompt_builder import build_vision_prompt
@@ -51,6 +53,7 @@ from app.deps import (
     ProjectProfileRepositoryDep,
     ProjectsRepositoryDep,
     RagServiceDep,
+    RequestTimerDep,
     RetrieverDep,
     ScopesRepositoryDep,
     SettingsDep,
@@ -177,6 +180,31 @@ def _message_response(message: MessageRecord) -> MessageResponse:
 
 def _sse(event: ChatEvent) -> str:
     return f"data: {event.model_dump_json()}\n\n"
+
+
+def _timed_token_stream(tokens: Iterator[str], timer: RequestTimer) -> Iterator[str]:
+    """Wraps an LLM token iterator to split its wall-clock cost into two
+    stages: time spent inside `next()` (blocked waiting on Ollama) is
+    "llm_generation"; the time between handing a token back and being
+    asked for the next one — spent in the caller's own per-token work
+    (formatting + `yield`ing the SSE chunk, plus Starlette actually
+    writing those bytes to the connection) — is "streaming". Measuring
+    from here, wrapped *around* the caller's yield, is what makes that
+    second interval visible at all: the caller's own code never calls
+    back into this stage explicitly. Only ever constructed when
+    timer.enabled (see event_stream() below), so this per-token
+    bookkeeping never runs when PERFORMANCE_PROFILING is off."""
+    iterator = iter(tokens)
+    while True:
+        t0 = time.perf_counter()
+        try:
+            token = next(iterator)
+        except StopIteration:
+            return
+        timer.record("llm_generation", (time.perf_counter() - t0) * 1000)
+        t_yield_start = time.perf_counter()
+        yield token
+        timer.record("streaming", (time.perf_counter() - t_yield_start) * 1000)
 
 
 @router.post("", response_model=ConversationDetailResponse, status_code=status.HTTP_201_CREATED)
@@ -550,6 +578,7 @@ def _stream_text_reply(
     scope_settings: ConversationScopeRecord,
     approved_items: list[ProjectKnowledgeRecord],
     profiles: list[ProjectProfileRecord],
+    timer: RequestTimer,
 ) -> StreamingResponse:
     """Request cancellation (milestone V4): if the client disconnects
     mid-stream, Starlette's StreamingResponse stops iterating
@@ -562,7 +591,18 @@ def _stream_text_reply(
     finished — see
     tests/unit/api/test_routes_conversations_cancellation.py, which
     drives this exact mechanism directly rather than only asserting it in
-    a comment."""
+    a comment.
+
+    `timer` (see app/core/request_timing.py) is passed explicitly, not
+    read ambiently, because event_stream() below runs as a StreamingResponse
+    body — after FastAPI's dependency AsyncExitStack (and the ambient
+    "current timer" it binds) has already closed. rag_service.prepare()
+    just above still runs inside that window, so its own internal stages
+    (embedding/retrieval/reranking/prompt_construction — see
+    app/core/retriever.py and app/core/rag_service.py) already reached the
+    same `timer` instance via the ambient accessor by the time this
+    function receives it as a parameter; `timer` here is only needed for
+    what happens *after* that window closes."""
     prepared = rag_service.prepare(
         parsed.query,
         user_id=str(user.id),
@@ -594,11 +634,13 @@ def _stream_text_reply(
             transparency = _transparency_dict(prepared.retrieved_sources)
             yield _sse(ChatTokenEvent(content=NO_EVIDENCE_ANSWER))
             yield _sse(ChatSourcesEvent(sources=prepared.retrieved_sources))
+            timer.log_summary(note="insufficient_evidence")
             yield _sse(
                 ChatDoneEvent(
                     citations=prepared.citations,
                     insufficient_evidence=True,
                     transparency=TransparencyResponse.model_validate(transparency),
+                    debug_timings=timer.as_dict() or None,
                 )
             )
             repository.add_assistant_message(
@@ -613,11 +655,22 @@ def _stream_text_reply(
             return
 
         answer_parts: list[str] = []
+        # _timed_token_stream adds per-token bookkeeping (see its
+        # docstring) — only worth paying for, and only constructed, when
+        # profiling is actually on; the disabled path iterates
+        # rag_service.stream_answer(prepared) exactly as before this
+        # instrumentation existed.
+        token_stream = (
+            _timed_token_stream(rag_service.stream_answer(prepared), timer)
+            if timer.enabled
+            else rag_service.stream_answer(prepared)
+        )
         try:
-            for token in rag_service.stream_answer(prepared):
+            for token in token_stream:
                 answer_parts.append(token)
                 yield _sse(ChatTokenEvent(content=token))
         except LLMProviderError as exc:
+            timer.log_summary(note="llm_error")
             yield _sse(ChatErrorEvent(message=str(exc)))
             return
 
@@ -625,11 +678,13 @@ def _stream_text_reply(
         validation = validate_citations(answer, prepared.citations)
         transparency = _transparency_dict(prepared.retrieved_sources)
         yield _sse(ChatSourcesEvent(sources=prepared.retrieved_sources))
+        timer.log_summary()
         yield _sse(
             ChatDoneEvent(
                 citations=prepared.citations,
                 citation_warnings=validation.warnings,
                 transparency=TransparencyResponse.model_validate(transparency),
+                debug_timings=timer.as_dict() or None,
             )
         )
         repository.add_assistant_message(
@@ -642,7 +697,15 @@ def _stream_text_reply(
             transparency=transparency,
         )
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    # Server-Timing (https://www.w3.org/TR/server-timing/) can only carry
+    # stages recorded *before* headers are sent — auth through
+    # prompt_construction, everything rag_service.prepare() above already
+    # did. LLM generation/streaming/total complete only once event_stream()
+    # is exhausted, long after headers went out; those reach the caller via
+    # the trailing ChatDoneEvent.debug_timings field instead (JSON, see
+    # above) and via backend logs (RequestTimer.log_summary()).
+    headers = {"Server-Timing": timer.server_timing_header()} if timer.enabled else None
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
 
 
 def _stream_vision_reply(
@@ -756,6 +819,7 @@ def _handle_conversation_message(
     project_knowledge_repository: ProjectKnowledgeRepository,
     project_profile_repository: ProjectProfileRepository,
     conversation_scope_repository: ConversationScopeRepository,
+    timer: RequestTimer,
 ) -> StreamingResponse:
     # Checked before any DB/validation work (milestone V4 — see
     # app/core/rate_limiter.py): the cheapest possible rejection for a
@@ -771,7 +835,8 @@ def _handle_conversation_message(
             headers={"Retry-After": str(max(1, round(retry_after)))},
         )
 
-    conversation = repository.get(user.id, conversation_id)
+    with timer.stage("conversation_lookup"):
+        conversation = repository.get(user.id, conversation_id)
     if conversation is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
 
@@ -943,6 +1008,7 @@ def _handle_conversation_message(
         scope_settings,
         approved_items,
         profiles,
+        timer,
     )
 
 
@@ -962,6 +1028,7 @@ async def post_conversation_message(
     project_knowledge_repository: ProjectKnowledgeRepositoryDep,
     project_profile_repository: ProjectProfileRepositoryDep,
     conversation_scope_repository: ConversationScopeRepositoryDep,
+    request_timer: RequestTimerDep,
 ) -> StreamingResponse:
     """Accepts either `application/json` (the original, text-only shape —
     see PostConversationMessageRequest) or `multipart/form-data` (adds
@@ -1007,6 +1074,7 @@ async def post_conversation_message(
         project_knowledge_repository,
         project_profile_repository,
         conversation_scope_repository,
+        request_timer,
     )
 
 

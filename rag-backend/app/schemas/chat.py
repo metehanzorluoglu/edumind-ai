@@ -59,6 +59,15 @@ class ChatDoneEvent(BaseModel):
     citation_warnings: list[str] = Field(default_factory=list)
     insufficient_evidence: bool = False
     transparency: TransparencyResponse | None = None
+    # Optional JSON debug output (see app/core/request_timing.py):
+    # stage name -> duration_ms, plus "total_ms". Only populated when
+    # PERFORMANCE_PROFILING=true; null/absent otherwise, so existing
+    # clients that don't know this field see nothing new. Sent here,
+    # rather than as a separate SSE message, because it's the only stage
+    # group (llm_generation/streaming/total) that isn't known until the
+    # stream is about to end, and ChatDoneEvent is already the one event
+    # guaranteed to be emitted exactly once at that point.
+    debug_timings: dict[str, float] | None = None
 
 
 class ChatErrorEvent(BaseModel):

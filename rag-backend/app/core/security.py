@@ -4,7 +4,7 @@ from fastapi import Depends, Header, HTTPException, status
 
 from app.core.jwt import InvalidAccessTokenError, decode_access_token
 from app.db.models_auth import User
-from app.deps import DBSessionDep, SettingsDep
+from app.deps import DBSessionDep, RequestTimerDep, SettingsDep
 
 _BEARER_PREFIX = "Bearer "
 
@@ -12,6 +12,7 @@ _BEARER_PREFIX = "Bearer "
 def get_current_user(
     db: DBSessionDep,
     settings: SettingsDep,
+    request_timer: RequestTimerDep,
     authorization: Annotated[str | None, Header()] = None,
 ) -> User:
     """Resolves the caller's access token to a live, active user — the
@@ -21,28 +22,36 @@ def get_current_user(
     (missing header, malformed token, expired token, unknown/inactive
     user) — distinguishing them in the response would help an attacker
     fingerprint why a token failed for no legitimate benefit to a real
-    caller, who only ever needs to know "log in again"."""
-    if authorization is None or not authorization.startswith(_BEARER_PREFIX):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or malformed Authorization header. Expected: Bearer <access_token>",
-        )
+    caller, who only ever needs to know "log in again".
 
-    token = authorization.removeprefix(_BEARER_PREFIX).strip()
-    try:
-        user_id = decode_access_token(token, secret=settings.jwt_secret)
-    except InvalidAccessTokenError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired access token"
-        ) from exc
+    Wrapped in request_timer.stage("auth") (see
+    app/core/request_timing.py) for the upload/chat pipeline timing
+    instrumentation — a no-op when PERFORMANCE_PROFILING is off, and
+    harmless overhead (one dependency call returning a shared disabled
+    singleton) on every other route, since this is the one auth gate the
+    whole app shares."""
+    with request_timer.stage("auth"):
+        if authorization is None or not authorization.startswith(_BEARER_PREFIX):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Missing or malformed Authorization header. Expected: Bearer <access_token>",
+            )
 
-    user = db.get(User, user_id)
-    if user is None or not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired access token"
-        )
+        token = authorization.removeprefix(_BEARER_PREFIX).strip()
+        try:
+            user_id = decode_access_token(token, secret=settings.jwt_secret)
+        except InvalidAccessTokenError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired access token"
+            ) from exc
 
-    return user
+        user = db.get(User, user_id)
+        if user is None or not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired access token"
+            )
+
+        return user
 
 
 CurrentUserDep = Annotated[User, Depends(get_current_user)]

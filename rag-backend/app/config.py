@@ -35,6 +35,47 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_llm_model: str = "qwen3:8b"
     ollama_embed_model: str = "mxbai-embed-large"
+    # How many chunks app/core/document_ingestion_jobs.py groups into one
+    # embedding_provider.embed_batch() call during document ingestion — was
+    # a hardcoded constant (8) before this setting existed. Measured
+    # directly against the live Ollama server (see the performance
+    # investigation): batching barely speeds up per-item embedding time
+    # (~5-8%, not a multiple — mxbai-embed-large processes a batch's items
+    # essentially sequentially on this CPU-only host), so raising this
+    # mainly reduces HTTP round-trip overhead and progress-log granularity,
+    # not compute cost. 32 matches OllamaEmbeddingProvider's own internal
+    # embed_batch() ceiling (app/core/embedding_provider.py's
+    # _DEFAULT_BATCH_SIZE) exactly, so every ingestion batch becomes one
+    # HTTP call instead of splitting across two.
+    embedding_batch_size: int = Field(default=32, ge=1)
+    # Whether the text model (qwen3:8b) runs with its "thinking" reasoning
+    # trace enabled for ordinary chat turns. Off by default: on a CPU-only
+    # host, thinking tokens routinely dwarf the visible answer (observed
+    # ~120 hidden tokens for a one-sentence reply) and add tens of seconds
+    # of latency for no user-visible benefit. Set OLLAMA_THINKING_ENABLED=true
+    # to turn thinking back on globally — e.g. for a future "deep reasoning"
+    # mode — without any code change; see app/core/llm_provider.py's `think`
+    # parameter, which this flows into unchanged.
+    ollama_thinking_enabled: bool = False
+    # Caps completion length for ordinary chat turns (Ollama's `num_predict`
+    # chat option — see app/core/llm_provider.py's OllamaLLMProvider, which
+    # passes this through the `options` object unchanged). Unset upstream:
+    # neither qwen3:8b's Modelfile nor this app previously set any limit, so
+    # generation was bounded only by the model's context window — a
+    # pathological/looping completion had no ceiling below that. 512 is
+    # generous for a citation-grounded RAG answer (observed real completions
+    # in the 25-120 token range) while still bounding the worst case. A
+    # future "deep response" mode can pass a larger value by constructing
+    # its own OllamaLLMProvider(options={"num_predict": N}) — this setting
+    # only controls the app-wide default instance (app/deps.py::
+    # get_llm_provider), not the class's own capability.
+    ollama_num_predict: int = Field(default=512, ge=1)
+
+    # Per-stage timing instrumentation (see app/core/request_timing.py) for
+    # the upload and chat pipelines. Off by default: when false, every
+    # instrumentation call site takes a single `if not enabled` branch and
+    # returns — no timer calls, no extra logging, no response-header work.
+    performance_profiling: bool = False
 
     # --- Vision (milestone V1: image/PDF-page understanding via a
     # dedicated vision-capable model, alongside — never instead of — the

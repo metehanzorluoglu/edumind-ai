@@ -1,3 +1,4 @@
+import json
 import logging
 import tempfile
 import time
@@ -5,7 +6,16 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    Form,
+    HTTPException,
+    Response,
+    UploadFile,
+    status,
+)
 
 from app.core.document_deletion import delete_document_by_id
 from app.core.document_ingestion_jobs import run_ingestion_job
@@ -14,6 +24,7 @@ from app.deps import (
     DocumentJobsRepositoryDep,
     DocumentsRepositoryDep,
     EmbeddingProviderDep,
+    RequestTimerDep,
     ScopesRepositoryDep,
     VectorStoreDep,
 )
@@ -60,11 +71,13 @@ def _read_upload_to_tempfile(file: UploadFile) -> Path:
 )
 def post_document(
     background_tasks: BackgroundTasks,
+    response: Response,
     user: CurrentUserDep,
     documents_repository: DocumentsRepositoryDep,
     document_jobs_repository: DocumentJobsRepositoryDep,
     embedding_provider: EmbeddingProviderDep,
     vector_store: VectorStoreDep,
+    request_timer: RequestTimerDep,
     file: UploadFile,
     document_type: Annotated[DocumentType, Form()],
     journal_quartile: Annotated[JournalQuartile, Form()] = None,
@@ -83,26 +96,43 @@ def post_document(
     take minutes on CPU-only hardware, and holding the HTTP request open for
     that is what caused the 30s client-side upload timeout this replaces.
     Poll GET /documents/jobs/{job_id} for progress and the eventual result.
+
+    Timing instrumentation (see app/core/request_timing.py, no-op unless
+    PERFORMANCE_PROFILING=true): `request_timer` covers file_save,
+    pdf_parsing and chunking below, is reflected in this response's
+    `Server-Timing` header and `timings` field, and is then handed to the
+    background task as a plain object reference so it can keep recording
+    embedding/qdrant_upload/database against the *same* timer once this
+    function has already returned — total_ms() therefore measures true
+    end-to-end "total upload" latency (file save through the background job
+    finishing), not just this request/response cycle. See
+    app/core/document_ingestion_jobs.py's module docstring for why that
+    reference (not the ambient get_current_timer() this module's deeper
+    dependencies use) is what makes that safe.
     """
-    author_list = [name.strip() for name in authors.split(",") if name.strip()] if authors else None
-    tmp_path = _read_upload_to_tempfile(file)
+    with request_timer.stage("file_save"):
+        author_list = (
+            [name.strip() for name in authors.split(",") if name.strip()] if authors else None
+        )
+        tmp_path = _read_upload_to_tempfile(file)
 
     parse_start = time.monotonic()
     try:
-        result = ingest_document(
-            tmp_path,
-            document_type=document_type,
-            duplicate_checker=documents_repository,
-            user_id=user.id,
-            journal_quartile=journal_quartile,
-            title=title,
-            authors=author_list,
-            publication_year=publication_year,
-            source_venue=source_venue,
-            doi=doi,
-            source_url=source_url,
-            original_filename=file.filename,
-        )
+        with request_timer.stage("pdf_parsing"):
+            result = ingest_document(
+                tmp_path,
+                document_type=document_type,
+                duplicate_checker=documents_repository,
+                user_id=user.id,
+                journal_quartile=journal_quartile,
+                title=title,
+                authors=author_list,
+                publication_year=publication_year,
+                source_venue=source_venue,
+                doi=doi,
+                source_url=source_url,
+                original_filename=file.filename,
+            )
     except DuplicateDocumentError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except UnsupportedFileTypeError as exc:
@@ -114,6 +144,14 @@ def post_document(
     finally:
         tmp_path.unlink(missing_ok=True)
 
+    # No OCR stage: this pipeline extracts text directly (PyMuPDF for PDFs —
+    # see app/ingestion/loaders/pdf_loader.py — plus python-docx/BeautifulSoup
+    # for the other formats app/ingestion/loaders/dispatch.py supports).
+    # There is no image-to-text step anywhere in app/ingestion/, so a
+    # scanned/image-only PDF yields empty page text today rather than being
+    # OCR'd — confirmed by grepping the codebase for any OCR/tesseract
+    # dependency (none exists), not assumed.
+
     metadata = result.metadata
     logger.info(
         "POST /documents: parsed %r in %.2fs (%d page(s))",
@@ -123,7 +161,8 @@ def post_document(
     )
 
     chunk_start = time.monotonic()
-    chunks = chunk_pages(result.pages)
+    with request_timer.stage("chunking"):
+        chunks = chunk_pages(result.pages)
     logger.info(
         "POST /documents: chunked %r into %d chunk(s) in %.3fs",
         metadata.source_filename,
@@ -146,7 +185,13 @@ def post_document(
         chunks=chunks,
         embedding_provider=embedding_provider,
         vector_store=vector_store,
+        timer=request_timer,
     )
+
+    request_timer.log_summary(note="sync phase (file_save/pdf_parsing/chunking) — "
+                               "embedding/qdrant_upload/database continue in the background job")
+    if request_timer.enabled:
+        response.headers["Server-Timing"] = request_timer.server_timing_header()
 
     return DocumentUploadAcceptedResponse(
         job_id=job_id,
@@ -162,6 +207,7 @@ def post_document(
         source_url=metadata.source_url,
         page_count=metadata.page_count,
         total_chunks=len(chunks),
+        timings=request_timer.as_dict() or None,
     )
 
 
@@ -213,6 +259,11 @@ def get_document_job(
         embedded_chunks=job.embedded_chunks,
         document=document_response,
         error=job.error_message,
+        # Populated once the background job finishes (completed or failed)
+        # if PERFORMANCE_PROFILING was on for the original upload — see
+        # app/db/document_jobs_repository.py's timings_json column. None
+        # while still processing, or if profiling was off.
+        timings=json.loads(job.timings_json) if job.timings_json is not None else None,
     )
 
 

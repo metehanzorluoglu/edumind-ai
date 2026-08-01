@@ -2,6 +2,7 @@ from collections import OrderedDict
 
 from app.core.embedding_provider import EmbeddingProvider
 from app.core.mmr import select_mmr
+from app.core.request_timing import get_current_timer
 from app.core.retrieval_schemas import RetrievalFilters, RetrievedChunk
 from app.vectorstore.qdrant_client import QdrantVectorStore
 from app.vectorstore.schemas import VectorSearchResult, VectorStoreFilter
@@ -89,16 +90,17 @@ class Retriever:
         self._query_embedding_cache_size = query_embedding_cache_size
 
     def _embed_query(self, query: str) -> list[float]:
-        cached = self._query_embedding_cache.get(query)
-        if cached is not None:
-            self._query_embedding_cache.move_to_end(query)
-            return cached
+        with get_current_timer().stage("embedding"):
+            cached = self._query_embedding_cache.get(query)
+            if cached is not None:
+                self._query_embedding_cache.move_to_end(query)
+                return cached
 
-        vector = self._embedding_provider.embed_batch([query])[0]
-        self._query_embedding_cache[query] = vector
-        if len(self._query_embedding_cache) > self._query_embedding_cache_size:
-            self._query_embedding_cache.popitem(last=False)
-        return vector
+            vector = self._embedding_provider.embed_batch([query])[0]
+            self._query_embedding_cache[query] = vector
+            if len(self._query_embedding_cache) > self._query_embedding_cache_size:
+                self._query_embedding_cache.popitem(last=False)
+            return vector
 
     def retrieve(
         self,
@@ -108,7 +110,7 @@ class Retriever:
         top_k: int = _DEFAULT_TOP_K,
         fetch_k: int | None = None,
         filters: RetrievalFilters | None = None,
-        min_score: float | None | _Unset = _UNSET,
+        min_score: float | _Unset | None = _UNSET,
         conversation_id: str | None = None,
         project_id: str | None = None,
     ) -> list[RetrievedChunk]:
@@ -120,15 +122,17 @@ class Retriever:
 
         query_vector = self._embed_query(query)
 
-        candidates = self._vector_store.search(
-            query_vector,
-            limit=max(top_k, effective_fetch_k),
-            user_id=user_id,
-            vector_filter=_to_vector_store_filter(filters),
-            with_vectors=True,
-            conversation_id=conversation_id,
-            project_id=project_id,
-        )
+        timer = get_current_timer()
+        with timer.stage("retrieval"):
+            candidates = self._vector_store.search(
+                query_vector,
+                limit=max(top_k, effective_fetch_k),
+                user_id=user_id,
+                vector_filter=_to_vector_store_filter(filters),
+                with_vectors=True,
+                conversation_id=conversation_id,
+                project_id=project_id,
+            )
 
         if effective_min_score is not None:
             candidates = [c for c in candidates if c.score >= effective_min_score]
@@ -139,6 +143,7 @@ class Retriever:
             if candidate.vector is not None
         ]
 
-        selected = select_mmr(mmr_input, top_k=top_k, relevance_weight=self._relevance_weight)
+        with timer.stage("reranking"):
+            selected = select_mmr(mmr_input, top_k=top_k, relevance_weight=self._relevance_weight)
 
         return [_to_retrieved_chunk(result) for result in selected]

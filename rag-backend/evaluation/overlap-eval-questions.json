@@ -1,0 +1,178 @@
+[
+  {
+    "question_id": "B01-mime-mp3-postscript",
+    "question": "According to the specification, why might a computer mistakenly think a text file named README.mp3 is an MP3 file, and why might README.txt be mistaken for a PostScript file?",
+    "category": "boundary_sensitive",
+    "expected_relevant_filenames": ["shared-mime-info-spec.pdf"],
+    "expected_document_type": null,
+    "expected_quartile": null,
+    "expect_insufficient_evidence": false,
+    "filters": {},
+    "notes": "TRUE overlap-affected boundary: page 16 splits into chunk15 (2930 chars) + chunk16 (499 chars @ overlap=450, 300 chars @ overlap=200). Verified by direct chunk_pages() inspection."
+  },
+  {
+    "question_id": "B02-mime-rename-fix",
+    "question": "If a user's computer guesses the wrong file type for a document, what can the user do to fix the problem according to the specification?",
+    "category": "boundary_sensitive",
+    "expected_relevant_filenames": ["shared-mime-info-spec.pdf"],
+    "expected_document_type": null,
+    "expected_quartile": null,
+    "expect_insufficient_evidence": false,
+    "filters": {},
+    "notes": "Cross-page split: page 16 ends '...thinks README.txt is a PostScript' and page 17 begins 'file. If the system guesses wrongly, the user can often rename the file to fix the problem.' The word 'PostScript file.' is split across the page boundary. Chunking is per-page, so this is UNAFFECTED by the overlap setting either way -- verified by direct extraction."
+  },
+  {
+    "question_id": "B03-mime-magic-attributes",
+    "question": "What are the 'type' and 'offset' attributes of a magic match element, and what values does each accept?",
+    "category": "boundary_sensitive",
+    "expected_relevant_filenames": ["shared-mime-info-spec.pdf"],
+    "expected_document_type": null,
+    "expected_quartile": null,
+    "expect_insufficient_evidence": false,
+    "filters": {},
+    "notes": "A single attribute table is split across pages 4 (type row) and 5 (offset row) -- always a hard cross-page split regardless of overlap. Verified by direct extraction."
+  },
+  {
+    "question_id": "B04-mime-reversesuffixtree",
+    "question": "What fields make up a ReverseSuffixTreeNode in the treemagic binary format, and what structure immediately follows it?",
+    "category": "boundary_sensitive",
+    "expected_relevant_filenames": ["shared-mime-info-spec.pdf"],
+    "expected_document_type": null,
+    "expected_quartile": null,
+    "expect_insufficient_evidence": false,
+    "filters": {},
+    "notes": "ReverseSuffixTreeNode's fields end page 13; ReverseSuffixTreeLeafNode begins page 14 -- cross-page split, unaffected by overlap. Verified by direct extraction."
+  },
+  {
+    "question_id": "B05-mime-icons-list-offset",
+    "question": "In the treemagic file header, what field comes right after MAGIC_LIST_OFFSET, and what appears at the start of the AliasList structure?",
+    "category": "boundary_sensitive",
+    "expected_relevant_filenames": ["shared-mime-info-spec.pdf"],
+    "expected_document_type": null,
+    "expected_quartile": null,
+    "expect_insufficient_evidence": false,
+    "filters": {},
+    "notes": "NAMESPACE_LIST_OFFSET/ICONS_LIST_OFFSET end page 12; GENERIC_ICONS_LIST_OFFSET and AliasList begin page 13 -- cross-page split, unaffected by overlap. Verified by direct extraction."
+  },
+  {
+    "question_id": "B06-mime-source-file-merge",
+    "question": "How does an application's individual XML source file relate to the combined output MIME database file the tooling produces?",
+    "category": "boundary_sensitive",
+    "expected_relevant_filenames": ["shared-mime-info-spec.pdf"],
+    "expected_document_type": null,
+    "expected_quartile": null,
+    "expect_insufficient_evidence": false,
+    "filters": {},
+    "notes": "Explanation continues across pages 7-8 ('...magic, glob and root-XML elements will have been removed' / 'The example source file given above would...create an output file'). Softer split than the others (same topic, not mid-sentence)."
+  },
+  {
+    "question_id": "B07-sec-afl-functions",
+    "question": "Which internal fluent-bit functions were checked by the dedicated AFL fuzzing environment for external plugin parsing?",
+    "category": "boundary_sensitive",
+    "expected_relevant_filenames": ["security-audit.pdf"],
+    "expected_document_type": null,
+    "expected_quartile": null,
+    "expect_insufficient_evidence": false,
+    "filters": {},
+    "notes": "TRUE overlap-affected boundary AND cross-page split: page 4's own chunk-3/chunk-4 split (overlap=450 gives 408 chars, overlap=200 gives 233 chars) sits right before the page/chunk boundary -- 'flb_pack_json_state' is the only function named on page 4; the other five (flb_msgpack_raw_to_json_str, flb_pack_json, flb_router_match, fw_prot_process, mqtt_prot_parser) are only on page 5. Verified by direct chunk_pages() inspection."
+  },
+  {
+    "question_id": "B08-sec-mqtt-parser-trust",
+    "question": "According to the report, what does the MQTT parser trust about incoming input, and what security risk does that create?",
+    "category": "boundary_sensitive",
+    "expected_relevant_filenames": ["security-audit.pdf"],
+    "expected_document_type": null,
+    "expected_quartile": null,
+    "expect_insufficient_evidence": false,
+    "filters": {},
+    "notes": "A single sentence is split mid-clause across pages 9/10: '...the MQTT parser trusts fields of the' / 'incoming input, such as the length. Thus, the parser might access data outside of the allocated buffer.' Cross-page, unaffected by overlap. Verified by direct extraction."
+  },
+  {
+    "question_id": "B09-sec-msgpack-unpacker-loop",
+    "question": "In the crash-reproduction code for the heap-overflow issue, what happens immediately after msgpack_unpacked_init is called?",
+    "category": "boundary_sensitive",
+    "expected_relevant_filenames": ["security-audit.pdf"],
+    "expected_document_type": null,
+    "expected_quartile": null,
+    "expect_insufficient_evidence": false,
+    "filters": {},
+    "notes": "A C code listing is split across pages 5/6: the 'msgpack_unpacker_new(1024)' call ends page 5, and 'msgpack_unpacked_init(&result); conn->rest = conn->buf_len; while(1) {...}' begins page 6. Cross-page, unaffected by overlap. Verified by direct extraction."
+  },
+  {
+    "question_id": "B10-sec-negative-size-memmove",
+    "question": "How can the negative-size memmove vulnerability in mqtt_packet_drop be reproduced, and what does the report recommend to fix it?",
+    "category": "boundary_sensitive",
+    "expected_relevant_filenames": ["security-audit.pdf"],
+    "expected_document_type": null,
+    "expected_quartile": null,
+    "expect_insufficient_evidence": false,
+    "filters": {},
+    "notes": "The vulnerable code + explanation ends page 11; the Proof-of-Concept reproduction steps ('An ASAN build is not required to reproduce the issue...') begin page 12. Cross-page, unaffected by overlap. Verified by direct extraction."
+  },
+  {
+    "question_id": "F01-mime-priority-values",
+    "question": "What is the default priority value for a magic match, and what is the maximum allowed?",
+    "category": "factual_single_document",
+    "expected_relevant_filenames": ["shared-mime-info-spec.pdf"],
+    "expected_document_type": null,
+    "expected_quartile": null,
+    "expect_insufficient_evidence": false,
+    "filters": {},
+    "notes": "Single-chunk fact on page 4: 'The default priority value is 50, and the maximum is 100.'"
+  },
+  {
+    "question_id": "F02-mime-magic-string",
+    "question": "What fixed magic string does a legacy binary magic file begin with?",
+    "category": "page_level_evidence",
+    "expected_relevant_filenames": ["shared-mime-info-spec.pdf"],
+    "expected_document_type": null,
+    "expected_quartile": null,
+    "expect_insufficient_evidence": false,
+    "filters": {},
+    "notes": "Single-page, single-chunk fact on page 9: 'The file starts with the magic string \"MIME-Magic\\0\\n\".'"
+  },
+  {
+    "question_id": "F03-sec-core-conclusion",
+    "question": "What did the Cure53 audit conclude about Fluentd's own core code, as opposed to its plugins?",
+    "category": "factual_single_document",
+    "expected_relevant_filenames": ["security-audit.pdf"],
+    "expected_document_type": null,
+    "expected_quartile": null,
+    "expect_insufficient_evidence": false,
+    "filters": {},
+    "notes": "Single-chunk fact on page 2: 'Fluentd itself passed the tests without noteworthy findings.'"
+  },
+  {
+    "question_id": "F04-sec-conn-buf-check",
+    "question": "What bounds-check does the report recommend to prevent buf_pos+1 from exceeding buf_len?",
+    "category": "page_level_evidence",
+    "expected_relevant_filenames": ["security-audit.pdf"],
+    "expected_document_type": null,
+    "expected_quartile": null,
+    "expect_insufficient_evidence": false,
+    "filters": {},
+    "notes": "Single-page fact on page 12, in the FLU-01-005 remediation guidance."
+  },
+  {
+    "question_id": "O01-off-topic-medical",
+    "question": "What is the recommended dosage of ibuprofen for adults?",
+    "category": "off_topic",
+    "expected_relevant_filenames": [],
+    "expected_document_type": null,
+    "expected_quartile": null,
+    "expect_insufficient_evidence": false,
+    "filters": {},
+    "notes": "Deliberately unrelated to both documents. expect_insufficient_evidence=false matches this app's documented, honest behavior (see evaluation/README.md): there is no relevance threshold, so an off-topic query still returns the corpus's nearest neighbors rather than zero results. This question measures false-positive score/rate, not a pass/fail on retrieval."
+  },
+  {
+    "question_id": "A01-not-present-licensing",
+    "question": "What software license governs the shared-mime-info specification document itself?",
+    "category": "answer_not_present",
+    "expected_relevant_filenames": [],
+    "expected_document_type": null,
+    "expected_quartile": null,
+    "expect_insufficient_evidence": false,
+    "filters": {},
+    "notes": "The specification's own licensing terms were not found anywhere in the extracted text during manual review; expect_insufficient_evidence=false for the same mechanical-retrieval reason as O01 (no relevance threshold) -- this question checks whether retrieval confidently returns irrelevant chunks rather than whether it abstains."
+  }
+]

@@ -28,6 +28,7 @@ class DocumentJobRecord:
     embedded_chunks: int
     document_id: str | None
     error_message: str | None
+    timings_json: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -43,6 +44,7 @@ def _to_record(row: DocumentJob) -> DocumentJobRecord:
         embedded_chunks=row.embedded_chunks,
         document_id=row.document_id,
         error_message=row.error_message,
+        timings_json=row.timings_json,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -109,5 +111,19 @@ class DocumentJobsRepository:
             return
         row.status = "failed"
         row.error_message = error_message
+        row.updated_at = datetime.now(UTC)
+        self._db.commit()
+
+    def set_timings(self, job_id: str, *, timings_json: str) -> None:
+        """Stores the job's full RequestTimer.as_dict() breakdown (see
+        app/core/request_timing.py), JSON-encoded, as of the moment this is
+        called — meant to be called once, right after mark_completed() or
+        mark_failed(). A separate method rather than a parameter on those
+        two so every existing caller (CLI, tests) that doesn't care about
+        timing instrumentation keeps working unchanged."""
+        row = self._db.get(DocumentJob, job_id)
+        if row is None:
+            return
+        row.timings_json = timings_json
         row.updated_at = datetime.now(UTC)
         self._db.commit()

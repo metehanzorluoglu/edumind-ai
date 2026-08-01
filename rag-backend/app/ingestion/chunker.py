@@ -3,7 +3,14 @@ from pydantic import BaseModel, Field
 from app.ingestion.loaders.base import PageContent
 
 DEFAULT_CHUNK_SIZE_CHARS = 3000
-DEFAULT_CHUNK_OVERLAP_CHARS = 450
+# Lowered from 450 (15% of chunk_size) to 200 (~6.7%) — the performance
+# investigation's embedding-batching test found no compute speedup from
+# batching itself, but overlap is pure duplicated text re-embedded in every
+# adjacent chunk pair, so trimming it is a direct, if modest, cut to total
+# embedding volume. chunk_size (3000) is intentionally unchanged — see
+# app/core/document_ingestion_jobs.py and app/core/retriever.py, neither of
+# which this value touches.
+DEFAULT_CHUNK_OVERLAP_CHARS = 200
 
 _SPLIT_SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
 

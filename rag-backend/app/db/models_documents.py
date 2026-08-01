@@ -82,5 +82,15 @@ class DocumentJob(Base):
         String(36), ForeignKey("documents.document_id", ondelete="SET NULL"), nullable=True
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Per-stage timing breakdown (see app/core/request_timing.py), stored as
+    # a JSON object of stage name -> duration_ms plus "total_ms" — a column
+    # rather than the in-process dict an earlier version of this feature
+    # used, because uvicorn runs multiple worker processes (see
+    # deploy/oracle/docker-compose.oracle.yml's `--workers 2`): the request
+    # that polls GET /documents/jobs/{job_id} can land on a different
+    # worker process than the one that ran this job's background task, so
+    # only a DB column (or another cross-process store) is visible to both.
+    # Null unless the upload ran with PERFORMANCE_PROFILING=true.
+    timings_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

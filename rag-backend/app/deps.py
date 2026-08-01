@@ -1,7 +1,8 @@
+from collections.abc import AsyncIterator
 from functools import lru_cache
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
@@ -14,6 +15,7 @@ from app.core.image_generation_service import ImageGenerationService
 from app.core.llm_provider import LLMProvider, OllamaLLMProvider
 from app.core.rag_service import RagService
 from app.core.rate_limiter import RateLimiter
+from app.core.request_timing import DISABLED_TIMER, RequestTimer, bind_timer, unbind_timer
 from app.core.retriever import Retriever
 from app.db.conversation_scope_repository import ConversationScopeRepository
 from app.db.conversations_repository import ConversationsRepository
@@ -31,6 +33,53 @@ from app.vectorstore.qdrant_client import QdrantVectorStore
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 DBSessionDep = Annotated[Session, Depends(get_db)]
+
+
+async def get_request_timer(request: Request) -> AsyncIterator[RequestTimer]:
+    """Binds the ambient "current timer" (see app/core/request_timing.py)
+    for the duration of dependency resolution + the route body — a plain
+    generator dependency, so FastAPI closes it (and resets the contextvar)
+    via the same AsyncExitStack every other yield-dependency in this app
+    uses. A required sub-dependency of get_current_user
+    (app/core/security.py), which is how every authenticated route ends up
+    with one without declaring it directly.
+
+    Deliberately `async def`, not `def`: FastAPI runs a *sync* generator
+    dependency's __enter__ and __exit__ each via their own separate
+    `anyio.to_thread.run_sync()` call, which copies the current contextvars
+    Context fresh for each call — so the Token bind_timer() returns from
+    __enter__'s copy is not valid for unbind_timer()'s reset() in
+    __exit__'s (different) copy: contextvars raises
+    `ValueError: token was created in a different Context`. An `async def`
+    generator dependency instead runs entirely on the event loop, in the
+    one Task/Context that already exists for this request, so bind and
+    unbind happen in the same Context and the Token stays valid. The sync
+    route body reached through this dependency (post_document,
+    post_conversation_message's run_in_threadpool call) still sees the
+    bound timer correctly: anyio copies whatever Context is current *at the
+    moment a thread is dispatched*, which is after this dependency has
+    already bound it.
+
+    When PERFORMANCE_PROFILING is off this binds the shared DISABLED_TIMER
+    singleton rather than constructing a per-request instance — safe
+    because a disabled RequestTimer's stage()/record() never write
+    anything, so there is no shared-mutable-state hazard across concurrent
+    requests, and it means the disabled path allocates nothing at all."""
+    settings = get_settings()
+    timer = (
+        RequestTimer(enabled=True, label=request.url.path)
+        if settings.performance_profiling
+        else DISABLED_TIMER
+    )
+    request.state.timings = timer
+    token = bind_timer(timer)
+    try:
+        yield timer
+    finally:
+        unbind_timer(token)
+
+
+RequestTimerDep = Annotated[RequestTimer, Depends(get_request_timer)]
 
 
 @lru_cache
@@ -81,7 +130,12 @@ RetrieverDep = Annotated[Retriever, Depends(get_retriever)]
 @lru_cache
 def get_llm_provider() -> LLMProvider:
     settings = get_settings()
-    return OllamaLLMProvider(model=settings.ollama_llm_model, base_url=settings.ollama_base_url)
+    return OllamaLLMProvider(
+        model=settings.ollama_llm_model,
+        base_url=settings.ollama_base_url,
+        think=settings.ollama_thinking_enabled,
+        options={"num_predict": settings.ollama_num_predict},
+    )
 
 
 LLMProviderDep = Annotated[LLMProvider, Depends(get_llm_provider)]

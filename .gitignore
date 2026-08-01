@@ -65,3 +65,8 @@ deploy/prod/.env.prod
 # Keep safe environment templates
 !**/.env.example
 !**/.env.*.example
+
+# Oracle VM runtime environment
+deploy/oracle/.env.oracle
+
+deploy/oracle/.env.oracle.before-optimization
