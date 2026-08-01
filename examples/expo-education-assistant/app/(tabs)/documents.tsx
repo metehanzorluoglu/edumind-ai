@@ -63,6 +63,13 @@ async function buildUploadableFileFromPickerAsset(
   return { uri: asset.uri, name: asset.name, type: asset.mimeType ?? 'application/octet-stream' };
 }
 
+/** Maps DocumentJobResponse.stage to display text for the 'processing' upload state below. */
+const STAGE_LABELS: Record<'embedding' | 'indexing' | 'persisting', string> = {
+  embedding: 'Embedding',
+  indexing: 'Indexing',
+  persisting: 'Saving',
+};
+
 /** Whatever the user most recently picked or dropped — one file at a time, from either path (see requirement that picker and drop share one selection/upload flow). `size`/`mimeType` are `null` when the source couldn't report them (some native pickers omit size). */
 interface SelectedFile {
   file: UploadableFile;
@@ -358,7 +365,7 @@ export default function DocumentsScreen() {
     );
   }
 
-  const isUploading = uploadState.status === 'uploading';
+  const isUploading = uploadState.status === 'uploading' || uploadState.status === 'processing';
   const canUpload = selectedFile !== null && !fileError && !isUploading;
   const chooseFileButton = (
     <Pressable style={styles.secondaryButton} onPress={handlePickFile} disabled={isUploading}>
@@ -371,8 +378,8 @@ export default function DocumentsScreen() {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Upload</Text>
         <Text style={styles.hint}>
-          Ingestion is synchronous — &quot;Uploading&quot; covers parsing, chunking, embedding, and
-          indexing. There is no background job queue to poll.
+          Parsing and duplicate checks happen immediately; embedding and indexing run in the
+          background afterward and can take a while on this hardware — progress is shown below.
         </Text>
 
         {Platform.OS === 'web'
@@ -558,7 +565,18 @@ export default function DocumentsScreen() {
         {uploadState.status === 'uploading' && (
           <View style={styles.centered}>
             <ActivityIndicator />
-            <Text style={styles.hint}>Uploading and ingesting…</Text>
+            <Text style={styles.hint}>Uploading…</Text>
+          </View>
+        )}
+        {uploadState.status === 'processing' && (
+          <View style={styles.centered}>
+            <ActivityIndicator />
+            <Text style={styles.hint}>
+              {STAGE_LABELS[uploadState.job.stage]}
+              {uploadState.job.total_chunks > 0
+                ? ` — ${uploadState.job.embedded_chunks} of ${uploadState.job.total_chunks} chunk(s)`
+                : ''}
+            </Text>
           </View>
         )}
         {uploadState.status === 'success' && (

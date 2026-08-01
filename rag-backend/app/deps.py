@@ -17,6 +17,7 @@ from app.core.rate_limiter import RateLimiter
 from app.core.retriever import Retriever
 from app.db.conversation_scope_repository import ConversationScopeRepository
 from app.db.conversations_repository import ConversationsRepository
+from app.db.document_jobs_repository import DocumentJobsRepository
 from app.db.documents_repository import DocumentsRepository
 from app.db.project_knowledge_repository import ProjectKnowledgeRepository
 from app.db.project_profile_repository import ProjectProfileRepository
@@ -159,6 +160,20 @@ def get_documents_repository(db: DBSessionDep) -> DocumentsRepository:
 
 
 DocumentsRepositoryDep = Annotated[DocumentsRepository, Depends(get_documents_repository)]
+
+
+def get_document_jobs_repository(db: DBSessionDep) -> DocumentJobsRepository:
+    # Same reasoning as get_documents_repository above: fresh per-request,
+    # never cached across requests. The background job itself (see
+    # app/core/document_ingestion_jobs.py) does NOT use this dependency —
+    # it opens its own session directly via get_session_factory(), since it
+    # runs after the request (and this session) has already closed.
+    return DocumentJobsRepository(db)
+
+
+DocumentJobsRepositoryDep = Annotated[
+    DocumentJobsRepository, Depends(get_document_jobs_repository)
+]
 
 
 def get_conversations_repository(db: DBSessionDep) -> ConversationsRepository:

@@ -1,9 +1,13 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from app.ingestion.loaders.base import ExtractionSource
 from app.ingestion.metadata_schema import DocumentType, JournalQuartile
+
+DocumentJobStatus = Literal["processing", "completed", "failed"]
+DocumentJobStage = Literal["embedding", "indexing", "persisting"]
 
 
 class DocumentUploadResponse(BaseModel):
@@ -21,6 +25,42 @@ class DocumentUploadResponse(BaseModel):
     page_count: int
     chunk_count: int
     ingested_at: datetime
+
+
+class DocumentUploadAcceptedResponse(BaseModel):
+    """POST /documents' response: returned as soon as the fast, synchronous
+    part (duplicate check, parsing, chunking — sub-second even for large
+    files) is done. Embedding + Qdrant indexing + the final `documents` row
+    happen afterward in a background job — poll GET /documents/jobs/{job_id}
+    (see DocumentJobResponse) for progress and the eventual result."""
+
+    job_id: str
+    status: DocumentJobStatus
+    source_filename: str
+    document_type: DocumentType
+    journal_quartile: JournalQuartile = None
+    title: str | None = None
+    authors: list[str] = Field(default_factory=list)
+    publication_year: int | None = None
+    source_venue: str | None = None
+    doi: str | None = None
+    source_url: str | None = None
+    page_count: int
+    total_chunks: int
+
+
+class DocumentJobResponse(BaseModel):
+    """GET /documents/jobs/{job_id} — polled by the client until `status` is
+    "completed" (`document` is then populated) or "failed" (`error` is then
+    populated)."""
+
+    job_id: str
+    status: DocumentJobStatus
+    stage: DocumentJobStage
+    total_chunks: int
+    embedded_chunks: int
+    document: DocumentUploadResponse | None = None
+    error: str | None = None
 
 
 class DocumentSummary(BaseModel):

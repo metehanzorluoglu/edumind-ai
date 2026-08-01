@@ -3,6 +3,7 @@ import { useAsyncGuard } from './internal/useAsyncGuard';
 import { EducationAssistantError, RequestCancelledError } from '../client/errors';
 import type { EducationAssistantClient } from '../client/EducationAssistantClient';
 import type {
+  DocumentJobResponse,
   DocumentMetadataPreviewResponse,
   DocumentSummary,
   DocumentUploadMetadata,
@@ -20,8 +21,10 @@ export type DocumentsListState =
 
 export type UploadState =
   | { status: 'idle' }
-  /** Synchronous ingestion: uploading covers the whole parse+embed+index pipeline, not just the HTTP transfer. There is no separate queued/processing state because the backend has no background job queue. */
+  /** Covers the initial POST /documents call only — the fast, synchronous part (duplicate check, parsing, chunking). Transitions to 'processing' as soon as the backend hands back a job id. */
   | { status: 'uploading' }
+  /** Ingestion (embedding + Qdrant indexing) is running as a backend background job — `job` is the most recently polled GET /documents/jobs/{job_id} result, updated via uploadDocument()'s onProgress callback. Can last anywhere from seconds to several minutes on CPU-only hardware. */
+  | { status: 'processing'; job: DocumentJobResponse }
   | { status: 'success'; document: DocumentUploadResponse }
   | { status: 'cancelled' }
   | { status: 'error'; error: EducationAssistantError };
@@ -47,10 +50,11 @@ export interface UseEducationDocumentsResult {
   uploadState: UploadState;
   /**
    * Uploads one document. The promise resolves only once ingestion is
-   * fully complete (chunked, embedded, indexed) — POST /documents is
-   * synchronous on the backend, so there is nothing to poll. Does not
-   * automatically refresh the list; call refresh() afterward if the UI
-   * should reflect the new document.
+   * fully complete (chunked, embedded, indexed) — the backend runs
+   * embedding + indexing as a background job, so uploadState moves
+   * 'uploading' -> 'processing' (see UploadState) -> 'success' while this
+   * polls under the hood. Does not automatically refresh the list; call
+   * refresh() afterward if the UI should reflect the new document.
    */
   upload: (file: UploadableFile, metadata: DocumentUploadMetadata) => void;
   cancelUpload: () => void;
@@ -154,7 +158,13 @@ export function useEducationDocuments(
       setUploadState({ status: 'uploading' });
 
       client
-        .uploadDocument(file, metadata, { signal })
+        .uploadDocument(file, metadata, {
+          signal,
+          onProgress: (job) => {
+            if (!isCurrent()) return;
+            setUploadState({ status: 'processing', job });
+          },
+        })
         .then((document) => {
           if (!isCurrent()) return;
           setUploadState({ status: 'success', document });

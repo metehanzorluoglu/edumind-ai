@@ -2,7 +2,11 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { useEducationDocuments } from '../../src/hooks/useEducationDocuments';
 import type { EducationAssistantClient } from '../../src/client/EducationAssistantClient';
-import type { DocumentSummary, DocumentUploadResponse } from '../../src/types/documents';
+import type {
+  DocumentJobResponse,
+  DocumentSummary,
+  DocumentUploadResponse,
+} from '../../src/types/documents';
 
 const uploadResponse: DocumentUploadResponse = {
   document_id: 'doc-1',
@@ -44,7 +48,7 @@ describe('useEducationDocuments', () => {
     await waitFor(() => expect(result.current.listState.status).toBe('success'));
   });
 
-  it('upload() is synchronous-ingestion-honest: uploading then success, with no intermediate queued/progress state', async () => {
+  it('upload() transitions uploading -> success', async () => {
     const uploadDocument = vi.fn().mockResolvedValue(uploadResponse);
     const client = {
       uploadDocument,
@@ -64,6 +68,50 @@ describe('useEducationDocuments', () => {
     const state = result.current.uploadState;
     if (state.status !== 'success') throw new Error('expected success');
     expect(state.document.document_id).toBe('doc-1');
+  });
+
+  it('upload() surfaces backend ingestion-job progress via a processing state before resolving', async () => {
+    const progressJob: DocumentJobResponse = {
+      job_id: 'job-1',
+      status: 'processing',
+      stage: 'embedding',
+      total_chunks: 272,
+      embedded_chunks: 96,
+      document: null,
+      error: null,
+    };
+    const uploadDocument = vi
+      .fn()
+      .mockImplementation(
+        (
+          _file: unknown,
+          _metadata: unknown,
+          options: { onProgress?: (job: DocumentJobResponse) => void }
+        ) => {
+          options.onProgress?.(progressJob);
+          return Promise.resolve(uploadResponse);
+        }
+      );
+    const client = {
+      uploadDocument,
+      listDocuments: vi.fn(),
+    } as unknown as EducationAssistantClient;
+    const { result } = renderHook(() => useEducationDocuments(client));
+
+    act(() => {
+      result.current.upload(
+        { uri: 'file:///tmp/paper.pdf', name: 'paper.pdf', type: 'application/pdf' },
+        { documentType: 'journal_article' }
+      );
+    });
+
+    await waitFor(() => expect(result.current.uploadState.status).toBe('processing'));
+    const processingState = result.current.uploadState;
+    if (processingState.status !== 'processing') throw new Error('expected processing');
+    expect(processingState.job.embedded_chunks).toBe(96);
+    expect(processingState.job.total_chunks).toBe(272);
+
+    await waitFor(() => expect(result.current.uploadState.status).toBe('success'));
   });
 
   it('upload() failure produces an error state', async () => {

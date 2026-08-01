@@ -16,6 +16,7 @@ import type { StatusResponse } from '../types/status';
 import type { SearchRequest, SearchResponse } from '../types/search';
 import type {
   DocumentDeleteResponse,
+  DocumentJobResponse,
   DocumentListResponse,
   DocumentMetadataPreviewResponse,
   DocumentUploadMetadata,
@@ -64,6 +65,20 @@ const DEFAULT_TIMEOUT_MS = 30_000;
  */
 export const DEFAULT_IMAGE_GENERATION_TIMEOUT_MS = 300_000;
 
+/**
+ * How often uploadDocument() polls GET /documents/jobs/{job_id} once
+ * POST /documents has handed back a job id. Ingestion (embedding + Qdrant
+ * indexing) happens in a backend background task and can take anywhere
+ * from seconds to several minutes on CPU-only hardware — polling keeps
+ * each individual HTTP request short (well within DEFAULT_TIMEOUT_MS)
+ * regardless of how long the job as a whole takes.
+ */
+const DOCUMENT_JOB_POLL_INTERVAL_MS = 1500;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export interface EducationAssistantClientOptions {
   /** Backend base URL, e.g. "http://192.168.1.20:8000". No trailing slash required. */
   baseUrl: string;
@@ -94,6 +109,14 @@ export interface RequestOptions {
    * field entirely.
    */
   timeoutMs?: number;
+  /**
+   * Only read by uploadDocument(). Called with each polled
+   * GET /documents/jobs/{job_id} result while ingestion is still in
+   * progress, so a caller can show live stage/chunk-count progress instead
+   * of a single generic "uploading" state. Optional — omitting it changes
+   * nothing about uploadDocument()'s own behavior or return value.
+   */
+  onProgress?: (job: DocumentJobResponse) => void;
 }
 
 /** Non-null only when the runtime restricted the base URL scheme/host in a way worth surfacing. */
@@ -233,7 +256,19 @@ export class EducationAssistantClient {
     return data;
   }
 
-  /** POST /documents (multipart) — synchronous ingestion; resolves only once ingestion is complete. */
+  /**
+   * POST /documents (multipart), then polls GET /documents/jobs/{job_id}
+   * until ingestion finishes. The initial POST returns almost immediately
+   * (duplicate check, parsing, and chunking are the only synchronous parts
+   * on the backend) — embedding + Qdrant indexing happen in a background
+   * job afterward, since that can take minutes on CPU-only hardware and
+   * must never hold one HTTP request open for it. The promise this returns
+   * still resolves only once ingestion is fully complete (same contract as
+   * before this became async), or rejects — with a NotFoundError if the
+   * job disappears, or a BackendError carrying the backend's failure
+   * reason if ingestion itself failed. Pass `options.onProgress` to
+   * observe stage/chunk-count updates while it's in flight.
+   */
   async uploadDocument(
     file: UploadableFile,
     metadata: DocumentUploadMetadata,
@@ -254,13 +289,33 @@ export class EducationAssistantClient {
     if (metadata.doi !== undefined) formData.append('doi', metadata.doi);
     if (metadata.sourceUrl !== undefined) formData.append('source_url', metadata.sourceUrl);
 
-    const { data } = await requestMultipart<DocumentUploadResponse>(this.context, {
+    const { data: accepted } = await requestMultipart<{ job_id: string }>(this.context, {
       method: 'POST',
       path: '/documents',
       formData,
       signal: options.signal,
     });
-    return data;
+
+    for (;;) {
+      const { data: job } = await requestJson<DocumentJobResponse>(this.context, {
+        method: 'GET',
+        path: `/documents/jobs/${encodeURIComponent(accepted.job_id)}`,
+        signal: options.signal,
+      });
+
+      if (job.status === 'completed' && job.document) {
+        return job.document;
+      }
+      if (job.status === 'failed') {
+        throw new BackendError(job.error ?? 'Document ingestion failed', {
+          statusCode: null,
+          requestId: null,
+        });
+      }
+
+      options.onProgress?.(job);
+      await sleep(DOCUMENT_JOB_POLL_INTERVAL_MS);
+    }
   }
 
   /**

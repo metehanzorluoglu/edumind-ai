@@ -804,8 +804,42 @@ export interface paths {
         /** Get Documents */
         get: operations["get_documents_documents_get"];
         put?: never;
-        /** Post Document */
+        /**
+         * Post Document
+         * @description Does the fast, synchronous part of ingestion only (duplicate check,
+         *     parsing, chunking — measured under a second even for a 290-page PDF on
+         *     this hardware) and returns as soon as that's done. Embedding + Qdrant
+         *     indexing + the final `documents` row happen afterward in a background
+         *     task (see app/core/document_ingestion_jobs.py) — embedding alone can
+         *     take minutes on CPU-only hardware, and holding the HTTP request open for
+         *     that is what caused the 30s client-side upload timeout this replaces.
+         *     Poll GET /documents/jobs/{job_id} for progress and the eventual result.
+         */
         post: operations["post_document_documents_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/documents/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Document Job
+         * @description Polled by the client after POST /documents returns, until `status` is
+         *     "completed" (`document` is then populated) or "failed" (`error` is then
+         *     populated). Ownership-scoped like every other document endpoint — a job
+         *     that doesn't exist *or* belongs to a different user is indistinguishable
+         *     (see DocumentJobsRepository.get()).
+         */
+        get: operations["get_document_job_documents_jobs__job_id__get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1243,6 +1277,33 @@ export interface components {
             /** Deleted Chunks */
             deleted_chunks: number;
         };
+        /**
+         * DocumentJobResponse
+         * @description GET /documents/jobs/{job_id} — polled by the client until `status` is
+         *     "completed" (`document` is then populated) or "failed" (`error` is then
+         *     populated).
+         */
+        DocumentJobResponse: {
+            /** Job Id */
+            job_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "processing" | "completed" | "failed";
+            /**
+             * Stage
+             * @enum {string}
+             */
+            stage: "embedding" | "indexing" | "persisting";
+            /** Total Chunks */
+            total_chunks: number;
+            /** Embedded Chunks */
+            embedded_chunks: number;
+            document?: components["schemas"]["DocumentUploadResponse"] | null;
+            /** Error */
+            error?: string | null;
+        };
         /** DocumentListResponse */
         DocumentListResponse: {
             /** Documents */
@@ -1320,6 +1381,48 @@ export interface components {
              * Format: date-time
              */
             ingested_at: string;
+        };
+        /**
+         * DocumentUploadAcceptedResponse
+         * @description POST /documents' response: returned as soon as the fast, synchronous
+         *     part (duplicate check, parsing, chunking — sub-second even for large
+         *     files) is done. Embedding + Qdrant indexing + the final `documents` row
+         *     happen afterward in a background job — poll GET /documents/jobs/{job_id}
+         *     (see DocumentJobResponse) for progress and the eventual result.
+         */
+        DocumentUploadAcceptedResponse: {
+            /** Job Id */
+            job_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "processing" | "completed" | "failed";
+            /** Source Filename */
+            source_filename: string;
+            /**
+             * Document Type
+             * @enum {string}
+             */
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document";
+            /** Journal Quartile */
+            journal_quartile?: ("Q1" | "Q2") | null;
+            /** Title */
+            title?: string | null;
+            /** Authors */
+            authors?: string[];
+            /** Publication Year */
+            publication_year?: number | null;
+            /** Source Venue */
+            source_venue?: string | null;
+            /** Doi */
+            doi?: string | null;
+            /** Source Url */
+            source_url?: string | null;
+            /** Page Count */
+            page_count: number;
+            /** Total Chunks */
+            total_chunks: number;
         };
         /** DocumentUploadResponse */
         DocumentUploadResponse: {
@@ -2092,7 +2195,7 @@ export interface components {
             vision_model: string | null;
             /** Vision Model Available */
             vision_model_available: boolean | null;
-            /** Image Generation Enabled — backend source of truth the frontend gates its image-gen UI on (see rag-backend app/api/routes_status.py). */
+            /** Image Generation Enabled */
             image_generation_enabled: boolean;
             /** Text Model Available */
             text_model_available: boolean;
@@ -4005,12 +4108,45 @@ export interface operations {
         };
         responses: {
             /** @description Successful Response */
-            201: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DocumentUploadResponse"];
+                    "application/json": components["schemas"]["DocumentUploadAcceptedResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_document_job_documents_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentJobResponse"];
                 };
             };
             /** @description Validation Error */

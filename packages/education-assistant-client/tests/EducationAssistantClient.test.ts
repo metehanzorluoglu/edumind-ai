@@ -160,38 +160,50 @@ describe('listDocuments / uploadDocument', () => {
     expect(url.searchParams.get('offset')).toBe('20');
   });
 
-  it('uploadDocument sends multipart form data with joined authors and no manual Content-Type', async () => {
-    // jsdom's FormData is spec-strict and rejects the { uri, name, type }
-    // shape React Native's own FormData polyfill accepts natively (only a
-    // real Blob/File is valid per the browser spec jsdom emulates) — swap
-    // in a minimal recording fake so this test can verify the SDK's field
-    // names and value-joining logic, which is the actual RN code path.
-    class FakeFormData {
-      private entries: [string, unknown][] = [];
-      append(key: string, value: unknown): void {
-        this.entries.push([key, value]);
-      }
-      get(key: string): unknown {
-        return this.entries.find(([k]) => k === key)?.[1] ?? null;
-      }
+  // jsdom's FormData is spec-strict and rejects the { uri, name, type }
+  // shape React Native's own FormData polyfill accepts natively (only a
+  // real Blob/File is valid per the browser spec jsdom emulates) — swap
+  // in a minimal recording fake so these tests can verify the SDK's field
+  // names and value-joining logic, which is the actual RN code path.
+  class FakeFormData {
+    private entries: [string, unknown][] = [];
+    append(key: string, value: unknown): void {
+      this.entries.push([key, value]);
     }
+    get(key: string): unknown {
+      return this.entries.find(([k]) => k === key)?.[1] ?? null;
+    }
+  }
+
+  const completedDocument = {
+    document_id: 'doc-1',
+    source_filename: 'paper.pdf',
+    file_format: 'pdf',
+    document_type: 'journal_article',
+    authors: ['A. One', 'B. Two'],
+    page_count: 3,
+    chunk_count: 5,
+    ingested_at: '2026-01-01T00:00:00Z',
+  };
+
+  it('uploadDocument POSTs multipart form data with joined authors and no manual Content-Type, then resolves once the polled job completes', async () => {
     vi.stubGlobal('FormData', FakeFormData);
 
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse(
-        {
-          document_id: 'doc-1',
-          source_filename: 'paper.pdf',
-          file_format: 'pdf',
-          document_type: 'journal_article',
-          authors: ['A. One', 'B. Two'],
-          page_count: 3,
-          chunk_count: 5,
-          ingested_at: '2026-01-01T00:00:00Z',
-        },
-        201
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({ job_id: 'job-1', status: 'processing', source_filename: 'paper.pdf' }, 202)
       )
-    );
+      .mockResolvedValueOnce(
+        jsonResponse({
+          job_id: 'job-1',
+          status: 'completed',
+          stage: 'persisting',
+          total_chunks: 5,
+          embedded_chunks: 5,
+          document: completedDocument,
+          error: null,
+        })
+      );
 
     const client = makeClient();
     const result = await client.uploadDocument(
@@ -200,11 +212,72 @@ describe('listDocuments / uploadDocument', () => {
     );
 
     expect(result.document_id).toBe('doc-1');
-    const [, init] = fetchMock.mock.calls[0]!;
-    expect(init.headers['Content-Type']).toBeUndefined();
-    const formData = init.body as InstanceType<typeof FakeFormData>;
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    const [postUrl, postInit] = fetchMock.mock.calls[0]!;
+    expect(postUrl).toBe('http://localhost:8000/documents');
+    expect(postInit.headers['Content-Type']).toBeUndefined();
+    const formData = postInit.body as InstanceType<typeof FakeFormData>;
     expect(formData.get('document_type')).toBe('journal_article');
     expect(formData.get('authors')).toBe('A. One, B. Two');
+
+    const [pollUrl, pollInit] = fetchMock.mock.calls[1]!;
+    expect(pollUrl).toBe('http://localhost:8000/documents/jobs/job-1');
+    expect(pollInit.method).toBe('GET');
+  });
+
+  it('uploadDocument keeps polling while processing, calling onProgress, until the job fails', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('FormData', FakeFormData);
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ job_id: 'job-2', status: 'processing' }, 202))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          job_id: 'job-2',
+          status: 'processing',
+          stage: 'embedding',
+          total_chunks: 10,
+          embedded_chunks: 4,
+          document: null,
+          error: null,
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          job_id: 'job-2',
+          status: 'failed',
+          stage: 'embedding',
+          total_chunks: 10,
+          embedded_chunks: 4,
+          document: null,
+          error: 'Ollama embedding provider unreachable',
+        })
+      );
+
+    const onProgress = vi.fn();
+    const client = makeClient();
+    const uploadPromise = client
+      .uploadDocument(
+        { uri: 'file:///tmp/paper.pdf', name: 'paper.pdf', type: 'application/pdf' },
+        { documentType: 'journal_article' },
+        { onProgress }
+      )
+      .catch((error: unknown) => error);
+
+    // Let the POST + first poll resolve, then fast-forward past the
+    // inter-poll sleep so the second (terminal) poll fires without the
+    // test actually waiting DOCUMENT_JOB_POLL_INTERVAL_MS in real time.
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(5000);
+
+    const result = await uploadPromise;
+    expect(result).toBeInstanceOf(BackendError);
+    expect((result as BackendError).message).toBe('Ollama embedding provider unreachable');
+    expect(onProgress).toHaveBeenCalledTimes(1);
+    expect(onProgress.mock.calls[0]![0]).toMatchObject({ status: 'processing', embedded_chunks: 4 });
+
+    vi.useRealTimers();
   });
 
   it('previewDocumentMetadata posts multipart form data and returns extracted fields', async () => {

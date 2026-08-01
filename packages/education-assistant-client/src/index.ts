@@ -86,9 +86,11 @@ export type {
 } from './types/search';
 export type {
   DocumentDeleteResponse,
+  DocumentJobResponse,
   DocumentListResponse,
   DocumentMetadataPreviewResponse,
   DocumentSummary,
+  DocumentUploadAcceptedResponse,
   DocumentUploadMetadata,
   DocumentUploadResponse,
   ExtractionSource,

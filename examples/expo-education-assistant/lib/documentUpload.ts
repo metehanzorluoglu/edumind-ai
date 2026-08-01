@@ -4,10 +4,11 @@ import { ACCEPTED_UPLOAD_EXTENSIONS } from './enums';
  * Frontend-only guard. The backend enforces no upload size limit today
  * (see rag-backend/app/ingestion/metadata_schema.py — file_size_bytes is
  * only validated as non-negative) — this exists purely to reject an
- * obviously-doomed upload early (a multi-minute transfer against
- * EducationAssistantClient's 30s request timeout, or excessive browser
- * memory pressure while building the multipart body) rather than to mirror
- * a real server-side cap.
+ * obviously-doomed upload early (excessive browser memory pressure while
+ * building the multipart body, or a multi-minute raw transfer) rather than
+ * to mirror a real server-side cap. Ingestion itself (embedding + indexing)
+ * runs as a backend background job and isn't bounded by this at all — see
+ * EducationAssistantClient.uploadDocument()'s doc comment.
  */
 export const MAX_UPLOAD_FILE_SIZE_BYTES = 20 * 1024 * 1024; // 20 MB
 

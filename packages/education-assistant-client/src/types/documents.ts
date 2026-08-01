@@ -2,6 +2,9 @@ import type { DocumentType, JournalQuartile } from './citations';
 import type { components } from './generated';
 
 export type DocumentUploadResponse = components['schemas']['DocumentUploadResponse'];
+export type DocumentUploadAcceptedResponse =
+  components['schemas']['DocumentUploadAcceptedResponse'];
+export type DocumentJobResponse = components['schemas']['DocumentJobResponse'];
 export type DocumentSummary = components['schemas']['DocumentSummary'];
 export type DocumentListResponse = components['schemas']['DocumentListResponse'];
 export type DocumentDeleteResponse = components['schemas']['DocumentDeleteResponse'];

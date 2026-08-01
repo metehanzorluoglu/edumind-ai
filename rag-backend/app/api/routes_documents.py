@@ -1,12 +1,17 @@
+import logging
 import tempfile
+import time
+import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, UploadFile, status
 
 from app.core.document_deletion import delete_document_by_id
+from app.core.document_ingestion_jobs import run_ingestion_job
 from app.core.security import CurrentUserDep, get_current_user
 from app.deps import (
+    DocumentJobsRepositoryDep,
     DocumentsRepositoryDep,
     EmbeddingProviderDep,
     ScopesRepositoryDep,
@@ -24,11 +29,15 @@ from app.ingestion.metadata_extraction import apply_filename_fallback, confidenc
 from app.ingestion.metadata_schema import DocumentType, JournalQuartile
 from app.schemas.documents import (
     DocumentDeleteResponse,
+    DocumentJobResponse,
     DocumentListResponse,
     DocumentMetadataPreviewResponse,
     DocumentSummary,
+    DocumentUploadAcceptedResponse,
     DocumentUploadResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["documents"], dependencies=[Depends(get_current_user)])
 
@@ -45,11 +54,15 @@ def _read_upload_to_tempfile(file: UploadFile) -> Path:
 
 
 @router.post(
-    "/documents", response_model=DocumentUploadResponse, status_code=status.HTTP_201_CREATED
+    "/documents",
+    response_model=DocumentUploadAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
 )
 def post_document(
+    background_tasks: BackgroundTasks,
     user: CurrentUserDep,
     documents_repository: DocumentsRepositoryDep,
+    document_jobs_repository: DocumentJobsRepositoryDep,
     embedding_provider: EmbeddingProviderDep,
     vector_store: VectorStoreDep,
     file: UploadFile,
@@ -61,10 +74,20 @@ def post_document(
     source_venue: Annotated[str | None, Form()] = None,
     doi: Annotated[str | None, Form()] = None,
     source_url: Annotated[str | None, Form()] = None,
-) -> DocumentUploadResponse:
+) -> DocumentUploadAcceptedResponse:
+    """Does the fast, synchronous part of ingestion only (duplicate check,
+    parsing, chunking — measured under a second even for a 290-page PDF on
+    this hardware) and returns as soon as that's done. Embedding + Qdrant
+    indexing + the final `documents` row happen afterward in a background
+    task (see app/core/document_ingestion_jobs.py) — embedding alone can
+    take minutes on CPU-only hardware, and holding the HTTP request open for
+    that is what caused the 30s client-side upload timeout this replaces.
+    Poll GET /documents/jobs/{job_id} for progress and the eventual result.
+    """
     author_list = [name.strip() for name in authors.split(",") if name.strip()] if authors else None
     tmp_path = _read_upload_to_tempfile(file)
 
+    parse_start = time.monotonic()
     try:
         result = ingest_document(
             tmp_path,
@@ -80,15 +103,6 @@ def post_document(
             source_url=source_url,
             original_filename=file.filename,
         )
-        metadata = result.metadata
-
-        chunks = chunk_pages(result.pages)
-        embeddings = embedding_provider.embed_batch([chunk.text for chunk in chunks])
-        vector_store.upsert_chunks(metadata, chunks, embeddings, user_id=str(user.id))
-        # Only mark the document as ingested once every stage has actually
-        # succeeded — registering earlier would permanently block retries if
-        # embedding or storage failed after extraction.
-        documents_repository.create(user_id=user.id, metadata=metadata, chunk_count=len(chunks))
     except DuplicateDocumentError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except UnsupportedFileTypeError as exc:
@@ -100,10 +114,44 @@ def post_document(
     finally:
         tmp_path.unlink(missing_ok=True)
 
-    return DocumentUploadResponse(
-        document_id=metadata.document_id,
+    metadata = result.metadata
+    logger.info(
+        "POST /documents: parsed %r in %.2fs (%d page(s))",
+        metadata.source_filename,
+        time.monotonic() - parse_start,
+        metadata.page_count,
+    )
+
+    chunk_start = time.monotonic()
+    chunks = chunk_pages(result.pages)
+    logger.info(
+        "POST /documents: chunked %r into %d chunk(s) in %.3fs",
+        metadata.source_filename,
+        len(chunks),
+        time.monotonic() - chunk_start,
+    )
+
+    job_id = str(uuid.uuid4())
+    document_jobs_repository.create(
+        job_id=job_id,
+        user_id=user.id,
         source_filename=metadata.source_filename,
-        file_format=metadata.file_format,
+        total_chunks=len(chunks),
+    )
+    background_tasks.add_task(
+        run_ingestion_job,
+        job_id=job_id,
+        user_id=user.id,
+        metadata=metadata,
+        chunks=chunks,
+        embedding_provider=embedding_provider,
+        vector_store=vector_store,
+    )
+
+    return DocumentUploadAcceptedResponse(
+        job_id=job_id,
+        status="processing",
+        source_filename=metadata.source_filename,
         document_type=metadata.document_type,
         journal_quartile=metadata.journal_quartile,
         title=metadata.title,
@@ -113,8 +161,58 @@ def post_document(
         doi=metadata.doi,
         source_url=metadata.source_url,
         page_count=metadata.page_count,
-        chunk_count=len(chunks),
-        ingested_at=metadata.ingested_at,
+        total_chunks=len(chunks),
+    )
+
+
+@router.get("/documents/jobs/{job_id}", response_model=DocumentJobResponse)
+def get_document_job(
+    job_id: str,
+    user: CurrentUserDep,
+    document_jobs_repository: DocumentJobsRepositoryDep,
+    documents_repository: DocumentsRepositoryDep,
+) -> DocumentJobResponse:
+    """Polled by the client after POST /documents returns, until `status` is
+    "completed" (`document` is then populated) or "failed" (`error` is then
+    populated). Ownership-scoped like every other document endpoint — a job
+    that doesn't exist *or* belongs to a different user is indistinguishable
+    (see DocumentJobsRepository.get())."""
+    job = document_jobs_repository.get(user.id, job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No ingestion job found with job_id '{job_id}'",
+        )
+
+    document_response: DocumentUploadResponse | None = None
+    if job.status == "completed" and job.document_id is not None:
+        record = documents_repository.get(user.id, job.document_id)
+        if record is not None:
+            document_response = DocumentUploadResponse(
+                document_id=record.document_id,
+                source_filename=record.source_filename,
+                file_format=record.file_format,
+                document_type=record.document_type,  # type: ignore[arg-type]
+                journal_quartile=record.journal_quartile,  # type: ignore[arg-type]
+                title=record.title,
+                authors=record.authors,
+                publication_year=record.publication_year,
+                source_venue=record.source_venue,
+                doi=record.doi,
+                source_url=record.source_url,
+                page_count=record.page_count,
+                chunk_count=record.chunk_count,
+                ingested_at=record.ingested_at,
+            )
+
+    return DocumentJobResponse(
+        job_id=job.job_id,
+        status=job.status,  # type: ignore[arg-type]
+        stage=job.stage,  # type: ignore[arg-type]
+        total_chunks=job.total_chunks,
+        embedded_chunks=job.embedded_chunks,
+        document=document_response,
+        error=job.error_message,
     )
 
 

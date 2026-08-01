@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, Uuid
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -54,3 +54,33 @@ class Document(Base):
     page_count: Mapped[int] = mapped_column(Integer, nullable=False)
     file_format: Mapped[str] = mapped_column(String(20), nullable=False)
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DocumentJob(Base):
+    """Tracks one background ingestion run (embed -> index -> persist) so
+    POST /documents can return as soon as the fast, synchronous part (parse,
+    duplicate check, chunk — all sub-second, see app/core/document_ingestion_jobs.py)
+    is done, instead of blocking the HTTP request for the minutes embedding
+    can take on CPU-only hardware. `document_id` stays null until `status`
+    is "completed" — the same "only register once every stage succeeded"
+    rule the `documents` table itself already follows (see
+    app/api/routes_documents.py)."""
+
+    __tablename__ = "document_jobs"
+    __table_args__ = (Index("ix_document_jobs_user_id_created_at", "user_id", "created_at"),)
+
+    job_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="processing")
+    stage: Mapped[str] = mapped_column(String(20), nullable=False, default="embedding")
+    total_chunks: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedded_chunks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    document_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("documents.document_id", ondelete="SET NULL"), nullable=True
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
