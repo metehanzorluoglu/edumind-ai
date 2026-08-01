@@ -148,6 +148,8 @@ def get_vision_service() -> VisionService:
         model=settings.ollama_vision_model,
         base_url=settings.ollama_base_url,
         timeout_seconds=settings.vision_request_timeout_seconds,
+        generation_timeout_seconds=settings.vision_generation_timeout_seconds,
+        num_predict=settings.vision_num_predict,
     )
 
 

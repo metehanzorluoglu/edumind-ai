@@ -93,6 +93,15 @@ class ChatDoneEvent(BaseModel):
 class ChatErrorEvent(BaseModel):
     type: Literal["error"] = "error"
     message: str
+    # Backend-only error classification (see app/core/errors.py's
+    # VisionErrorCategory) — only ever populated for a vision-routed
+    # failure today; None for every other error path (including every
+    # text-chat error), and always None-safe for any existing consumer:
+    # this is a new, additive field on an existing event type, not a
+    # change to `message` or the event's `type`, so a client that only
+    # ever reads `message` (every consumer as of this field's addition)
+    # is entirely unaffected by its presence.
+    error_category: str | None = None
 
 
 ChatEvent = ChatProgressEvent | ChatTokenEvent | ChatSourcesEvent | ChatDoneEvent | ChatErrorEvent

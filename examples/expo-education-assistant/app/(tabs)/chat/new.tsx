@@ -3,6 +3,7 @@ import {
   EducationAssistantError,
   RequestCancelledError,
   StreamingUnsupportedError,
+  thinkingContextForRequest,
   useConversations,
   useEducationDocuments,
 } from 'education-assistant-client';
@@ -49,7 +50,10 @@ import { SAMPLE_DOCUMENT_TITLE, buildSampleUploadFile } from '@/lib/sampleDocume
  * any navigation, rather than being handed off to chat/[id].tsx. */
 type Phase = 'idle' | 'creating' | 'sending' | 'error';
 
-function pendingAssistantTurn(): DisplayMessage {
+function pendingAssistantTurn(
+  messageAttachments: PendingAttachment[],
+  messageUseCorpus: boolean
+): DisplayMessage {
   return {
     id: 'pending-first-assistant-turn',
     role: 'assistant',
@@ -62,6 +66,16 @@ function pendingAssistantTurn(): DisplayMessage {
     streaming: true,
     error: null,
     stage: null,
+    // The thinking placeholder shows from this moment — before the
+    // conversation is even created — until the first token arrives (or the
+    // attempt fails/is cancelled; fail() clears it). The context mirrors
+    // the request runFirstMessage will send, so the placeholder's status
+    // text is truthful about what that request actually triggers.
+    thinking: 'connecting',
+    thinkingContext: thinkingContextForRequest({
+      attachments: toAttachmentUploads(messageAttachments),
+      use_corpus: messageAttachments.length > 0 ? messageUseCorpus : undefined,
+    }),
     attachments: [],
   };
 }
@@ -182,9 +196,12 @@ export default function NewChatScreen() {
   // already renders that inline next to the question, so a would-be second
   // copy in `errorMessage` (reserved for the "conversation was never even
   // created" case, which has no turn card to show it in) would just
-  // duplicate the same text on screen.
+  // duplicate the same text on screen. Also the cancelled path (see
+  // handleCancel), which lands here with "Message generation was
+  // cancelled." — clearing `thinking` is what removes the placeholder and
+  // stops its animation in both cases.
   function fail(message: string): void {
-    patchAssistantTurn({ streaming: false, error: message });
+    patchAssistantTurn({ streaming: false, error: message, thinking: null, thinkingContext: null });
     setPhase('error');
   }
 
@@ -202,7 +219,7 @@ export default function NewChatScreen() {
   ): Promise<void> {
     setPhase('sending');
     setErrorMessage(null);
-    setAssistantTurn(pendingAssistantTurn());
+    setAssistantTurn(pendingAssistantTurn(messageAttachments, messageUseCorpus));
 
     abortControllerRef.current?.abort();
     const controller = new AbortController();
@@ -221,11 +238,13 @@ export default function NewChatScreen() {
       })) {
         switch (event.type) {
           case 'progress':
-            patchAssistantTurn({ stage: event.stage });
+            patchAssistantTurn({ stage: event.stage, thinking: 'waiting_for_first_token' });
             break;
           case 'token':
             content += event.content;
-            patchAssistantTurn({ content, stage: null });
+            // Same patch as the content lands — the placeholder swaps for
+            // the real answer in one render, never two.
+            patchAssistantTurn({ content, stage: null, thinking: null });
             break;
           case 'sources':
             patchAssistantTurn({ sources: event.sources.map(displaySourceFromRetrievedChunk) });
@@ -236,6 +255,7 @@ export default function NewChatScreen() {
               citationWarnings: event.citation_warnings,
               insufficientEvidence: event.insufficient_evidence,
               streaming: false,
+              thinking: null,
             });
             succeed(conversationId);
             return;
@@ -258,6 +278,7 @@ export default function NewChatScreen() {
             citationWarnings: result.citationWarnings,
             insufficientEvidence: result.insufficientEvidence,
             streaming: false,
+            thinking: null,
           });
           succeed(conversationId);
         } catch (bufferedError) {
@@ -303,7 +324,7 @@ export default function NewChatScreen() {
     setSubmittedQuestion(question);
     setSubmittedAttachments(attachmentsSnapshot);
     setSubmittedUseCorpus(useCorpusSnapshot);
-    setAssistantTurn(pendingAssistantTurn());
+    setAssistantTurn(pendingAssistantTurn(attachmentsSnapshot, useCorpusSnapshot));
     setPhase('creating');
 
     try {

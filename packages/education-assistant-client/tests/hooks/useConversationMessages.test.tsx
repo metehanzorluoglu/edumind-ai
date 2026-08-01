@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { useConversationMessages } from '../../src/hooks/useConversationMessages';
+import type { DisplayMessage } from '../../src/hooks/useConversationMessages';
 import type { ChatEvent } from '../../src/types/chat';
 import type { ConversationDetail } from '../../src/types/conversations';
 import type { EducationAssistantClient } from '../../src/client/EducationAssistantClient';
@@ -102,7 +103,12 @@ describe('useConversationMessages', () => {
     // hook must surface each ChatProgressEvent as DisplayMessage.stage so a
     // consumer can render real status instead of a static placeholder, and
     // must clear it back to null once real output starts (there is no
-    // more-specific status once tokens are flowing).
+    // more-specific status once tokens are flowing). It must also drive the
+    // thinking placeholder's explicit state machine: 'connecting' from the
+    // moment the turn exists, 'waiting_for_first_token' from the first
+    // progress event, null once the first token arrives — all on the SAME
+    // assistant message (the placeholder is replaced in place, never by a
+    // second bubble).
     const getConversation = vi.fn().mockResolvedValue(makeDetail());
     let pushEvent: (event: ChatEvent) => void = () => {};
     let finish: () => void = () => {};
@@ -142,22 +148,33 @@ describe('useConversationMessages', () => {
       result.current.sendMessage({ query: 'hi' });
     });
     expect(result.current.messages[1]!.stage).toBeNull();
+    // The placeholder state is live the instant the turn is appended —
+    // before any network round-trip has completed.
+    expect(result.current.messages[1]!.thinking).toBe('connecting');
+    const assistantId = result.current.messages[1]!.id;
 
     act(() => {
       pushEvent({ type: 'progress', stage: 'connected' });
     });
     await waitFor(() => expect(result.current.messages[1]!.stage).toBe('connected'));
+    expect(result.current.messages[1]!.thinking).toBe('waiting_for_first_token');
 
     act(() => {
       pushEvent({ type: 'progress', stage: 'loading_model' });
     });
     await waitFor(() => expect(result.current.messages[1]!.stage).toBe('loading_model'));
+    expect(result.current.messages[1]!.thinking).toBe('waiting_for_first_token');
 
     act(() => {
       pushEvent({ type: 'token', content: 'Hello' });
     });
     await waitFor(() => expect(result.current.messages[1]!.content).toBe('Hello'));
     expect(result.current.messages[1]!.stage).toBeNull();
+    expect(result.current.messages[1]!.thinking).toBeNull();
+    // Same assistant message throughout — the first token replaced the
+    // placeholder in place; no second bubble was ever created.
+    expect(result.current.messages[1]!.id).toBe(assistantId);
+    expect(result.current.messages).toHaveLength(2);
 
     act(() => {
       pushEvent({ type: 'done', citations: [], citation_warnings: [], insufficient_evidence: false });
@@ -185,6 +202,104 @@ describe('useConversationMessages', () => {
     await waitFor(() => expect(result.current.sendState.status).toBe('error'));
     expect(result.current.messages[1]!.error).toBe('model unreachable');
     expect(result.current.messages[1]!.streaming).toBe(false);
+    // A failure before (or during) the stream must clear the placeholder
+    // state — the UI swaps it for the error box, never leaving the
+    // thinking preview running indefinitely.
+    expect(result.current.messages[1]!.thinking).toBeNull();
+  });
+
+  it('cancelSend() stops the in-flight turn and clears its thinking state', async () => {
+    const getConversation = vi.fn().mockResolvedValue(makeDetail());
+    let releaseStream: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    // The abort triggered by cancelSend() surfaces in the loop as a
+    // RequestCancelledError — model that with a generator that rejects its
+    // first iteration once the gate opens.
+    const streamConversationMessage = vi.fn(
+      ({ signal }: { signal?: AbortSignal }) =>
+        (async function* (): AsyncGenerator<ChatEvent, void, void> {
+          await gate;
+          if (signal?.aborted) {
+            const { RequestCancelledError } = await vi.importActual<
+              typeof import('../../src/client/errors')
+            >('../../src/client/errors');
+            throw new RequestCancelledError('Chat stream was cancelled');
+          }
+          yield { type: 'done', citations: [], citation_warnings: [], insufficient_evidence: false };
+        })()
+    );
+    const client = {
+      getConversation,
+      streamConversationMessage,
+    } as unknown as EducationAssistantClient;
+    const { result } = renderHook(() => useConversationMessages(client, 'c1'));
+    await waitFor(() => expect(result.current.loadState.status).toBe('success'));
+
+    act(() => {
+      result.current.sendMessage({ query: 'a long question' });
+    });
+    expect(result.current.messages[1]!.thinking).toBe('connecting');
+
+    act(() => {
+      result.current.cancelSend();
+    });
+    releaseStream();
+    await waitFor(() => expect(result.current.messages[1]!.streaming).toBe(false));
+    expect(result.current.messages[1]!.thinking).toBeNull();
+    expect(result.current.sendState.status).toBe('idle');
+  });
+
+  it('sendMessage() records a truthful thinking context on the assistant turn for each request shape', async () => {
+    const getConversation = vi.fn().mockResolvedValue(makeDetail());
+    const streamConversationMessage = vi.fn(() =>
+      eventsFrom([
+        { type: 'done', citations: [], citation_warnings: [], insufficient_evidence: false },
+      ])
+    );
+    const client = {
+      getConversation,
+      streamConversationMessage,
+    } as unknown as EducationAssistantClient;
+    const { result } = renderHook(() => useConversationMessages(client, 'c1'));
+    await waitFor(() => expect(result.current.loadState.status).toBe('success'));
+    const photo = { uri: 'file:///tmp/photo.png', name: 'photo.png', type: 'image/png' };
+    const lastAssistant = (): DisplayMessage => result.current.messages.at(-1)!;
+
+    // Text-only: retrieval always runs for these.
+    act(() => {
+      result.current.sendMessage({ query: 'plain text question' });
+    });
+    expect(lastAssistant().thinkingContext).toEqual({
+      hasAttachments: false,
+      retrievalEnabled: true,
+    });
+    await waitFor(() => expect(result.current.sendState.status).toBe('idle'));
+
+    // Attachments without use_corpus: vision-only, retrieval skipped.
+    act(() => {
+      result.current.sendMessage({ query: 'what is this?', attachments: [{ file: photo }] });
+    });
+    expect(lastAssistant().thinkingContext).toEqual({
+      hasAttachments: true,
+      retrievalEnabled: false,
+    });
+    await waitFor(() => expect(result.current.sendState.status).toBe('idle'));
+
+    // Attachments with use_corpus: vision AND retrieval both run.
+    act(() => {
+      result.current.sendMessage({
+        query: 'what is this, with sources?',
+        attachments: [{ file: photo }],
+        use_corpus: true,
+      });
+    });
+    expect(lastAssistant().thinkingContext).toEqual({
+      hasAttachments: true,
+      retrievalEnabled: true,
+    });
+    await waitFor(() => expect(result.current.sendState.status).toBe('idle'));
   });
 
   it('retrying (calling sendMessage again) after an error replaces the failed turn instead of stacking a duplicate (milestone V4)', async () => {

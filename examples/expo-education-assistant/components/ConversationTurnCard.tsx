@@ -1,29 +1,15 @@
 import { mapSourcesToCitations, splitAnswerIntoSegments } from 'education-assistant-client';
-import type { ChatStage, DisplayMessage, RetrievedChunk } from 'education-assistant-client';
+import type { DisplayMessage, RetrievedChunk } from 'education-assistant-client';
 import { useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { AttachmentChip } from '@/components/AttachmentChip';
 import { AttachmentLightbox } from '@/components/AttachmentLightbox';
 import { GeneratedImageGallery } from '@/components/GeneratedImageGallery';
 import type { ImageGenerationFormInitialValues } from '@/components/ImageGenerationModal';
 import { MarkdownAnswer } from '@/components/MarkdownAnswer';
 import { SourceCard, UnavailableSourceChip } from '@/components/SourceCard';
+import { ThinkingPlaceholder } from '@/components/ThinkingPlaceholder';
 import type { AttachmentChipInfo, PendingAttachment } from '@/lib/chatAttachments';
-
-// Mirrors app/schemas/chat.py's ChatStage — shown in place of a static
-// "Connecting…" spinner while waiting on a slow (CPU-only Ollama) backend,
-// where a cold model load alone can take tens of seconds and prompt
-// evaluation on a long context well over a minute, with nothing else on
-// the wire in the meantime. A stage this build doesn't recognize (e.g. a
-// future backend addition) falls back to the same generic "Connecting…"
-// text via the `?? 'Connecting…'` below, never a blank label.
-const STAGE_LABELS: Record<ChatStage, string> = {
-  connected: 'Connecting…',
-  retrieving: 'Searching your documents…',
-  processing_context: 'Preparing context…',
-  loading_model: 'Waking up the model…',
-  generating: 'Generating answer…',
-};
 
 /** DisplaySource unifies persisted/live sources but allows a null document_id (a since-deleted document); mapSourcesToCitations only uses document_id for its join key, never for display, so substituting '' here is safe — see types/conversations.ts. */
 function toRetrievedChunk(source: DisplayMessage['sources'][number]): RetrievedChunk {
@@ -132,13 +118,8 @@ export function ConversationTurnCard({
           </>
         ) : (
           <>
-            {assistant?.streaming && answer.length === 0 && (
-              <View style={styles.centered}>
-                <ActivityIndicator />
-                <Text style={styles.hint}>
-                  {(assistant.stage && STAGE_LABELS[assistant.stage]) || 'Connecting…'}
-                </Text>
-              </View>
+            {assistant?.thinking != null && answer.length === 0 && (
+              <ThinkingPlaceholder context={assistant.thinkingContext} />
             )}
 
             {answer.length > 0 && (
@@ -232,8 +213,6 @@ const styles = StyleSheet.create({
   },
   assistantBlock: {},
   imagePromptCaption: { fontSize: 13, color: '#475569', fontStyle: 'italic', marginBottom: 8 },
-  hint: { color: '#64748B', textAlign: 'center', marginTop: 24 },
-  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 24 },
   note: { fontSize: 12, color: '#475569', marginTop: 12, fontStyle: 'italic' },
   errorBox: { backgroundColor: '#FEF2F2', borderRadius: 8, padding: 12 },
   errorTitle: { fontWeight: '700', color: '#B91C1C' },

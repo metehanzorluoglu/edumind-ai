@@ -38,6 +38,8 @@ What ollama/httpx actually raise here — verified against the installed
 import httpx
 import ollama
 
+from app.core.errors import VisionErrorCategory
+
 _OOM_KEYWORDS = ("out of memory", "cuda error", "oom", "insufficient memory", "failed to allocate")
 _NOT_FOUND_KEYWORDS = ("not found", "no such model")
 
@@ -87,3 +89,61 @@ def classify_ollama_error(exc: Exception, *, model: str, action: str = "Chat gen
         return f"Ollama returned an error running '{model}': {message}"
 
     return f"{action} with model '{model}' failed: {exc}"
+
+
+def classify_vision_error_category(
+    exc: Exception, *, received_first_token: bool = False
+) -> VisionErrorCategory:
+    """The category counterpart to classify_ollama_error above — same
+    exception-type branches, but returns one of the task-required
+    VisionErrorCategory values instead of a message string (see
+    app/services/vision_service.py, the only caller). Kept as a separate
+    function rather than folded into classify_ollama_error itself so
+    app/core/llm_provider.py and app/core/image_generation_service.py
+    (the other two callers of classify_ollama_error) are entirely
+    unaffected by this — they have no use for a vision-specific category
+    and their call sites are unchanged.
+
+    `received_first_token`, supplied by the caller (which is the only
+    place that knows whether any ChatResponse chunk had already streamed
+    before this exception was raised — see VisionService.stream_chat),
+    is what distinguishes MODEL_LOAD_OR_PROMPT_EVAL_TIMEOUT from
+    GENERATION_TIMEOUT for an httpx.TimeoutException: Ollama's HTTP API
+    gives no signal of its own for "still loading/evaluating" vs "now
+    decoding" (the same limitation documented for the text pipeline's
+    progress events — see app/schemas/chat.py's ChatProgressEvent), so
+    "did we already see output" is the only distinguishing signal
+    available on this side of the connection."""
+    if isinstance(exc, httpx.TimeoutException):
+        return (
+            VisionErrorCategory.GENERATION_TIMEOUT
+            if received_first_token
+            else VisionErrorCategory.MODEL_LOAD_OR_PROMPT_EVAL_TIMEOUT
+        )
+
+    if isinstance(exc, httpx.ConnectError | ConnectionError):
+        return VisionErrorCategory.OLLAMA_UNAVAILABLE
+
+    if isinstance(exc, ollama.ResponseError):
+        message = (exc.error or str(exc)).lower()
+        if any(keyword in message for keyword in _NOT_FOUND_KEYWORDS):
+            return VisionErrorCategory.OLLAMA_UNAVAILABLE
+        if any(keyword in message for keyword in _OOM_KEYWORDS):
+            return VisionErrorCategory.REQUEST_TOO_LARGE
+        return VisionErrorCategory.OTHER
+
+    if isinstance(exc, httpx.HTTPStatusError):
+        try:
+            body = exc.response.json()
+            message = (
+                (body.get("error") or str(body)) if isinstance(body, dict) else str(body)
+            ).lower()
+        except ValueError:
+            message = (exc.response.text or str(exc)).lower()
+        if any(keyword in message for keyword in _NOT_FOUND_KEYWORDS):
+            return VisionErrorCategory.OLLAMA_UNAVAILABLE
+        if any(keyword in message for keyword in _OOM_KEYWORDS):
+            return VisionErrorCategory.REQUEST_TOO_LARGE
+        return VisionErrorCategory.OTHER
+
+    return VisionErrorCategory.OTHER

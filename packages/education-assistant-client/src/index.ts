@@ -66,11 +66,13 @@ export type {
   UseProjectsResult,
 } from './hooks/useProjects';
 
-export { useConversationMessages } from './hooks/useConversationMessages';
+export { useConversationMessages, thinkingContextForRequest } from './hooks/useConversationMessages';
 export type {
   ConversationLoadState,
   DisplayMessage,
   SendState,
+  ThinkingContext,
+  ThinkingState,
   UseConversationMessagesResult,
 } from './hooks/useConversationMessages';
 

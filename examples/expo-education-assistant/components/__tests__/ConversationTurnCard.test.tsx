@@ -1,6 +1,6 @@
 import type { DisplayMessage } from 'education-assistant-client';
 import { act, create, type ReactTestInstance } from 'react-test-renderer';
-import { Platform } from 'react-native';
+import { ActivityIndicator, Platform } from 'react-native';
 import { ConversationTurnCard } from '../ConversationTurnCard';
 import type { AttachmentChipInfo } from '@/lib/chatAttachments';
 
@@ -196,6 +196,8 @@ describe('ConversationTurnCard attachment lightbox (milestone V4)', () => {
       streaming: false,
       sources: [],
       error: null,
+      thinking: null,
+      thinkingContext: null,
       attachments: [
         {
           id: 'g1',
@@ -290,18 +292,48 @@ function streamingAssistant(overrides: Partial<DisplayMessage> = {}): DisplayMes
     streaming: true,
     error: null,
     stage: null,
+    thinking: 'connecting',
+    thinkingContext: { hasAttachments: false, retrievalEnabled: true },
     attachments: [],
     ...overrides,
   };
 }
 
-// Regression coverage for the indefinite "Connecting…" freeze: while
-// waiting on a slow (CPU-only Ollama) backend, the card must show real
-// backend-reported status (see ChatStage/STAGE_LABELS) instead of a single
-// static string for the entire wait, and must fall back sensibly once real
-// output starts or for a stage this build doesn't recognize.
-describe('ConversationTurnCard progress-stage display', () => {
-  it('shows the generic "Connecting…" label before any stage has been received', async () => {
+// Recursively joins every string descendant of a test-instance subtree —
+// MarkdownAnswer's rendered blocks nest text several levels deep, where
+// textContent()'s direct-children join stops seeing it.
+function deepTextIncludes(node: ReactTestInstance, substring: string): boolean {
+  const join = (n: ReactTestInstance): string =>
+    n.children
+      .map((child) =>
+        typeof child === 'object' && child !== null
+          ? join(child)
+          : typeof child === 'string'
+            ? child
+            : ''
+      )
+      .join('');
+  return join(node).includes(substring);
+}
+
+// Coverage for the thinking preview that replaced the old centered
+// "Connecting…" + spinner pending state: a muted, animated placeholder
+// inside the assistant bubble from submission until the first streamed
+// token, rotating only truthful, context-appropriate status text, with all
+// timers/animations cleaned up on unmount.
+describe('ConversationTurnCard thinking placeholder', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const textOnly = { hasAttachments: false, retrievalEnabled: true };
+  const visionOnly = { hasAttachments: true, retrievalEnabled: false };
+
+  it('shows the placeholder immediately while waiting, and never the old "Connecting…" label or a spinner', async () => {
     let renderer!: ReturnType<typeof create>;
     await act(async () => {
       renderer = create(
@@ -314,87 +346,246 @@ describe('ConversationTurnCard progress-stage display', () => {
       await Promise.resolve();
     });
 
-    expect(queryByText(renderer.root, 'Connecting…')).toBeTruthy();
-  });
-
-  it('shows the label for the assistant turn\'s current stage', async () => {
-    let renderer!: ReturnType<typeof create>;
-    await act(async () => {
-      renderer = create(
-        <ConversationTurnCard
-          userContent="hi"
-          assistant={streamingAssistant({ stage: 'loading_model' })}
-          onCitationPress={() => {}}
-        />
-      );
-      await Promise.resolve();
-    });
-
-    expect(queryByText(renderer.root, 'Waking up the model…')).toBeTruthy();
+    expect(queryByText(renderer.root, 'Understanding your question')).toBeTruthy();
+    // The retired pending state must not leak back in any waiting phase.
     expect(queryByText(renderer.root, 'Connecting…')).toBeNull();
-  });
+    expect(renderer.root.findAllByType(ActivityIndicator)).toHaveLength(0);
 
-  it('updates the displayed label as the stage changes across rerenders', async () => {
-    let renderer!: ReturnType<typeof create>;
+    // Same holds once progress has started but no token has arrived yet
+    // (the waiting_for_first_token phase).
     await act(async () => {
-      renderer = create(
+      renderer.update(
         <ConversationTurnCard
           userContent="hi"
-          assistant={streamingAssistant({ stage: 'retrieving' })}
+          assistant={streamingAssistant({
+            thinking: 'waiting_for_first_token',
+            stage: 'loading_model',
+          })}
           onCitationPress={() => {}}
         />
       );
       await Promise.resolve();
     });
-    expect(queryByText(renderer.root, 'Searching your documents…')).toBeTruthy();
+    expect(queryByText(renderer.root, 'Connecting…')).toBeNull();
+    expect(renderer.root.findAllByType(ActivityIndicator)).toHaveLength(0);
+  });
+
+  it('rotates the status text every ~2.8s and stops on the final message', async () => {
+    let renderer!: ReturnType<typeof create>;
+    await act(async () => {
+      renderer = create(
+        <ConversationTurnCard
+          userContent="hi"
+          assistant={streamingAssistant({ thinkingContext: textOnly })}
+          onCitationPress={() => {}}
+        />
+      );
+      await Promise.resolve();
+    });
+    expect(queryByText(renderer.root, 'Understanding your question')).toBeTruthy();
+
+    await act(async () => {
+      jest.advanceTimersByTime(2800);
+    });
+    expect(queryByText(renderer.root, 'Searching your documents')).toBeTruthy();
+    expect(queryByText(renderer.root, 'Understanding your question')).toBeNull();
+
+    await act(async () => {
+      jest.advanceTimersByTime(2800);
+    });
+    expect(queryByText(renderer.root, 'Preparing a response')).toBeTruthy();
+
+    // Parked on the final status — never cycles back to the start.
+    await act(async () => {
+      jest.advanceTimersByTime(2800 * 4);
+    });
+    expect(queryByText(renderer.root, 'Preparing a response')).toBeTruthy();
+    expect(queryByText(renderer.root, 'Understanding your question')).toBeNull();
+  });
+
+  it('never shows retrieval-specific text for a request that does not use retrieval', async () => {
+    let renderer!: ReturnType<typeof create>;
+    await act(async () => {
+      renderer = create(
+        <ConversationTurnCard
+          userContent="What is in this picture?"
+          assistant={streamingAssistant({ thinkingContext: visionOnly })}
+          onCitationPress={() => {}}
+        />
+      );
+      await Promise.resolve();
+    });
+    expect(queryByText(renderer.root, 'Reviewing the attached images')).toBeTruthy();
+    expect(queryByText(renderer.root, 'Searching your documents')).toBeNull();
+
+    // Walk the entire rotation — document-searching text may not appear at
+    // any point for a vision-only request.
+    for (let i = 0; i < 4; i++) {
+      await act(async () => {
+        jest.advanceTimersByTime(2800);
+      });
+      expect(queryByText(renderer.root, 'Searching your documents')).toBeNull();
+    }
+    expect(queryByText(renderer.root, 'Preparing a response')).toBeTruthy();
+  });
+
+  it('falls back to the always-true status when no context is available', async () => {
+    let renderer!: ReturnType<typeof create>;
+    await act(async () => {
+      renderer = create(
+        <ConversationTurnCard
+          userContent="hi"
+          assistant={streamingAssistant({ thinkingContext: null })}
+          onCitationPress={() => {}}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    expect(queryByText(renderer.root, 'Preparing a response')).toBeTruthy();
+  });
+
+  it('the first streamed token replaces the placeholder in the same card, not a second bubble', async () => {
+    let renderer!: ReturnType<typeof create>;
+    await act(async () => {
+      renderer = create(
+        <ConversationTurnCard
+          userContent="How do plants grow?"
+          assistant={streamingAssistant()}
+          onCitationPress={() => {}}
+        />
+      );
+      await Promise.resolve();
+    });
+    expect(queryByText(renderer.root, 'Understanding your question')).toBeTruthy();
+
+    await act(async () => {
+      renderer.update(
+        <ConversationTurnCard
+          userContent="How do plants grow?"
+          assistant={streamingAssistant({
+            thinking: null,
+            content: 'Based on the information in your uploaded documents, plants need light.',
+          })}
+          onCitationPress={() => {}}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    // Placeholder gone, real answer rendered (by the real MarkdownAnswer)
+    // inside the same card — never both at once.
+    expect(queryByText(renderer.root, 'Understanding your question')).toBeNull();
+    expect(
+      deepTextIncludes(
+        renderer.root,
+        'Based on the information in your uploaded documents, plants need light.'
+      )
+    ).toBe(true);
+  });
+
+  it('removes the placeholder when the turn errors before the first token', async () => {
+    let renderer!: ReturnType<typeof create>;
+    await act(async () => {
+      renderer = create(
+        <ConversationTurnCard
+          userContent="hi"
+          assistant={streamingAssistant()}
+          onCitationPress={() => {}}
+        />
+      );
+      await Promise.resolve();
+    });
+    expect(queryByText(renderer.root, 'Understanding your question')).toBeTruthy();
 
     await act(async () => {
       renderer.update(
         <ConversationTurnCard
           userContent="hi"
-          assistant={streamingAssistant({ stage: 'generating' })}
+          assistant={streamingAssistant({
+            thinking: null,
+            streaming: false,
+            error: 'model unreachable',
+          })}
           onCitationPress={() => {}}
         />
       );
       await Promise.resolve();
     });
-    expect(queryByText(renderer.root, 'Generating answer…')).toBeTruthy();
-    expect(queryByText(renderer.root, 'Searching your documents…')).toBeNull();
+
+    expect(queryByText(renderer.root, 'Understanding your question')).toBeNull();
+    expect(queryByText(renderer.root, 'model unreachable')).toBeTruthy();
   });
 
-  it('falls back to "Connecting…" for a stage this build does not recognize', async () => {
+  it('removes the placeholder when generation is cancelled', async () => {
     let renderer!: ReturnType<typeof create>;
     await act(async () => {
       renderer = create(
         <ConversationTurnCard
           userContent="hi"
-          // A future backend stage this SDK build predates — same
-          // forward-compatible treatment the SSE parser itself gives an
-          // unrecognized stage (see stream.ts's parseChatEvent).
-          assistant={streamingAssistant({ stage: 'some_future_stage' as never })}
+          assistant={streamingAssistant()}
+          onCitationPress={() => {}}
+        />
+      );
+      await Promise.resolve();
+    });
+    expect(queryByText(renderer.root, 'Understanding your question')).toBeTruthy();
+
+    await act(async () => {
+      renderer.update(
+        <ConversationTurnCard
+          userContent="hi"
+          assistant={streamingAssistant({ thinking: null, streaming: false })}
           onCitationPress={() => {}}
         />
       );
       await Promise.resolve();
     });
 
-    expect(queryByText(renderer.root, 'Connecting…')).toBeTruthy();
+    expect(queryByText(renderer.root, 'Understanding your question')).toBeNull();
   });
 
-  it('shows no stage hint once real content has started streaming in', async () => {
+  it('cleans up its rotation timer and dots animation on unmount', async () => {
+    // Baseline: the same card with no pending assistant turn schedules
+    // nothing of its own — whatever the environment itself keeps alive
+    // under fake timers is not this component's responsibility.
+    let control!: ReturnType<typeof create>;
+    await act(async () => {
+      control = create(
+        <ConversationTurnCard userContent="hi" assistant={null} onCitationPress={() => {}} />
+      );
+      await Promise.resolve();
+    });
+    const baseline = jest.getTimerCount();
+    await act(async () => {
+      control.unmount();
+    });
+
     let renderer!: ReturnType<typeof create>;
     await act(async () => {
       renderer = create(
         <ConversationTurnCard
           userContent="hi"
-          assistant={streamingAssistant({ stage: 'generating', content: 'Hello' })}
+          assistant={streamingAssistant()}
           onCitationPress={() => {}}
         />
       );
       await Promise.resolve();
     });
+    // The rotation interval and the dots animation frame are both live.
+    expect(jest.getTimerCount()).toBeGreaterThan(baseline);
 
-    expect(queryByText(renderer.root, 'Generating answer…')).toBeNull();
-    expect(queryByText(renderer.root, 'Connecting…')).toBeNull();
+    await act(async () => {
+      renderer.unmount();
+    });
+    // The unmount's own teardown handling enqueues a couple of one-shot
+    // callbacks; give them time to expire. A leaked interval or animation
+    // loop would keep rescheduling itself forever and never converge.
+    await act(async () => {
+      jest.advanceTimersByTime(60000);
+    });
+    // Everything the placeholder scheduled is gone — no leaked interval,
+    // no orphaned animation frame.
+    expect(jest.getTimerCount()).toBe(baseline);
   });
 });

@@ -24,6 +24,60 @@ export type ConversationLoadState =
   | { status: 'error'; error: EducationAssistantError };
 
 /**
+ * The assistant turn's pre-first-token lifecycle, for the UI's "thinking
+ * preview" placeholder (a muted shadow of the eventual answer shown inside
+ * the same message bubble while waiting on the backend):
+ * - `connecting` — the request was sent but no SSE event has arrived yet;
+ * - `waiting_for_first_token` — progress events have arrived, but no real
+ *   output token has.
+ * null once the turn is past that point — the first token, an error, a
+ * cancellation, or completion all clear it, so the placeholder shows only
+ * during these two states and never alongside real answer text (the first
+ * token clears it in the same patch that sets `content`, so one state
+ * update flips the UI, never two).
+ */
+export type ThinkingState = 'connecting' | 'waiting_for_first_token';
+
+/**
+ * Truthful facts about an in-flight request that the thinking placeholder
+ * needs to pick safe status text — never claims an operation the request
+ * doesn't actually trigger. Computed from the outgoing request by
+ * thinkingContextForRequest() at send time; null for a persisted (already
+ * loaded) message, which is never in a thinking state.
+ */
+export interface ThinkingContext {
+  /** The request carries file attachments (routes it to the vision model). */
+  hasAttachments: boolean;
+  /**
+   * Document retrieval actually runs for this request: always true for a
+   * text-only message (retrieval has always run unconditionally for those —
+   * see PostConversationMessageRequest.use_corpus), true for an attachment
+   * message only with `use_corpus`, false for a vision-only message.
+   */
+  retrievalEnabled: boolean;
+}
+
+/**
+ * Derives a ThinkingContext from an outgoing request — the single source of
+ * truth for which placeholder status texts are truthful about that request
+ * (mirrors the backend's routing: rag-backend's routes_conversations.py runs
+ * retrieval unconditionally for text-only messages, and for attachment
+ * messages only when use_corpus is set). Only the two fields that drive
+ * routing are inspected, so callers that don't hold a complete request
+ * (e.g. a screen building its pending turn before the idempotency key is
+ * minted) may pass just those.
+ */
+export function thinkingContextForRequest(
+  request: Pick<PostConversationMessageRequest, 'attachments' | 'use_corpus'>
+): ThinkingContext {
+  const hasAttachments = (request.attachments?.length ?? 0) > 0;
+  return {
+    hasAttachments,
+    retrievalEnabled: !hasAttachments || request.use_corpus === true,
+  };
+}
+
+/**
  * One turn as rendered by the UI — unifies a message already persisted and
  * returned by GET /conversations/{id} with one still streaming in from a
  * just-sent request, so chat/[id].tsx can render a single list without a
@@ -45,13 +99,34 @@ export interface DisplayMessage {
   error: string | null;
   /**
    * The most recent ChatProgressEvent stage received for this turn, e.g.
-   * 'loading_model' or 'generating' — for the UI to show instead of a
-   * generic "Connecting…" spinner while `streaming` is true and `content`
-   * is still empty. null for a persisted (already-loaded) message, and
-   * cleared back to null the moment the first token arrives (there is no
-   * more-specific status once real output is flowing).
+   * 'loading_model' or 'generating'. null for a persisted (already-loaded)
+   * message, and cleared back to null the moment the first token arrives
+   * (there is no more-specific status once real output is flowing). Still
+   * maintained for SDK consumers, but the UI's thinking placeholder no
+   * longer displays these raw stages — their fixed advisory ordering makes
+   * them untruthful as literal "what is happening now" text; see `thinking`
+   * below for the state that drives the placeholder instead.
    */
   stage: ChatStage | null;
+  /**
+   * The turn's pre-first-token lifecycle state (see ThinkingState) — while
+   * non-null the UI shows a muted "thinking preview" placeholder inside the
+   * assistant message bubble. Set to 'connecting' the moment the optimistic
+   * assistant turn is appended, advanced to 'waiting_for_first_token' by the
+   * first progress event, and cleared back to null by the first token, an
+   * error, a cancellation, or completion — never left non-null on any exit
+   * path, so the placeholder can never run indefinitely. null for a
+   * persisted (already-loaded) message.
+   */
+  thinking: ThinkingState | null;
+  /**
+   * Truthful request context for the placeholder's status-text selection
+   * (see ThinkingContext) — captured at send time, since the turn's own
+   * `attachments` are empty until a post-send reload (see `attachments`
+   * below) and would misreport a pending vision request as text-only. null
+   * for a persisted (already-loaded) message.
+   */
+  thinkingContext: ThinkingContext | null;
   /**
    * Empty for an in-flight (not-yet-persisted) turn even when attachments
    * were sent along with it — the real metadata (id, size, page count)
@@ -103,6 +178,8 @@ function toDisplayMessages(conversation: ConversationDetail): DisplayMessage[] {
     streaming: false,
     error: null,
     stage: null,
+    thinking: null,
+    thinkingContext: null,
     attachments: m.attachments ?? [],
   }));
 }
@@ -193,6 +270,8 @@ export function useConversationMessages(
         streaming: false,
         error: null,
         stage: null,
+        thinking: null,
+        thinkingContext: null,
         attachments: [],
       };
       const assistantId = nextPlaceholderId('local-assistant');
@@ -208,6 +287,13 @@ export function useConversationMessages(
         streaming: true,
         error: null,
         stage: null,
+        // The UI's thinking placeholder shows from this moment (before any
+        // network round-trip completes) until the first token — see
+        // ThinkingState. The context is captured here, not derived from the
+        // message's own (still-empty) attachments, so a pending vision
+        // request's status text stays truthful.
+        thinking: 'connecting',
+        thinkingContext: thinkingContextForRequest(request),
         attachments: [],
       };
       // Drops the previously-failed local turn (if any) before appending
@@ -255,11 +341,17 @@ export function useConversationMessages(
             if (!isCurrent()) return;
             switch (event.type) {
               case 'progress':
-                patchAssistant({ stage: event.stage });
+                // The stream is established, so the turn has moved past
+                // 'connecting' — every exit path below that ends the wait
+                // clears `thinking` back to null (never left dangling).
+                patchAssistant({ stage: event.stage, thinking: 'waiting_for_first_token' });
                 break;
               case 'token':
                 content += event.content;
-                patchAssistant({ content, stage: null });
+                // `thinking` clears in this same patch as `content` lands:
+                // one state update swaps the placeholder for the real text,
+                // so the two can never render at once (or in two bubbles).
+                patchAssistant({ content, stage: null, thinking: null });
                 break;
               case 'sources':
                 patchAssistant({ sources: event.sources.map(displaySourceFromRetrievedChunk) });
@@ -270,12 +362,13 @@ export function useConversationMessages(
                   citationWarnings: event.citation_warnings,
                   insufficientEvidence: event.insufficient_evidence,
                   streaming: false,
+                  thinking: null,
                 });
                 finishSend({ status: 'idle' });
                 reloadIfAttachmentsWereSent();
                 return;
               case 'error':
-                patchAssistant({ streaming: false, error: event.message });
+                patchAssistant({ streaming: false, error: event.message, thinking: null });
                 lastFailedTurnIdsRef.current = { userId: userMessage.id, assistantId };
                 finishSend({ status: 'error', error: new BackendError(event.message) });
                 return;
@@ -283,7 +376,7 @@ export function useConversationMessages(
           }
           if (isCurrent()) {
             const message = 'The message stream ended without a "done" event.';
-            patchAssistant({ streaming: false, error: message });
+            patchAssistant({ streaming: false, error: message, thinking: null });
             lastFailedTurnIdsRef.current = { userId: userMessage.id, assistantId };
             finishSend({ status: 'error', error: new BackendError(message) });
           }
@@ -302,25 +395,26 @@ export function useConversationMessages(
                 citationWarnings: result.citationWarnings,
                 insufficientEvidence: result.insufficientEvidence,
                 streaming: false,
+                thinking: null,
               });
               finishSend({ status: 'idle' });
               reloadIfAttachmentsWereSent();
             } catch (bufferedError) {
               if (!isCurrent()) return;
               const assistantError = toAssistantError(bufferedError);
-              patchAssistant({ streaming: false, error: assistantError.message });
+              patchAssistant({ streaming: false, error: assistantError.message, thinking: null });
               lastFailedTurnIdsRef.current = { userId: userMessage.id, assistantId };
               finishSend({ status: 'error', error: assistantError });
             }
             return;
           }
           if (error instanceof RequestCancelledError) {
-            patchAssistant({ streaming: false });
+            patchAssistant({ streaming: false, thinking: null });
             finishSend({ status: 'idle' });
             return;
           }
           const assistantError = toAssistantError(error);
-          patchAssistant({ streaming: false, error: assistantError.message });
+          patchAssistant({ streaming: false, error: assistantError.message, thinking: null });
           lastFailedTurnIdsRef.current = { userId: userMessage.id, assistantId };
           finishSend({ status: 'error', error: assistantError });
         }

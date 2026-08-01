@@ -95,18 +95,89 @@ class Settings(BaseSettings):
     # single request — a large document attached whole could otherwise
     # render (and then send to the vision model) hundreds of pages.
     vision_max_pdf_pages: int = Field(default=10, ge=1, le=100)
-    # Vision inference is slower than text generation (larger multimodal
-    # forward pass per image) — a longer default timeout than a bare text
-    # chat call would use, still bounded so a truly stuck request fails
-    # instead of hanging the connection indefinitely.
-    vision_request_timeout_seconds: float = Field(default=180.0, ge=1.0, le=600.0)
+    # Bounds *time-to-first-token* only (cold model load + prompt/image
+    # evaluation combined — Ollama's HTTP API gives no signal that
+    # distinguishes those two phases from outside, so they cannot be
+    # bounded separately here; see classify_vision_error_category's
+    # docstring). Raised from the original 180.0 default based on a live
+    # measurement on the Oracle CPU host (VM.Standard.A1.Flex, ARM64, 4
+    # OCPUs): a single already-warm, small (640x360) screenshot alone
+    # measured ~114s of prompt evaluation, and a resized 1568px-capped
+    # screenshot ~232s — both already past the old 180s default with the
+    # model fully warm, which is the direct cause of this task's reported
+    # "did not respond in time" production error (see
+    # app/core/ollama_errors.py). This value is deliberately generous
+    # rather than tuned tight: see vision_generation_timeout_seconds below
+    # for the tighter, separate bound on a *stalled* generation once
+    # output has actually started.
+    vision_request_timeout_seconds: float = Field(default=300.0, ge=1.0, le=900.0)
+    # Bounds the gap between two *already-streaming* output chunks once
+    # generation has started producing tokens — a materially tighter
+    # budget than vision_request_timeout_seconds above, since a genuinely
+    # stalled decode (as opposed to the model still evaluating the image)
+    # should be detected and classified faster. Enforced via
+    # asyncio.wait_for() around each chunk after the first — see
+    # VisionService.stream_chat, which is why this needs
+    # ollama.AsyncClient rather than the sync client the rest of this
+    # settings block's single vision_request_timeout_seconds sufficed for
+    # before. Not measured directly (a stalled-decode scenario isn't
+    # something this task's live testing could safely reproduce against
+    # the production Ollama instance) — 60s is a conservative multiple of
+    # the ~4-5 tokens/second decode rate actually observed during live
+    # measurement (worst case ~15s/token), left generous on purpose.
+    vision_generation_timeout_seconds: float = Field(default=60.0, ge=1.0, le=300.0)
     # Longest side (pixels) a PNG/JPEG image sent to the vision model may
     # have — downscaled if larger (milestone V4: directly reduces request
     # size and generation latency; see
-    # app/services/vision_service.py's render_attachments_to_images). The
-    # default matches common multimodal-model guidance for where
-    # additional resolution stops improving output.
-    vision_max_image_dimension: int = Field(default=1568, ge=256, le=4096)
+    # app/services/vision_service.py's render_attachments_to_images).
+    # Lowered from the original 1568 default based on the same live
+    # measurement referenced above: prompt-eval time tracks image token
+    # count, which tracks pixel count — a 640x360 (230K px) image produced
+    # 1061 vision tokens / ~114s, while a 1568x882 (1.38M px) image
+    # produced 1821 tokens / ~232s. 1024 cuts worst-case pixel area by
+    # more than half versus 1568 while remaining large enough to keep
+    # document body text and typical screenshot UI legible (the
+    # long-standing common guidance this default originally followed).
+    vision_max_image_dimension: int = Field(default=1024, ge=256, le=4096)
+    # Caps total decoded pixels for one *original* (pre-resize) image —
+    # checked immediately after decode, before the (comparatively
+    # expensive) resize step runs, so a decompression-bomb-style upload
+    # (a small file that decodes to an enormous pixmap) is rejected
+    # cheaply rather than after doing real work on it. Independent of
+    # vision_max_image_dimension: that setting bounds the *processed*
+    # image's side length; this bounds the *original* image's total pixel
+    # count before any resizing has happened. 20 megapixels comfortably
+    # covers any real photo/screenshot upload (a 24MP camera photo is an
+    # outlier this app has no reason to accept whole) while still catching
+    # a pathological aspect ratio (e.g. 1x50,000,000) that a side-length
+    # cap alone would miss.
+    vision_max_image_pixels: int = Field(default=20_000_000, ge=100_000)
+    # Sum of every image/page's pixel count in one request, checked after
+    # PDF rendering (each rendered page counts too) — bounds the
+    # aggregate vision-encoder workload for a multi-image/multi-page
+    # message, which vision_max_images_per_message/vision_max_pdf_pages
+    # alone do not: four maximally-sized images individually under
+    # vision_max_image_pixels could still sum to an enormous combined
+    # workload without this check.
+    vision_max_total_pixels: int = Field(default=60_000_000, ge=100_000)
+    # Caps the vision system+user prompt's combined character count
+    # (query + retrieved-source text + project context, when the "use my
+    # corpus" toggle is on) — mirrors context_max_total_chars' role for
+    # the text pipeline. Checked before calling Ollama at all (see
+    # app/api/routes_conversations.py), so an oversized prompt is rejected
+    # with a clear error rather than adding avoidable text-token
+    # evaluation time on top of an already-expensive image evaluation.
+    vision_max_prompt_chars: int = Field(default=20_000, ge=100)
+    # Caps completion length for a vision reply (Ollama's `num_predict`
+    # chat option) — mirrors ollama_num_predict's role for the text
+    # pipeline (see app/core/llm_provider.py). Vision had no cap at all
+    # before this: an unbounded completion is a worse risk here than for
+    # text, since vision decode was measured at only ~4-5 tokens/second on
+    # this CPU host (vs. the text model's own separately-measured ~4-5
+    # tokens/second too, coincidentally similar on this host) — either
+    # way, a runaway completion has no ceiling below the model's context
+    # window without this.
+    vision_num_predict: int = Field(default=512, ge=1)
 
     # --- Image generation (Ollama x/flux2-klein by default) — writes new
     # images from a text prompt, the opposite direction of vision_enabled

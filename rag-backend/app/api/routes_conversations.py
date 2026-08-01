@@ -1,10 +1,11 @@
 import json
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pymupdf
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
@@ -206,6 +207,50 @@ def _timed_token_stream(tokens: Iterator[str], timer: RequestTimer) -> Iterator[
         t_yield_start = time.perf_counter()
         yield token
         timer.record("streaming", (time.perf_counter() - t_yield_start) * 1000)
+
+
+async def _timed_async_token_stream(
+    tokens: AsyncIterator[str], timer: RequestTimer
+) -> AsyncIterator[str]:
+    """The vision-path counterpart to _timed_token_stream above — same
+    "time inside next() vs. time in the caller's own yield handling"
+    split, under the "vision_generation"/"streaming" stage names, for
+    VisionService.stream_chat's async generator (see that module's
+    docstring for why vision uses an async client/generator while text
+    does not)."""
+    aiterator = tokens.__aiter__()
+    while True:
+        t0 = time.perf_counter()
+        try:
+            token = await aiterator.__anext__()
+        except StopAsyncIteration:
+            return
+        timer.record("vision_generation", (time.perf_counter() - t0) * 1000)
+        t_yield_start = time.perf_counter()
+        yield token
+        timer.record("streaming", (time.perf_counter() - t_yield_start) * 1000)
+
+
+def _image_dimension_summary(images: list[bytes]) -> tuple[int, int]:
+    """Returns (largest single side in pixels, summed pixel count) across
+    `images` — the numeric summary recorded onto the profiling timer for
+    original_image_dimensions/processed_image_dimensions (see
+    _handle_conversation_message below; RequestTimer's metrics are a flat
+    name->float namespace, so a per-image WxH pair isn't directly
+    representable there — see that call site's comment). Returns (0, 0)
+    for an empty list rather than raising, since "no images" is a normal
+    state (e.g. every attachment was a PDF, so there are no *original*
+    image dimensions to summarize)."""
+    max_dimension = 0
+    total_pixels = 0
+    for image in images:
+        try:
+            pixmap = pymupdf.Pixmap(image)  # type: ignore[no-untyped-call]
+        except Exception:
+            continue
+        max_dimension = max(max_dimension, pixmap.width, pixmap.height)
+        total_pixels += pixmap.width * pixmap.height
+    return max_dimension, total_pixels
 
 
 @router.post("", response_model=ConversationDetailResponse, status_code=status.HTTP_201_CREATED)
@@ -989,9 +1034,43 @@ def _handle_conversation_message(
                 max_images=settings.vision_max_images_per_message,
                 max_pdf_pages=settings.vision_max_pdf_pages,
                 max_image_dimension=settings.vision_max_image_dimension,
+                max_image_pixels=settings.vision_max_image_pixels,
+                max_total_pixels=settings.vision_max_total_pixels,
             )
         except VisionServiceError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+        if timer.enabled:
+            timer.record_metric("attachment_count", len(parsed.attachments))
+            timer.record_metric(
+                "pdf_page_count",
+                sum(r.page_count or 0 for r in validated if r.mime == "application/pdf"),
+            )
+            timer.record_metric(
+                "original_attachment_bytes", sum(len(r.data) for r in validated)
+            )
+            timer.record_metric(
+                "processed_attachment_bytes", sum(len(image) for image in vision_images)
+            )
+            # "dimensions" (plural, per-image) don't fit RequestTimer's
+            # flat name->float metric namespace (see
+            # app/core/request_timing.py) — recorded as two numeric
+            # summaries instead: the largest single side and the summed
+            # pixel count, for both the original (image attachments
+            # only — a PDF has no "dimensions" before it's rendered) and
+            # the fully processed (rendered + resized) sets. Every
+            # per-image WxH pair is still visible in full via the
+            # existing max_pixels/max_total_pixels VisionServiceError
+            # messages when a limit is actually hit; this is a summary
+            # for the *normal*, non-error case.
+            original_max_dim, original_total_px = _image_dimension_summary(
+                [r.data for r in validated if r.mime != "application/pdf"]
+            )
+            processed_max_dim, processed_total_px = _image_dimension_summary(vision_images)
+            timer.record_metric("original_image_max_dimension_px", original_max_dim)
+            timer.record_metric("original_image_total_pixels", original_total_px)
+            timer.record_metric("processed_image_max_dimension_px", processed_max_dim)
+            timer.record_metric("processed_image_total_pixels", processed_total_px)
 
     is_first_message = repository.get_messages(user.id, conversation_id) == []
     message = repository.add_user_message(

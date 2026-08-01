@@ -1,5 +1,6 @@
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { Alert } from 'react-native';
+import { ConversationTurnCard } from '@/components/ConversationTurnCard';
 import { AuthProvider } from '@/lib/AuthProvider';
 import { ChatConversationsProvider } from '@/lib/ChatConversationsContext';
 import { ClientProvider } from '@/lib/ClientProvider';
@@ -356,6 +357,77 @@ describe('ChatConversationRoute ([id])', () => {
 
     expect(findByText(renderer.root, 'Yes.')).toBeTruthy();
     expect(refreshConversations).toHaveBeenCalled();
+  });
+
+  it('shows the thinking placeholder the moment a follow-up is sent, and the first token replaces it inside the same turn', async () => {
+    mockParams.id = 'c-think';
+    let controllable: ControllableSse | undefined;
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/auth/refresh')) {
+        return new Response(JSON.stringify({ detail: 'none' }), { status: 401 });
+      }
+      if (url.includes('/auth/providers')) {
+        return new Response(JSON.stringify({ providers: [], dev_login_enabled: false }), {
+          status: 200,
+        });
+      }
+      if (url.endsWith('/conversations/c-think')) return conversationDetail('c-think');
+      if (url.endsWith('/conversations/c-think/messages')) {
+        controllable = controllableSseResponse();
+        return controllable.response;
+      }
+      throw new Error(`Unexpected fetch call to ${url} in this test`);
+    }) as unknown as typeof fetch;
+
+    const renderer = await renderChat();
+
+    const input = renderer.root.find((node) => String(node.type) === 'TextInput');
+    act(() => {
+      input.props.onChangeText('How do plants grow?');
+    });
+    await act(async () => {
+      findPressableByText(renderer.root, 'Ask').props.onPress();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Immediately after submission — before any SSE event has arrived — the
+    // pending assistant bubble shows the truthful placeholder for a plain
+    // chat request, never the retired "Connecting…" label or a spinner.
+    expect(queryByText(renderer.root, 'Understanding your question')).toBeTruthy();
+    expect(queryByText(renderer.root, 'Connecting…')).toBeNull();
+    // Exactly one turn card: the pending assistant message was appended in
+    // place, not as a second bubble.
+    expect(renderer.root.findAllByType(ConversationTurnCard)).toHaveLength(1);
+
+    // The first streamed token swaps the placeholder for the real answer
+    // inside that same turn — still one card, never both texts at once.
+    await act(async () => {
+      controllable!.push(sseEvent({ type: 'token', content: 'With sunlight.' }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(queryByText(renderer.root, 'Understanding your question')).toBeNull();
+    expect(findByText(renderer.root, 'With sunlight.')).toBeTruthy();
+    expect(renderer.root.findAllByType(ConversationTurnCard)).toHaveLength(1);
+
+    await act(async () => {
+      controllable!.push(
+        sseEvent({
+          type: 'done',
+          citations: [],
+          citation_warnings: [],
+          insufficient_evidence: false,
+        })
+      );
+      controllable!.close();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
   });
 
   it('shows the corpus toggle only after attaching an image, and sends use_corpus=true when it is switched on (milestone V3)', async () => {
