@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+#
+# Starts the complete EduMind Oracle VM stack (project: edumind-oracle).
+#
+# Adapted from deploy/prod/scripts/prod-start.sh — extended with Compose
+# config validation, an optional --build, and a mandatory post-start health
+# check (skippable with --no-healthcheck). Does not touch deploy/prod or
+# deploy/rpi5.
+
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/common.sh"
+
+BUILD=false
+RUN_HEALTHCHECK=true
+
+usage() {
+    cat <<EOF_USAGE
+Usage:
+  $(basename "$0") [options]
+
+Starts the Oracle stack (frontend, backend, qdrant, ollama) and its
+one-shot backend-migrate job, then waits for every service to report
+healthy. Never rebuilds images unless --build is given.
+
+Options:
+  --build            Build images before starting (docker compose up -d --build)
+  --no-healthcheck   Start services but skip the post-start health check
+  -h, --help         Show this help message
+
+Examples:
+  $(basename "$0")
+  $(basename "$0") --build
+  $(basename "$0") --no-healthcheck
+EOF_USAGE
+}
+
+parse_arguments() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --build)
+                BUILD=true
+                shift
+                ;;
+            --no-healthcheck)
+                RUN_HEALTHCHECK=false
+                shift
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                die "Unknown option: $1 (see --help)"
+                ;;
+        esac
+    done
+}
+
+validate_compose_config() {
+    info "Validating Oracle Compose configuration..."
+    oracle_compose config --quiet \
+        || die "docker compose config validation failed — fix $ORACLE_COMPOSE_FILE / $ORACLE_ENV_FILE before starting."
+    success "Compose configuration is valid."
+}
+
+start_stack() {
+    # backend-migrate (alembic upgrade head) is a one-shot service that
+    # `backend` depends on with `condition: service_completed_successfully`
+    # (see docker-compose.oracle.yml) — `compose up -d` already runs it to
+    # completion, waits for it to exit 0, and only then starts backend. No
+    # separate migration step is needed or safer than relying on that
+    # dependency graph.
+    if [[ "$BUILD" == true ]]; then
+        info "Building images and starting the Oracle stack (this can take a while on first run)..."
+        oracle_compose up -d --build
+    else
+        info "Starting the Oracle stack (no rebuild — pass --build to force one)..."
+        oracle_compose up -d
+    fi
+}
+
+main() {
+    parse_arguments "$@"
+
+    check_oracle_environment
+    print_header "EduMind Oracle — Start"
+
+    validate_compose_config
+    start_stack
+
+    echo
+    oracle_compose ps
+    echo
+
+    if [[ "$RUN_HEALTHCHECK" == true ]]; then
+        info "Waiting for all services to become healthy..."
+        if wait_for_oracle_health "${HEALTH_ATTEMPTS:-30}" "${HEALTH_DELAY:-5}"; then
+            success "Oracle stack started and healthy."
+        else
+            warn "Services were started, but did not all become healthy in time."
+            warn "Run: $ORACLE_SCRIPTS_DIR/oracle-healthcheck.sh"
+            exit 1
+        fi
+    else
+        warn "Skipping post-start health check (--no-healthcheck)."
+        success "Oracle stack start command completed."
+    fi
+}
+
+main "$@"
