@@ -276,3 +276,125 @@ describe('ConversationTurnCard attachment lightbox (milestone V4)', () => {
     );
   });
 });
+
+function streamingAssistant(overrides: Partial<DisplayMessage> = {}): DisplayMessage {
+  return {
+    id: 'a1',
+    role: 'assistant',
+    content: '',
+    sources: [],
+    citations: [],
+    citationWarnings: [],
+    insufficientEvidence: false,
+    createdAt: null,
+    streaming: true,
+    error: null,
+    stage: null,
+    attachments: [],
+    ...overrides,
+  };
+}
+
+// Regression coverage for the indefinite "Connecting…" freeze: while
+// waiting on a slow (CPU-only Ollama) backend, the card must show real
+// backend-reported status (see ChatStage/STAGE_LABELS) instead of a single
+// static string for the entire wait, and must fall back sensibly once real
+// output starts or for a stage this build doesn't recognize.
+describe('ConversationTurnCard progress-stage display', () => {
+  it('shows the generic "Connecting…" label before any stage has been received', async () => {
+    let renderer!: ReturnType<typeof create>;
+    await act(async () => {
+      renderer = create(
+        <ConversationTurnCard
+          userContent="hi"
+          assistant={streamingAssistant()}
+          onCitationPress={() => {}}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    expect(queryByText(renderer.root, 'Connecting…')).toBeTruthy();
+  });
+
+  it('shows the label for the assistant turn\'s current stage', async () => {
+    let renderer!: ReturnType<typeof create>;
+    await act(async () => {
+      renderer = create(
+        <ConversationTurnCard
+          userContent="hi"
+          assistant={streamingAssistant({ stage: 'loading_model' })}
+          onCitationPress={() => {}}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    expect(queryByText(renderer.root, 'Waking up the model…')).toBeTruthy();
+    expect(queryByText(renderer.root, 'Connecting…')).toBeNull();
+  });
+
+  it('updates the displayed label as the stage changes across rerenders', async () => {
+    let renderer!: ReturnType<typeof create>;
+    await act(async () => {
+      renderer = create(
+        <ConversationTurnCard
+          userContent="hi"
+          assistant={streamingAssistant({ stage: 'retrieving' })}
+          onCitationPress={() => {}}
+        />
+      );
+      await Promise.resolve();
+    });
+    expect(queryByText(renderer.root, 'Searching your documents…')).toBeTruthy();
+
+    await act(async () => {
+      renderer.update(
+        <ConversationTurnCard
+          userContent="hi"
+          assistant={streamingAssistant({ stage: 'generating' })}
+          onCitationPress={() => {}}
+        />
+      );
+      await Promise.resolve();
+    });
+    expect(queryByText(renderer.root, 'Generating answer…')).toBeTruthy();
+    expect(queryByText(renderer.root, 'Searching your documents…')).toBeNull();
+  });
+
+  it('falls back to "Connecting…" for a stage this build does not recognize', async () => {
+    let renderer!: ReturnType<typeof create>;
+    await act(async () => {
+      renderer = create(
+        <ConversationTurnCard
+          userContent="hi"
+          // A future backend stage this SDK build predates — same
+          // forward-compatible treatment the SSE parser itself gives an
+          // unrecognized stage (see stream.ts's parseChatEvent).
+          assistant={streamingAssistant({ stage: 'some_future_stage' as never })}
+          onCitationPress={() => {}}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    expect(queryByText(renderer.root, 'Connecting…')).toBeTruthy();
+  });
+
+  it('shows no stage hint once real content has started streaming in', async () => {
+    let renderer!: ReturnType<typeof create>;
+    await act(async () => {
+      renderer = create(
+        <ConversationTurnCard
+          userContent="hi"
+          assistant={streamingAssistant({ stage: 'generating', content: 'Hello' })}
+          onCitationPress={() => {}}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    expect(queryByText(renderer.root, 'Generating answer…')).toBeNull();
+    expect(queryByText(renderer.root, 'Connecting…')).toBeNull();
+  });
+});

@@ -12,7 +12,9 @@ import type {
   ChatDoneEvent,
   ChatErrorEvent,
   ChatEvent,
+  ChatProgressEvent,
   ChatSourcesEvent,
+  ChatStage,
   ChatTokenEvent,
 } from '../types/chat';
 
@@ -117,7 +119,19 @@ export class SseStreamParser {
   }
 }
 
-const KNOWN_EVENT_TYPES = new Set(['token', 'sources', 'done', 'error']);
+const KNOWN_EVENT_TYPES = new Set(['progress', 'token', 'sources', 'done', 'error']);
+
+// Mirrors app/schemas/chat.py's ChatStage Literal. An unrecognized stage
+// value (e.g. a newer backend sending a stage this SDK build predates) is
+// treated the same as an unrecognized event type: skip, don't fail the
+// stream — see parseChatEvent's "unknown type => null" doc comment above.
+const KNOWN_CHAT_STAGES = new Set<ChatStage>([
+  'connected',
+  'retrieving',
+  'loading_model',
+  'processing_context',
+  'generating',
+]);
 
 /**
  * Parses one raw SSE event's `data:` payload (JSON) into a typed ChatEvent.
@@ -154,6 +168,13 @@ export function parseChatEvent(raw: ParsedSseEvent): ChatEvent | null {
   const record = payload as Record<string, unknown>;
 
   switch (type) {
+    case 'progress': {
+      if (typeof record.stage !== 'string' || !KNOWN_CHAT_STAGES.has(record.stage as ChatStage)) {
+        return null; // unrecognized stage: skip, same forward-compat treatment as an unknown event type
+      }
+      const event: ChatProgressEvent = { type: 'progress', stage: record.stage as ChatStage };
+      return event;
+    }
     case 'token': {
       if (typeof record.content !== 'string') {
         throw new MalformedStreamError('SSE "token" event missing string "content" field.');

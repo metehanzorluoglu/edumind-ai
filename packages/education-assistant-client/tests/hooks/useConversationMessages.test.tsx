@@ -97,6 +97,75 @@ describe('useConversationMessages', () => {
     expect(result.current.messages[1]!.streaming).toBe(false);
   });
 
+  it('sendMessage() tracks progress-event stages on the assistant turn until the first token arrives', async () => {
+    // Regression coverage for the indefinite "Connecting…" UI freeze: the
+    // hook must surface each ChatProgressEvent as DisplayMessage.stage so a
+    // consumer can render real status instead of a static placeholder, and
+    // must clear it back to null once real output starts (there is no
+    // more-specific status once tokens are flowing).
+    const getConversation = vi.fn().mockResolvedValue(makeDetail());
+    let pushEvent: (event: ChatEvent) => void = () => {};
+    let finish: () => void = () => {};
+    const streamConversationMessage = vi.fn(
+      () =>
+        (async function* (): AsyncGenerator<ChatEvent, void, void> {
+          const queue: ChatEvent[] = [];
+          let resolveNext: (() => void) | null = null;
+          let done = false;
+          pushEvent = (event) => {
+            queue.push(event);
+            resolveNext?.();
+          };
+          finish = () => {
+            done = true;
+            resolveNext?.();
+          };
+          while (!done || queue.length > 0) {
+            if (queue.length === 0) {
+              await new Promise<void>((resolve) => {
+                resolveNext = resolve;
+              });
+              continue;
+            }
+            yield queue.shift()!;
+          }
+        })()
+    );
+    const client = {
+      getConversation,
+      streamConversationMessage,
+    } as unknown as EducationAssistantClient;
+    const { result } = renderHook(() => useConversationMessages(client, 'c1'));
+    await waitFor(() => expect(result.current.loadState.status).toBe('success'));
+
+    act(() => {
+      result.current.sendMessage({ query: 'hi' });
+    });
+    expect(result.current.messages[1]!.stage).toBeNull();
+
+    act(() => {
+      pushEvent({ type: 'progress', stage: 'connected' });
+    });
+    await waitFor(() => expect(result.current.messages[1]!.stage).toBe('connected'));
+
+    act(() => {
+      pushEvent({ type: 'progress', stage: 'loading_model' });
+    });
+    await waitFor(() => expect(result.current.messages[1]!.stage).toBe('loading_model'));
+
+    act(() => {
+      pushEvent({ type: 'token', content: 'Hello' });
+    });
+    await waitFor(() => expect(result.current.messages[1]!.content).toBe('Hello'));
+    expect(result.current.messages[1]!.stage).toBeNull();
+
+    act(() => {
+      pushEvent({ type: 'done', citations: [], citation_warnings: [], insufficient_evidence: false });
+      finish();
+    });
+    await waitFor(() => expect(result.current.sendState.status).toBe('idle'));
+  });
+
   it('sendMessage() surfaces a backend error event on the assistant turn', async () => {
     const getConversation = vi.fn().mockResolvedValue(makeDetail());
     const streamConversationMessage = vi.fn(() =>

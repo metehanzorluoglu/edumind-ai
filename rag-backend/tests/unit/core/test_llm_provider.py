@@ -13,6 +13,7 @@ fake client so no real Ollama server is required.
 from dataclasses import dataclass
 
 from app.core.llm_provider import OllamaLLMProvider
+from app.core.request_timing import RequestTimer
 
 
 @dataclass
@@ -23,15 +24,28 @@ class _FakeMessage:
 @dataclass
 class _FakeChunk:
     message: _FakeMessage
+    # Only ever populated on a real ollama.ChatResponse's final (done=True)
+    # chunk — None here matches every non-final streaming chunk, which is
+    # why _record_ollama_metrics reads these defensively via getattr
+    # rather than assuming any chunk carries them.
+    load_duration: int | None = None
+    prompt_eval_count: int | None = None
+    prompt_eval_duration: int | None = None
+    eval_count: int | None = None
+    eval_duration: int | None = None
 
 
 class _RecordingClient:
     """Fake `ollama.Client` that records every `.chat()` call's kwargs and
     streams back a fixed two-token reply, matching the shape
-    `OllamaLLMProvider.stream_chat` expects from the real client."""
+    `OllamaLLMProvider.stream_chat` expects from the real client. The final
+    chunk optionally carries Ollama's own performance fields (see
+    _FakeChunk) — default None on both, matching a caller that doesn't
+    care about them."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, final_chunk_metrics: dict[str, int] | None = None) -> None:
         self.calls: list[dict[str, object]] = []
+        self._final_chunk_metrics = final_chunk_metrics or {}
 
     def chat(self, *, model, messages, stream, options=None, think=None):
         self.calls.append(
@@ -45,7 +59,9 @@ class _RecordingClient:
         )
         return [
             _FakeChunk(message=_FakeMessage(content="Paris")),
-            _FakeChunk(message=_FakeMessage(content=" is the capital.")),
+            _FakeChunk(
+                message=_FakeMessage(content=" is the capital."), **self._final_chunk_metrics
+            ),
         ]
 
 
@@ -105,6 +121,93 @@ def test_thinking_toggle_does_not_change_request_shape() -> None:
     ]
     assert call["stream"] is True
     assert call["options"] == {"temperature": 0}
+
+
+def test_stream_chat_records_ollama_performance_fields_on_timer() -> None:
+    """The actual profiling extension this covers: Ollama's own reported
+    load/prompt-eval durations and completion token count, read from the
+    stream's final chunk, must land on the timer once the stream is fully
+    consumed — nanoseconds converted to milliseconds for durations."""
+    client = _RecordingClient(
+        final_chunk_metrics={
+            "load_duration": 44_000_000_000,  # 44s, matches the observed cold-load case
+            "prompt_eval_count": 2560,
+            "prompt_eval_duration": 155_000_000_000,  # 155s
+            "eval_count": 42,
+            "eval_duration": 10_000_000_000,  # 10s -> 4.2 tok/s
+        }
+    )
+    provider = OllamaLLMProvider(model="qwen3:8b", client=client)
+    timer = RequestTimer(enabled=True, label="test")
+
+    list(provider.stream_chat(system_prompt="sys", user_prompt="hi", timer=timer))
+
+    metrics = timer.as_dict()
+    assert metrics["ollama_load_ms"] == 44_000.0
+    assert metrics["ollama_prompt_eval_ms"] == 155_000.0
+    assert metrics["actual_prompt_tokens"] == 2560
+    assert metrics["completion_token_count"] == 42
+    assert metrics["decode_tokens_per_second"] == 4.2
+
+
+def test_stream_chat_timer_none_by_default_records_nothing() -> None:
+    """Omitting `timer` (every pre-existing call site, plus
+    conversation_summarization.py) must change nothing — no crash, no
+    silent timer usage, since there is no ambient timer to fall back to
+    here (see request_timing.py's module docstring on why this class uses
+    an explicit parameter rather than the ambient accessor)."""
+    client = _RecordingClient(final_chunk_metrics={"eval_count": 5, "eval_duration": 1_000_000_000})
+    provider = OllamaLLMProvider(model="qwen3:8b", client=client)
+
+    tokens = list(provider.stream_chat(system_prompt="sys", user_prompt="hi"))
+
+    assert tokens == ["Paris", " is the capital."]
+
+
+def test_stream_chat_disabled_timer_records_nothing() -> None:
+    client = _RecordingClient(
+        final_chunk_metrics={"eval_count": 5, "eval_duration": 1_000_000_000}
+    )
+    provider = OllamaLLMProvider(model="qwen3:8b", client=client)
+    timer = RequestTimer(enabled=False, label="test")
+
+    list(provider.stream_chat(system_prompt="sys", user_prompt="hi", timer=timer))
+
+    assert timer.as_dict() == {}
+
+
+def test_stream_chat_missing_ollama_fields_do_not_crash_or_record() -> None:
+    """"When available" (per the task) must degrade gracefully — a chunk
+    with none of these fields set (e.g. an older Ollama version, or any
+    _ChatChunkLike test double elsewhere that never declared them) must
+    not raise and must not fabricate a metric that was never reported."""
+    client = _RecordingClient()  # no final_chunk_metrics
+    provider = OllamaLLMProvider(model="qwen3:8b", client=client)
+    timer = RequestTimer(enabled=True, label="test")
+
+    tokens = list(provider.stream_chat(system_prompt="sys", user_prompt="hi", timer=timer))
+
+    assert tokens == ["Paris", " is the capital."]
+    metrics = timer.as_dict()
+    assert "ollama_load_ms" not in metrics
+    assert "completion_token_count" not in metrics
+    assert "decode_tokens_per_second" not in metrics
+
+
+def test_stream_chat_zero_eval_duration_skips_decode_rate_without_crashing() -> None:
+    """A division-by-zero guard: eval_duration=0 is a real possibility (an
+    instant/cached response) and must not raise ZeroDivisionError."""
+    client = _RecordingClient(
+        final_chunk_metrics={"eval_count": 3, "eval_duration": 0}
+    )
+    provider = OllamaLLMProvider(model="qwen3:8b", client=client)
+    timer = RequestTimer(enabled=True, label="test")
+
+    list(provider.stream_chat(system_prompt="sys", user_prompt="hi", timer=timer))
+
+    metrics = timer.as_dict()
+    assert metrics["completion_token_count"] == 3
+    assert "decode_tokens_per_second" not in metrics
 
 
 def test_stream_chat_passes_num_predict_via_options() -> None:

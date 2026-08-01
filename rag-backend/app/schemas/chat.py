@@ -12,6 +12,26 @@ class ChatRequest(BaseModel):
     filters: RetrievalFilters | None = None
 
 
+ChatStage = Literal["connected", "retrieving", "loading_model", "processing_context", "generating"]
+
+
+class ChatProgressEvent(BaseModel):
+    """Sent zero or more times *before* the first ChatTokenEvent, never
+    after — see app/api/routes_conversations.py's event_stream(). Exists
+    because a CPU-only Ollama host can take tens of seconds to cold-load a
+    model and well over a minute to evaluate a long prompt, with nothing
+    else happening on the wire in the meantime; without these, a client
+    has no way to distinguish "still working" from "hung" during that
+    window. Purely advisory UI state — no field here is ever required for
+    correctness, and a client that doesn't recognize `type: "progress"`
+    can ignore it entirely (see the SDK's parseChatEvent, which already
+    skips unknown event types by design) without losing any information
+    the token/sources/done events don't already carry."""
+
+    type: Literal["progress"] = "progress"
+    stage: ChatStage
+
+
 class ChatTokenEvent(BaseModel):
     type: Literal["token"] = "token"
     content: str
@@ -75,4 +95,4 @@ class ChatErrorEvent(BaseModel):
     message: str
 
 
-ChatEvent = ChatTokenEvent | ChatSourcesEvent | ChatDoneEvent | ChatErrorEvent
+ChatEvent = ChatProgressEvent | ChatTokenEvent | ChatSourcesEvent | ChatDoneEvent | ChatErrorEvent

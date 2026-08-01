@@ -110,6 +110,44 @@ describe('parseChatEvent', () => {
     expect(parsed[1]).toEqual({ type: 'token', content: 'no' });
   });
 
+  it('parses a well-formed "progress" event', () => {
+    const result = parseChatEvent({
+      event: 'message',
+      data: '{"type":"progress","stage":"loading_model"}',
+      id: null,
+    });
+    expect(result).toEqual({ type: 'progress', stage: 'loading_model' });
+  });
+
+  it('parses every known ChatStage value', () => {
+    const stages = ['connected', 'retrieving', 'loading_model', 'processing_context', 'generating'];
+    for (const stage of stages) {
+      const result = parseChatEvent({
+        event: 'message',
+        data: JSON.stringify({ type: 'progress', stage }),
+        id: null,
+      });
+      expect(result).toEqual({ type: 'progress', stage });
+    }
+  });
+
+  it('skips a "progress" event with an unrecognized stage instead of throwing', () => {
+    // Forward-compatibility: a newer backend build might send a stage this
+    // SDK build predates — same "unknown => skip" treatment as an unknown
+    // event type entirely, not a hard failure.
+    const result = parseChatEvent({
+      event: 'message',
+      data: '{"type":"progress","stage":"some_future_stage"}',
+      id: null,
+    });
+    expect(result).toBeNull();
+  });
+
+  it('skips a "progress" event missing the stage field', () => {
+    const result = parseChatEvent({ event: 'message', data: '{"type":"progress"}', id: null });
+    expect(result).toBeNull();
+  });
+
   it('parses a well-formed "done" event, defaulting missing arrays safely', () => {
     const result = parseChatEvent({
       event: 'message',

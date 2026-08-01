@@ -14,6 +14,20 @@ export interface ChatRequest {
   filters?: RetrievalFilters | null;
 }
 
+/**
+ * Mirrors app/schemas/chat.py's ChatStage — the UI-status stages sent as
+ * zero or more ChatProgressEvents before the first ChatTokenEvent, never
+ * after. Purely advisory: a client that doesn't recognize a given stage
+ * (or the whole event) loses no information the token/sources/done events
+ * don't already carry.
+ */
+export type ChatStage = 'connected' | 'retrieving' | 'loading_model' | 'processing_context' | 'generating';
+
+export interface ChatProgressEvent {
+  type: 'progress';
+  stage: ChatStage;
+}
+
 export interface ChatTokenEvent {
   type: 'token';
   content: string;
@@ -36,7 +50,12 @@ export interface ChatErrorEvent {
   message: string;
 }
 
-export type ChatEvent = ChatTokenEvent | ChatSourcesEvent | ChatDoneEvent | ChatErrorEvent;
+export type ChatEvent =
+  | ChatProgressEvent
+  | ChatTokenEvent
+  | ChatSourcesEvent
+  | ChatDoneEvent
+  | ChatErrorEvent;
 
 /**
  * Assembled client-side by streamChat()/chat() from the SSE event sequence.

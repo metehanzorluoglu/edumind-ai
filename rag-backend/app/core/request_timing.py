@@ -59,14 +59,23 @@ class RequestTimer:
     """Collects named stage durations (milliseconds) for one request. A
     stage name may be recorded more than once (e.g. "embedding" once per
     retrieval scope tier — see app/core/retriever.py) — as_dict() sums
-    same-named entries so the reported table has one row per stage."""
+    same-named entries so the reported table has one row per stage.
 
-    __slots__ = ("_stages", "_start", "enabled", "label")
+    Also collects point-in-time *metrics* — a count or a rate, not a
+    duration (e.g. retrieved_chunk_count, estimated_prompt_tokens,
+    decode_tokens_per_second — see app/core/llm_provider.py and
+    app/api/routes_conversations.py). Kept in a separate dict from the
+    duration stages rather than overloading record() for both: a metric is
+    a single point value (last write wins), never summed across repeated
+    calls the way same-named durations are."""
+
+    __slots__ = ("_metrics", "_stages", "_start", "enabled", "label")
 
     def __init__(self, *, enabled: bool, label: str = "") -> None:
         self.enabled = enabled
         self.label = label
         self._stages: list[tuple[str, float]] = []
+        self._metrics: dict[str, float] = {}
         self._start = time.perf_counter() if enabled else 0.0
 
     def record(self, name: str, duration_ms: float) -> None:
@@ -79,6 +88,16 @@ class RequestTimer:
         logger.info(
             "timing stage=%s duration_ms=%.2f request=%s", name, duration_ms, self.label
         )
+
+    def record_metric(self, name: str, value: float) -> None:
+        """Records a named point-in-time metric — a count or rate, not a
+        duration (see the class docstring). Last write wins for a given
+        name; unlike record(), repeated calls with the same name do not
+        accumulate. No-op when disabled, same as every other method here."""
+        if not self.enabled:
+            return
+        self._metrics[name] = value
+        logger.info("timing metric=%s value=%s request=%s", name, value, self.label)
 
     @contextmanager
     def stage(self, name: str) -> Iterator[None]:
@@ -97,9 +116,11 @@ class RequestTimer:
         return (time.perf_counter() - self._start) * 1000
 
     def as_dict(self) -> dict[str, float]:
-        """Stage name -> summed duration_ms, plus "total_ms". Empty dict
-        when disabled, so callers can do `if timings:` without a separate
-        enabled check."""
+        """Stage name -> summed duration_ms, plus "total_ms", plus every
+        recorded metric (see record_metric()). Empty dict when disabled,
+        so callers can do `if timings:` without a separate enabled check.
+        A metric name must not collide with a stage name — both share this
+        one flat namespace in the output."""
         if not self.enabled:
             return {}
         totals: dict[str, float] = {}
@@ -107,6 +128,7 @@ class RequestTimer:
             totals[name] = totals.get(name, 0.0) + duration_ms
         result = {name: round(total, 2) for name, total in totals.items()}
         result["total_ms"] = round(self.total_ms(), 2)
+        result.update(self._metrics)
         return result
 
     def server_timing_header(self) -> str:

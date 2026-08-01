@@ -15,7 +15,7 @@ from app.core.context_preparation import (
 )
 from app.core.llm_provider import LLMProvider
 from app.core.prompt_builder import NO_EVIDENCE_ANSWER, build_chat_prompt
-from app.core.request_timing import get_current_timer
+from app.core.request_timing import RequestTimer, get_current_timer
 from app.core.retrieval_schemas import RetrievalFilters, RetrievedChunk
 from app.core.scoped_retrieval import execute_scope_plan, resolve_scope_plan
 
@@ -204,9 +204,11 @@ class RagService:
             insufficient_evidence=insufficient_evidence,
         )
 
-    def stream_answer(self, prepared: PreparedChat) -> Iterator[str]:
+    def stream_answer(
+        self, prepared: PreparedChat, *, timer: RequestTimer | None = None
+    ) -> Iterator[str]:
         yield from self._llm_provider.stream_chat(
-            system_prompt=prepared.system_prompt, user_prompt=prepared.user_prompt
+            system_prompt=prepared.system_prompt, user_prompt=prepared.user_prompt, timer=timer
         )
 
     def run(

@@ -3,9 +3,11 @@
 # Starts the complete EduMind Oracle VM stack (project: edumind-oracle).
 #
 # Adapted from deploy/prod/scripts/prod-start.sh — extended with Compose
-# config validation, an optional --build, and a mandatory post-start health
-# check (skippable with --no-healthcheck). Does not touch deploy/prod or
-# deploy/rpi5.
+# config validation, an optional --build, a mandatory post-start health
+# check (skippable with --no-healthcheck), and an optional post-health-check
+# Ollama model prewarm (see oracle-prewarm-model.sh — only runs when
+# OLLAMA_PREWARM_ENABLED=true in .env.oracle; skippable with
+# --no-prewarm). Does not touch deploy/prod or deploy/rpi5.
 
 set -Eeuo pipefail
 
@@ -14,6 +16,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 BUILD=false
 RUN_HEALTHCHECK=true
+RUN_PREWARM=true
 
 usage() {
     cat <<EOF_USAGE
@@ -27,12 +30,15 @@ healthy. Never rebuilds images unless --build is given.
 Options:
   --build            Build images before starting (docker compose up -d --build)
   --no-healthcheck   Start services but skip the post-start health check
+  --no-prewarm       Skip the post-health-check Ollama model prewarm, even if
+                     OLLAMA_PREWARM_ENABLED=true in .env.oracle
   -h, --help         Show this help message
 
 Examples:
   $(basename "$0")
   $(basename "$0") --build
   $(basename "$0") --no-healthcheck
+  $(basename "$0") --no-prewarm
 EOF_USAGE
 }
 
@@ -45,6 +51,10 @@ parse_arguments() {
                 ;;
             --no-healthcheck)
                 RUN_HEALTHCHECK=false
+                shift
+                ;;
+            --no-prewarm)
+                RUN_PREWARM=false
                 shift
                 ;;
             -h|--help)
@@ -106,6 +116,17 @@ main() {
     else
         warn "Skipping post-start health check (--no-healthcheck)."
         success "Oracle stack start command completed."
+    fi
+
+    if [[ "$RUN_PREWARM" == true ]]; then
+        # Never fatal: a prewarm failure only produces a warning here — see
+        # oracle-prewarm-model.sh's own module doc for why. It is itself a
+        # no-op (exits 0 immediately) unless OLLAMA_PREWARM_ENABLED=true in
+        # .env.oracle, so this call is safe to leave unconditional.
+        "$ORACLE_SCRIPTS_DIR/oracle-prewarm-model.sh" \
+            || warn "Model prewarm did not complete — the first real chat request will be slower (see above)."
+    else
+        info "Skipping Ollama model prewarm (--no-prewarm)."
     fi
 }
 

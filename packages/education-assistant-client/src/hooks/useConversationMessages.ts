@@ -7,6 +7,7 @@ import {
   StreamingUnsupportedError,
 } from '../client/errors';
 import type { EducationAssistantClient } from '../client/EducationAssistantClient';
+import type { ChatStage } from '../types/chat';
 import type { Citation } from '../types/citations';
 import {
   displaySourceFromMessageSource,
@@ -42,6 +43,15 @@ export interface DisplayMessage {
   createdAt: string | null;
   streaming: boolean;
   error: string | null;
+  /**
+   * The most recent ChatProgressEvent stage received for this turn, e.g.
+   * 'loading_model' or 'generating' — for the UI to show instead of a
+   * generic "Connecting…" spinner while `streaming` is true and `content`
+   * is still empty. null for a persisted (already-loaded) message, and
+   * cleared back to null the moment the first token arrives (there is no
+   * more-specific status once real output is flowing).
+   */
+  stage: ChatStage | null;
   /**
    * Empty for an in-flight (not-yet-persisted) turn even when attachments
    * were sent along with it — the real metadata (id, size, page count)
@@ -92,6 +102,7 @@ function toDisplayMessages(conversation: ConversationDetail): DisplayMessage[] {
     createdAt: m.created_at,
     streaming: false,
     error: null,
+    stage: null,
     attachments: m.attachments ?? [],
   }));
 }
@@ -181,6 +192,7 @@ export function useConversationMessages(
         createdAt: null,
         streaming: false,
         error: null,
+        stage: null,
         attachments: [],
       };
       const assistantId = nextPlaceholderId('local-assistant');
@@ -195,6 +207,7 @@ export function useConversationMessages(
         createdAt: null,
         streaming: true,
         error: null,
+        stage: null,
         attachments: [],
       };
       // Drops the previously-failed local turn (if any) before appending
@@ -241,9 +254,12 @@ export function useConversationMessages(
           })) {
             if (!isCurrent()) return;
             switch (event.type) {
+              case 'progress':
+                patchAssistant({ stage: event.stage });
+                break;
               case 'token':
                 content += event.content;
-                patchAssistant({ content });
+                patchAssistant({ content, stage: null });
                 break;
               case 'sources':
                 patchAssistant({ sources: event.sources.map(displaySourceFromRetrievedChunk) });

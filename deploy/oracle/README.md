@@ -114,10 +114,46 @@ cp deploy/oracle/.env.oracle.example deploy/oracle/.env.oracle
 | Status dashboard | `./deploy/oracle/scripts/oracle-status.sh` |
 | Health check | `./deploy/oracle/scripts/oracle-healthcheck.sh` |
 | Logs (all services, follow) | `./deploy/oracle/scripts/oracle-logs.sh` |
-| Logs (one service) | `./deploy/oracle/scripts/oracle-logs.sh backend` |
+| Logs (Ollama, follow) | `./deploy/oracle/scripts/oracle-logs.sh ollama` |
+| Logs (specific service) | `./deploy/oracle/scripts/oracle-logs.sh backend` |
+| Logs (last 200 lines, then follow) | `./deploy/oracle/scripts/oracle-logs.sh backend --tail 200` |
+| Logs (only new entries) | `./deploy/oracle/scripts/oracle-logs.sh backend --tail 0` |
+| Logs (no follow) | `./deploy/oracle/scripts/oracle-logs.sh backend --no-follow` |
+| Logs (with timestamps) | `./deploy/oracle/scripts/oracle-logs.sh backend --timestamps` |
 | Logs (no follow, more lines) | `./deploy/oracle/scripts/oracle-logs.sh backend --tail 500 --no-follow` |
+| Ollama performance logs (chat requests, prompt processing, generation, errors) | `./deploy/oracle/scripts/oracle-logs.sh ollama --tail 0 --timestamps \| grep --line-buffered -E 'POST.*api/chat\|prompt processing\|generation\|print_timing\|error'` |
+| Prewarm the chat model | `./deploy/oracle/scripts/oracle-prewarm-model.sh --force` |
 
 Every script supports `--help`. All scripts work from any working directory — they resolve their own location internally.
+
+---
+
+## Ollama model prewarm
+
+`oracle-prewarm-model.sh` sends one minimal chat request (`think=false`, a
+one-token completion, output discarded — never printed) to the configured
+chat model (`OLLAMA_LLM_MODEL`) right after `oracle-start.sh`'s health check
+passes, so the model is already loaded into Ollama's memory before the first
+real user request arrives. On this CPU-only host, a cold `qwen3:8b` load
+alone was measured at ~44s; without prewarming, whoever sends the first chat
+message after a (re)start pays that cost inline (mitigated for *every* chat
+request, cold-loaded or not, by the SSE progress events described below —
+but prewarming removes the cold-load delay entirely for that first request).
+
+- **Off by default.** Set `OLLAMA_PREWARM_ENABLED=true` in `.env.oracle` to
+  enable it; `oracle-start.sh` then runs it automatically after every start,
+  or skip that one run with `--no-prewarm`.
+- **Never blocks startup.** A prewarm failure (model not pulled, Ollama
+  unreachable, timeout) only logs a warning — `oracle-start.sh` still
+  reports success as long as the health check itself passed. The app works
+  identically either way; only the first request's latency differs.
+- **Standalone use:** `oracle-prewarm-model.sh --force` runs it immediately
+  regardless of the `.env.oracle` setting — useful right after `ollama pull`
+  or when testing the timing difference below. `--timeout-seconds N`
+  overrides the default 180s wait.
+- Does **not** help a cold-load that happens later from inactivity —
+  `OLLAMA_KEEP_ALIVE` (currently `30m`, see `docker-compose.oracle.yml`)
+  still governs how long a loaded model stays resident between requests.
 
 ---
 
@@ -246,6 +282,8 @@ These came out of a full performance investigation and a series of targeted, mea
 | `EMBEDDING_BATCH_SIZE` | `32` | Raised from a hardcoded `8`. Measured: batching barely speeds up per-item embedding time on this CPU-only host (~5-8%, not a multiple) — the benefit is fewer HTTP round-trips, and 32 matches Ollama's own internal batch ceiling exactly. |
 | Chunk overlap | `200` chars (down from `450`) | A retrieval-quality evaluation (`scripts/eval_retrieval.py`, two isolated temp Qdrant collections, one real 2-document corpus, 16 questions including 10 boundary-sensitive ones reviewed manually) found **zero measurable Recall/MRR regression** between 450 and 200 — the real cross-page information-split failures that do exist are unaffected by this parameter either way. See `app/ingestion/chunker.py`'s `DEFAULT_CHUNK_OVERLAP_CHARS`. |
 | Nginx gzip + immutable caching | on | `deploy/frontend/nginx.conf` gzips text/JS/CSS/font responses and serves hashed static assets (`js/css/fonts/images`) with `Cache-Control: public, immutable` + a 1-year `expires`. |
+| SSE progress events | always on | The chat stream now sends `connected` / `retrieving` / `processing_context` / `loading_model` / `generating` status events before the first answer token, so the frontend shows real status instead of an indefinite "Connecting…" spinner while a cold model load (~44s measured) or a long prompt evaluation (155s+ measured past 2,560 tokens) is in progress. See `app/schemas/chat.py`'s `ChatProgressEvent`. |
+| `OLLAMA_PREWARM_ENABLED` | `false` | Optional: preloads the chat model at startup so the *first* post-restart chat request skips the cold-load cost too. See "Ollama model prewarm" above. |
 
 ---
 

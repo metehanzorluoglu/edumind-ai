@@ -100,6 +100,8 @@ export type {
 export type {
   ChatRequest,
   ChatEvent,
+  ChatStage,
+  ChatProgressEvent,
   ChatTokenEvent,
   ChatSourcesEvent,
   ChatDoneEvent,

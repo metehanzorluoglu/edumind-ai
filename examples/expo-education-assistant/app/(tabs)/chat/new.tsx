@@ -61,6 +61,7 @@ function pendingAssistantTurn(): DisplayMessage {
     createdAt: null,
     streaming: true,
     error: null,
+    stage: null,
     attachments: [],
   };
 }
@@ -219,9 +220,12 @@ export default function NewChatScreen() {
         signal: controller.signal,
       })) {
         switch (event.type) {
+          case 'progress':
+            patchAssistantTurn({ stage: event.stage });
+            break;
           case 'token':
             content += event.content;
-            patchAssistantTurn({ content });
+            patchAssistantTurn({ content, stage: null });
             break;
           case 'sources':
             patchAssistantTurn({ sources: event.sources.map(displaySourceFromRetrievedChunk) });

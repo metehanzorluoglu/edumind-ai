@@ -90,6 +90,49 @@ def test_server_timing_header_format() -> None:
     assert "total;dur=" in header
 
 
+def test_disabled_timer_record_metric_is_a_true_noop() -> None:
+    timer = RequestTimer(enabled=False)
+
+    timer.record_metric("actual_prompt_tokens", 2560)
+
+    assert timer.as_dict() == {}
+
+
+def test_enabled_timer_records_metric_value() -> None:
+    """Unlike record() (a duration, summed across repeated calls),
+    record_metric() is a point-in-time value — a count or rate straight
+    from Ollama's own reported stats (see llm_provider.py's
+    _record_ollama_metrics)."""
+    timer = RequestTimer(enabled=True)
+
+    timer.record_metric("completion_token_count", 42)
+
+    assert timer.as_dict()["completion_token_count"] == 42
+
+
+def test_enabled_timer_record_metric_last_write_wins() -> None:
+    """Deliberately different from record()'s summing behavior: a metric
+    re-recorded under the same name (e.g. a value refined once more data
+    is available) replaces, not accumulates."""
+    timer = RequestTimer(enabled=True)
+
+    timer.record_metric("decode_tokens_per_second", 4.2)
+    timer.record_metric("decode_tokens_per_second", 5.5)
+
+    assert timer.as_dict()["decode_tokens_per_second"] == 5.5
+
+
+def test_record_metric_and_record_coexist_in_as_dict() -> None:
+    timer = RequestTimer(enabled=True)
+
+    timer.record("embedding", 10.0)
+    timer.record_metric("retrieved_chunk_count", 3)
+
+    timings = timer.as_dict()
+    assert timings["embedding"] == 10.0
+    assert timings["retrieved_chunk_count"] == 3
+
+
 def test_get_current_timer_defaults_to_disabled_singleton() -> None:
     assert get_current_timer() is DISABLED_TIMER
 

@@ -1,5 +1,5 @@
 import { mapSourcesToCitations, splitAnswerIntoSegments } from 'education-assistant-client';
-import type { DisplayMessage, RetrievedChunk } from 'education-assistant-client';
+import type { ChatStage, DisplayMessage, RetrievedChunk } from 'education-assistant-client';
 import { useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { AttachmentChip } from '@/components/AttachmentChip';
@@ -9,6 +9,21 @@ import type { ImageGenerationFormInitialValues } from '@/components/ImageGenerat
 import { MarkdownAnswer } from '@/components/MarkdownAnswer';
 import { SourceCard, UnavailableSourceChip } from '@/components/SourceCard';
 import type { AttachmentChipInfo, PendingAttachment } from '@/lib/chatAttachments';
+
+// Mirrors app/schemas/chat.py's ChatStage — shown in place of a static
+// "Connecting…" spinner while waiting on a slow (CPU-only Ollama) backend,
+// where a cold model load alone can take tens of seconds and prompt
+// evaluation on a long context well over a minute, with nothing else on
+// the wire in the meantime. A stage this build doesn't recognize (e.g. a
+// future backend addition) falls back to the same generic "Connecting…"
+// text via the `?? 'Connecting…'` below, never a blank label.
+const STAGE_LABELS: Record<ChatStage, string> = {
+  connected: 'Connecting…',
+  retrieving: 'Searching your documents…',
+  processing_context: 'Preparing context…',
+  loading_model: 'Waking up the model…',
+  generating: 'Generating answer…',
+};
 
 /** DisplaySource unifies persisted/live sources but allows a null document_id (a since-deleted document); mapSourcesToCitations only uses document_id for its join key, never for display, so substituting '' here is safe — see types/conversations.ts. */
 function toRetrievedChunk(source: DisplayMessage['sources'][number]): RetrievedChunk {
@@ -120,7 +135,9 @@ export function ConversationTurnCard({
             {assistant?.streaming && answer.length === 0 && (
               <View style={styles.centered}>
                 <ActivityIndicator />
-                <Text style={styles.hint}>Connecting…</Text>
+                <Text style={styles.hint}>
+                  {(assistant.stage && STAGE_LABELS[assistant.stage]) || 'Connecting…'}
+                </Text>
               </View>
             )}
 

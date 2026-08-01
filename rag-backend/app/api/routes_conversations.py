@@ -64,6 +64,7 @@ from app.schemas.chat import (
     ChatDoneEvent,
     ChatErrorEvent,
     ChatEvent,
+    ChatProgressEvent,
     ChatSourcesEvent,
     ChatTokenEvent,
     TransparencyResponse,
@@ -630,6 +631,35 @@ def _stream_text_reply(
         )
 
     def event_stream() -> Iterator[str]:
+        # Progress events (milestone: fix the indefinite "Connecting…" UI
+        # on a CPU-only Ollama host — a cold model load alone was measured
+        # at ~44s, and prompt evaluation past 2,560 tokens at 155s+, with
+        # nothing sent to the client in the meantime before this existed).
+        # All progress events are sent before the first ChatTokenEvent,
+        # never after — see ChatProgressEvent's docstring. A client that
+        # doesn't recognize `type: "progress"` skips it (parseChatEvent's
+        # existing forward-compatible unknown-type handling) and simply
+        # keeps whatever "connecting" state it already shows, so this is
+        # purely additive: no existing token/sources/done consumer changes
+        # behavior from these being present.
+        yield _sse(ChatProgressEvent(stage="connected"))
+        yield _sse(ChatProgressEvent(stage="retrieving"))
+        yield _sse(ChatProgressEvent(stage="processing_context"))
+
+        if timer.enabled:
+            timer.record_metric("retrieved_chunk_count", len(prepared.retrieved_sources))
+            timer.record_metric(
+                "context_characters", sum(len(c.text) for c in prepared.retrieved_sources)
+            )
+            # chars/4 is a rough, well-known heuristic (not a real
+            # tokenizer call) — see actual_prompt_tokens in
+            # app/core/llm_provider.py's _record_ollama_metrics for
+            # Ollama's own, authoritative prompt_eval_count once the LLM
+            # call finishes; this estimate exists specifically to be
+            # available *before* that, when only prompt length is known.
+            estimated_prompt_chars = len(prepared.system_prompt) + len(prepared.user_prompt)
+            timer.record_metric("estimated_prompt_tokens", round(estimated_prompt_chars / 4))
+
         if prepared.insufficient_evidence:
             transparency = _transparency_dict(prepared.retrieved_sources)
             yield _sse(ChatTokenEvent(content=NO_EVIDENCE_ANSWER))
@@ -654,6 +684,16 @@ def _stream_text_reply(
             )
             return
 
+        # Sent immediately, before the blocking Ollama call below — this is
+        # the pair of events that actually covers the long CPU-host wait
+        # (cold model load + prompt evaluation). Both fire back to back
+        # since the backend has no way to distinguish "still loading" from
+        # "now evaluating the prompt" from outside Ollama's own process;
+        # together they replace "Connecting…" with a status that stays
+        # visible for the whole wait instead of going stale.
+        yield _sse(ChatProgressEvent(stage="loading_model"))
+        yield _sse(ChatProgressEvent(stage="generating"))
+
         answer_parts: list[str] = []
         # _timed_token_stream adds per-token bookkeeping (see its
         # docstring) — only worth paying for, and only constructed, when
@@ -661,9 +701,9 @@ def _stream_text_reply(
         # rag_service.stream_answer(prepared) exactly as before this
         # instrumentation existed.
         token_stream = (
-            _timed_token_stream(rag_service.stream_answer(prepared), timer)
+            _timed_token_stream(rag_service.stream_answer(prepared, timer=timer), timer)
             if timer.enabled
-            else rag_service.stream_answer(prepared)
+            else rag_service.stream_answer(prepared, timer=timer)
         )
         try:
             for token in token_stream:
