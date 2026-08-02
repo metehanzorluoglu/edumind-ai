@@ -250,6 +250,47 @@ Every `oracle-*.sh` script supports `--help`, uses `set -Eeuo pipefail`, works f
 
 ---
 
+# Frontend Operations
+
+Full detail: [`deploy/frontend/README.md`](frontend/README.md).
+
+The `deploy/frontend/` directory contains the frontend image recipe (`Dockerfile`, `nginx.conf` — Expo web static export served by nginx, published on test port **8080**) plus an operations toolkit that controls **only the `frontend` service** of the Oracle Compose stack (`edumind-oracle`, defined in `deploy/oracle/docker-compose.oracle.yml`).
+
+```
+deploy/frontend/
+├── README.md
+├── Dockerfile
+├── nginx.conf
+└── scripts/
+    ├── lib/common.sh
+    ├── frontend-start.sh
+    ├── frontend-stop.sh
+    ├── frontend-restart.sh
+    ├── frontend-update.sh
+    ├── frontend-logs.sh
+    └── frontend-status.sh
+```
+
+| Action | Command |
+|---|---|
+| Start | `./deploy/frontend/scripts/frontend-start.sh` |
+| Start (rebuild image) | `./deploy/frontend/scripts/frontend-start.sh --build` |
+| Stop (frontend only) | `./deploy/frontend/scripts/frontend-stop.sh` |
+| Restart (frontend only) | `./deploy/frontend/scripts/frontend-restart.sh` |
+| Restart (rebuild image) | `./deploy/frontend/scripts/frontend-restart.sh --build` |
+| Status dashboard | `./deploy/frontend/scripts/frontend-status.sh` |
+| Logs (follow) | `./deploy/frontend/scripts/frontend-logs.sh` |
+| Logs (options) | `./deploy/frontend/scripts/frontend-logs.sh --tail 200 --timestamps --since 10m` |
+| Update (plan only) | `./deploy/frontend/scripts/frontend-update.sh --show-plan` |
+| Update (dry run) | `./deploy/frontend/scripts/frontend-update.sh --dry-run` |
+| Update | `./deploy/frontend/scripts/frontend-update.sh --yes` |
+
+**These scripts never restart the Oracle backend, Ollama, Qdrant, or the `backend-migrate` job** — every container operation uses `frontend`-scoped Compose commands (`stop frontend`, `up -d --force-recreate --no-deps frontend`), never `docker compose down`, and never touches persistent volumes or networks. `frontend-update.sh` fetches and fast-forwards `UPDATE_REMOTE`/`UPDATE_BRANCH` (defaults `origin`/`main`), rebuilds only when frontend-related paths changed (`deploy/frontend/`, `examples/expo-education-assistant/`, `packages/education-assistant-client/` — or `--force-build`), verifies health at `http://127.0.0.1:8080/health` and `/`, and prints rollback instructions. `frontend-status.sh` reports container/image/health/restart-count/ports, HTTP + gzip + cache headers (hashed assets cached one year and immutable; `index.html` not immutable), CPU/memory, image size, Git branch/commit, working-tree drift in frontend paths, and whether the running image predates the latest frontend source change — and never fails just because the frontend is still starting.
+
+Every `frontend-*.sh` script supports `--help`, uses `set -Eeuo pipefail`, works from any current working directory, and never prints secret values from `deploy/oracle/.env.oracle` (only `EXPO_PUBLIC_*` values are ever baked into the frontend — see the security guidance in [`deploy/frontend/README.md`](frontend/README.md)).
+
+---
+
 # Current Production Features
 
 Current deployment includes
