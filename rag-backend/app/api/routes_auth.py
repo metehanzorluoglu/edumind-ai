@@ -13,8 +13,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
+from app.core.auth_rate_limiter import enforce_auth_rate_limit
 from app.core.auth_service import (
+    EmailAlreadyRegisteredError,
+    UnverifiedEmailConflictError,
+    authenticate_local_user,
     issue_tokens_for_user,
+    register_local_user,
     revoke_refresh_token,
     rotate_refresh_token,
     upsert_dev_test_user,
@@ -33,10 +38,12 @@ from app.db.models_auth import OAuthAccount, OAuthTransaction, User
 from app.deps import DBSessionDep, SettingsDep
 from app.schemas.auth import (
     DevLoginRequest,
+    LoginRequest,
     LogoutRequest,
     ProviderInfo,
     ProvidersResponse,
     RefreshRequest,
+    RegisterRequest,
     SessionExchangeRequest,
     TokenResponse,
     UserResponse,
@@ -55,12 +62,49 @@ def _dev_login_available(settings: Settings) -> bool:
     return settings.auth_dev_login_enabled and settings.app_env != "production"
 
 
+def _enforce_rate_limit(
+    db: Session,
+    *,
+    route: str,
+    request: Request,
+    email: str,
+    max_attempts: int,
+    window_seconds: float,
+) -> None:
+    """Shared by post_register/post_login — see
+    app/core/auth_rate_limiter.py for why this is DB-backed rather than
+    the in-memory app/core/rate_limiter.py (this deployment runs multiple
+    uvicorn workers). Raises the same 429 shape
+    app/api/routes_conversations.py already uses for the chat rate limiter
+    (a `Retry-After` header, seconds rounded up to at least 1) — never
+    reveals whether the IP or the email bucket was the one that tripped."""
+    result = enforce_auth_rate_limit(
+        db,
+        route=route,
+        ip_address=request.client.host if request.client else None,
+        email=email,
+        max_attempts=max_attempts,
+        window_seconds=window_seconds,
+    )
+    if not result.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many attempts. Please try again later.",
+            headers={"Retry-After": str(max(1, round(result.retry_after_seconds)))},
+        )
+
+
 def _linked_provider(db: Session, user_id: uuid.UUID) -> str | None:
     """The OAuth provider this user first signed in with, or None for a
     dev-login test account — see upsert_dev_test_user, which never creates
-    an OAuthAccount row. A user can only ever accumulate more than one
-    linked account through a future "link another provider" flow, which
-    doesn't exist yet, so `created_at` ordering here is just defensive."""
+    an OAuthAccount row. Also None for a purely local (password-only)
+    account with no linked OAuthAccount row at all — see
+    register_local_user; the frontend's Settings screen already renders
+    None as a plain email address rather than "Signed in with ...", which
+    is exactly the right fallback here too. A user can only ever
+    accumulate more than one linked account through a future "link another
+    provider" flow, which doesn't exist yet, so `created_at` ordering here
+    is just defensive."""
     account = db.execute(
         select(OAuthAccount)
         .where(OAuthAccount.user_id == user_id)
@@ -139,7 +183,119 @@ def get_providers(settings: SettingsDep) -> ProvidersResponse:
         for name in _PROVIDER_NAMES
         if (config := get_provider_config(name, settings)) is not None
     ]
-    return ProvidersResponse(providers=providers, dev_login_enabled=_dev_login_available(settings))
+    return ProvidersResponse(
+        providers=providers,
+        dev_login_enabled=_dev_login_available(settings),
+        local_auth_enabled=settings.auth_local_login_enabled,
+    )
+
+
+@router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+def post_register(
+    body: RegisterRequest,
+    request: Request,
+    response: Response,
+    settings: SettingsDep,
+    db: DBSessionDep,
+) -> TokenResponse:
+    """Creates a local (email/password) account and immediately signs the
+    caller in — this app has no email-delivery provider (see
+    deploy/oracle/README.md's "Email verification status"), so there is no
+    verification step; the new account's `email_verified` stays False,
+    same as it would for any address a provider itself hadn't confirmed.
+    An existing OAuth-only user with the same normalized email gets this
+    password attached to their existing account instead of a second user
+    being created — see register_local_user's docstring. Returns the same
+    TokenResponse shape as every other login path in this app.
+    """
+    if not settings.auth_local_login_enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    _enforce_rate_limit(
+        db,
+        route="register",
+        request=request,
+        email=body.email,
+        max_attempts=settings.auth_register_rate_limit_max_attempts,
+        window_seconds=settings.auth_register_rate_limit_window_seconds,
+    )
+
+    try:
+        user = register_local_user(
+            db,
+            normalized_email=body.email,
+            password=body.password,
+            display_name=body.display_name,
+        )
+    except EmailAlreadyRegisteredError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account with this email already exists.",
+        ) from exc
+
+    tokens = issue_tokens_for_user(
+        db,
+        settings,
+        user,
+        user_agent=request.headers.get("user-agent"),
+        ip_address=request.client.host if request.client else None,
+    )
+    _set_refresh_cookie(response, tokens.refresh_token, settings, request=request)
+    return TokenResponse(
+        access_token=tokens.access_token,
+        refresh_token=tokens.refresh_token,
+        expires_in=tokens.expires_in_seconds,
+        user=_user_response(user, db),
+    )
+
+
+@router.post("/login", response_model=TokenResponse)
+def post_login(
+    body: LoginRequest,
+    request: Request,
+    response: Response,
+    settings: SettingsDep,
+    db: DBSessionDep,
+) -> TokenResponse:
+    """Local email/password sign-in — reuses the exact same session/token
+    architecture as every OAuth login path (see issue_tokens_for_user).
+    Always returns the same generic 401 for an unknown email, an
+    OAuth-only account (no password set), an inactive account, and a
+    genuinely wrong password — never reveals which one actually happened
+    (see authenticate_local_user).
+    """
+    if not settings.auth_local_login_enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    _enforce_rate_limit(
+        db,
+        route="login",
+        request=request,
+        email=body.email,
+        max_attempts=settings.auth_login_rate_limit_max_attempts,
+        window_seconds=settings.auth_login_rate_limit_window_seconds,
+    )
+
+    user = authenticate_local_user(db, normalized_email=body.email, password=body.password)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password"
+        )
+
+    tokens = issue_tokens_for_user(
+        db,
+        settings,
+        user,
+        user_agent=request.headers.get("user-agent"),
+        ip_address=request.client.host if request.client else None,
+    )
+    _set_refresh_cookie(response, tokens.refresh_token, settings, request=request)
+    return TokenResponse(
+        access_token=tokens.access_token,
+        refresh_token=tokens.refresh_token,
+        expires_in=tokens.expires_in_seconds,
+        user=_user_response(user, db),
+    )
 
 
 @router.get("/{provider}/authorize")
@@ -212,7 +368,15 @@ def get_callback(
     try:
         with httpx.Client() as client:
             identity = fetch_verified_identity(
-                config, code=code, code_verifier=transaction.code_verifier or "", client=client
+                config,
+                code=code,
+                code_verifier=transaction.code_verifier or "",
+                client=client,
+                # `state` doubles as the nonce this transaction's authorize
+                # call sent to the provider (see build_authorize_url) — the
+                # only value this callback has to compare an id_token's own
+                # nonce claim against.
+                expected_nonce=state,
             )
     except OAuthProviderError as exc:
         # Never logs `code` or any provider secret — OAuthProviderError's
@@ -230,7 +394,20 @@ def get_callback(
             headers={"Location": _append_query(app_redirect_uri, auth_error="email_required")},
         )
 
-    user = upsert_user_from_identity(db, identity)
+    try:
+        user = upsert_user_from_identity(db, identity)
+    except UnverifiedEmailConflictError:
+        # Never a raw 500 (see UnverifiedEmailConflictError's docstring) —
+        # a safe redirect the frontend can turn into "sign in with your
+        # existing method for this email instead" copy (see
+        # AuthProvider.tsx's describeAuthError). Never logs the email
+        # itself: which specific address collided is not privileged
+        # information this log line needs to carry.
+        logger.warning("OAuth callback for provider=%s: unverified email conflict", provider)
+        return Response(
+            status_code=status.HTTP_302_FOUND,
+            headers={"Location": _append_query(app_redirect_uri, auth_error="email_conflict")},
+        )
     tokens = issue_tokens_for_user(db, settings, user)
 
     auth_code = secrets.token_urlsafe(32)

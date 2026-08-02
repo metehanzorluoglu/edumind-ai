@@ -19,18 +19,25 @@ export interface AuthProviderInfo {
 export interface AuthProvidersResponse {
   providers: AuthProviderInfo[] | null | undefined;
   dev_login_enabled: unknown;
+  /** Whether POST /auth/register and POST /auth/login are available at
+   * all — see app/config.py's auth_local_login_enabled. Deliberately a
+   * separate signal from `providers` (which only ever lists *OAuth*
+   * providers): an empty `providers` array must never be read as "no
+   * authentication available" when this is true. */
+  local_auth_enabled: unknown;
 }
 
 /**
  * The normalized, camelCase shape EducationAssistantClient.getAuthProviders()
- * actually returns. `providers` defaults to `[]` (never null/undefined) and
- * `devLoginEnabled` is only ever `true` for a strict boolean `true` in the
- * wire response — anything else (missing field, `1`, `"true"`, etc.) is
- * treated as disabled, never silently coerced truthy.
+ * actually returns. `providers` defaults to `[]` (never null/undefined),
+ * `devLoginEnabled`/`localAuthEnabled` are only ever `true` for a strict
+ * boolean `true` in the wire response — anything else (missing field, `1`,
+ * `"true"`, etc.) is treated as disabled, never silently coerced truthy.
  */
 export interface AuthProviders {
   providers: AuthProviderInfo[];
   devLoginEnabled: boolean;
+  localAuthEnabled: boolean;
 }
 
 export interface AuthUser {
@@ -49,4 +56,20 @@ export interface AuthTokenResponse {
   token_type: 'bearer';
   expires_in: number;
   user: AuthUser;
+}
+
+/** POST /auth/register's request body — see app/schemas/auth.py's
+ * RegisterRequest. `password` is never logged or echoed back by this SDK
+ * (see EducationAssistantClient.register). */
+export interface RegisterRequestBody {
+  email: string;
+  password: string;
+  display_name?: string | null;
+}
+
+/** POST /auth/login's request body — see app/schemas/auth.py's
+ * LoginRequest. */
+export interface LoginRequestBody {
+  email: string;
+  password: string;
 }

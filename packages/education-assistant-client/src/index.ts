@@ -114,9 +114,12 @@ export type { HealthResponse, ReadinessResponse } from './types/health';
 export type { StatusResponse } from './types/status';
 export type {
   AuthProviderInfo,
+  AuthProviders,
   AuthProvidersResponse,
   AuthTokenResponse,
   AuthUser,
+  LoginRequestBody,
+  RegisterRequestBody,
 } from './types/auth';
 export {
   displaySourceFromMessageSource,

@@ -13,8 +13,10 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session as DBSession
 
 from app.config import Settings
+from app.core.email_normalization import normalize_email
 from app.core.jwt import create_access_token
 from app.core.oauth_providers import VerifiedIdentity
+from app.core.password_hashing import hash_password, verify_password
 from app.core.refresh_tokens import generate_refresh_token, hash_refresh_token
 from app.core.time_utils import ensure_utc, utcnow
 from app.db.models_auth import OAuthAccount, User
@@ -64,6 +66,18 @@ def issue_tokens_for_user(
     )
 
 
+class UnverifiedEmailConflictError(Exception):
+    """Raised by upsert_user_from_identity when an *unverified* provider
+    email matches an address a different, already-existing user already
+    owns. Refusing this outright is the entire point of never trusting an
+    unverified email (see the function's own docstring) — without this
+    explicit check, falling through to `User(email=normalized_email, ...)`
+    would hit `users.email`'s UNIQUE constraint (app/db/models_auth.py)
+    and raise an unhandled IntegrityError (an opaque 500) instead of a
+    clean, safe rejection the callback can redirect on (see
+    app/api/routes_auth.py's `auth_error=email_conflict`)."""
+
+
 def upsert_user_from_identity(db: DBSession, identity: VerifiedIdentity) -> User:
     """Resolves a verified provider identity to a `users` row.
 
@@ -73,8 +87,10 @@ def upsert_user_from_identity(db: DBSession, identity: VerifiedIdentity) -> User
     user by that email; an *unverified* email is never used to merge into
     an existing account, since that would let anyone claim an existing
     account just by typing its address into an unrelated provider's profile
-    field. Requires `identity.email is not None` — callers must handle the
-    "provider returned no email" case before ever reaching here (see
+    field — see UnverifiedEmailConflictError for what happens instead when
+    that unverified email collides with someone else's. Requires
+    `identity.email is not None` — callers must handle the "provider
+    returned no email" case before ever reaching here (see
     app/api/routes_auth.py's callback handler).
     """
     if identity.email is None:
@@ -93,10 +109,15 @@ def upsert_user_from_identity(db: DBSession, identity: VerifiedIdentity) -> User
         db.flush()
         return user
 
-    normalized_email = identity.email.strip().lower()
+    normalized_email = normalize_email(identity.email)
     user = None
     if identity.email_verified:
         user = db.execute(select(User).where(User.email == normalized_email)).scalar_one_or_none()
+    elif (
+        db.execute(select(User.id).where(User.email == normalized_email)).scalar_one_or_none()
+        is not None
+    ):
+        raise UnverifiedEmailConflictError(normalized_email)
 
     if user is None:
         user = User(
@@ -139,7 +160,7 @@ def upsert_dev_test_user(db: DBSession, *, email: str, display_name: str | None)
     settings.auth_dev_login_enabled + a non-production app_env (see
     app/api/routes_auth.py).
     """
-    normalized_email = email.strip().lower()
+    normalized_email = normalize_email(email)
     existing_account = db.execute(
         select(OAuthAccount).where(
             OAuthAccount.provider == "dev", OAuthAccount.provider_account_id == normalized_email
@@ -260,3 +281,93 @@ def revoke_refresh_token(db: DBSession, raw_refresh_token: str) -> bool:
     session.revoked_at = utcnow()
     db.commit()
     return True
+
+
+class EmailAlreadyRegisteredError(Exception):
+    """Raised by register_local_user when the normalized email already
+    belongs to a user who already has a password credential — a genuine
+    duplicate-registration attempt. Never raised for an existing
+    *OAuth-only* user with the same email; that case links the new
+    password onto the existing account instead (see the function's own
+    docstring)."""
+
+
+def register_local_user(
+    db: DBSession, *, normalized_email: str, password: str, display_name: str | None
+) -> User:
+    """Creates a new local (password) account, or attaches a password
+    credential to an existing OAuth-only user with the same normalized
+    email — never creates a second `users` row for an email that already
+    exists (mirrors upsert_user_from_identity's "one user per normalized
+    email" invariant). Raises EmailAlreadyRegisteredError if the existing
+    user already has a password set, so the caller
+    (POST /auth/register) can return a safe, generic 409 without ever
+    revealing which provider the existing account actually uses.
+
+    `normalized_email` must already be normalized (see
+    app/core/email_normalization.py) — this function does not normalize it
+    itself, matching every other function in this module.
+    """
+    existing = db.execute(
+        select(User).where(User.email == normalized_email)
+    ).scalar_one_or_none()
+    if existing is not None:
+        if existing.password_hash is not None:
+            raise EmailAlreadyRegisteredError(normalized_email)
+        existing.password_hash = hash_password(password)
+        if display_name and not existing.display_name:
+            existing.display_name = display_name
+        db.commit()
+        return existing
+
+    user = User(
+        email=normalized_email,
+        # A self-registered local account has had its email confirmed by
+        # no one — never marked verified at creation. Mirrors
+        # upsert_user_from_identity's own rule that only a provider's own
+        # verified assertion may set this; local registration has no
+        # third party to trust, and this app sends no verification email
+        # (see deploy/oracle/README.md's "Email verification status").
+        email_verified=False,
+        password_hash=hash_password(password),
+        display_name=display_name,
+    )
+    db.add(user)
+    db.commit()
+    return user
+
+
+# A fixed, non-secret Argon2 hash of an arbitrary constant string —
+# verified against on every login attempt that can't reach a real
+# verify_password() call (no such user, or an OAuth-only user with no
+# password_hash at all), purely to keep authenticate_local_user's execution
+# time roughly constant regardless of *why* the attempt failed. Without
+# this, "unknown email" would return almost immediately (one indexed SELECT
+# miss) while "known email, wrong password" would take however long a real
+# Argon2 verify takes — an account-enumeration timing side channel.
+# Computed once at import time (hashing takes real, deliberate CPU time —
+# doing it per-request would be wasted work for a value that never
+# changes) rather than a hand-encoded literal, since that would need
+# argon2-cffi's exact parameter/salt encoding maintained by hand for no
+# benefit.
+_DUMMY_PASSWORD_HASH = hash_password("dummy-password-for-timing-parity-only")
+
+
+def authenticate_local_user(db: DBSession, *, normalized_email: str, password: str) -> User | None:
+    """Returns the matching, active local user if `password` verifies
+    against their stored Argon2id hash, else None — covers "no such
+    user", "user exists but is OAuth-only (no password set)", "user is
+    inactive", and "wrong password" all identically, so the caller
+    (POST /auth/login) can return one generic "Invalid email or password"
+    for every case without revealing which one actually happened.
+    `normalized_email` must already be normalized.
+    """
+    user = db.execute(
+        select(User).where(User.email == normalized_email)
+    ).scalar_one_or_none()
+    if user is None or user.password_hash is None or not user.is_active:
+        verify_password(password, _DUMMY_PASSWORD_HASH)
+        return None
+    if not verify_password(password, user.password_hash):
+        return None
+    return user

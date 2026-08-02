@@ -136,10 +136,29 @@ def build_authorize_url(config: ProviderConfig, *, state: str, code_challenge: s
 
 
 def fetch_verified_identity(
-    config: ProviderConfig, *, code: str, code_verifier: str, client: httpx.Client
+    config: ProviderConfig,
+    *,
+    code: str,
+    code_verifier: str,
+    client: httpx.Client,
+    expected_nonce: str | None = None,
 ) -> VerifiedIdentity:
+    """`expected_nonce` is only meaningful for an OIDC id_token flow
+    (currently just Google — see build_authorize_url, which sets the
+    `nonce` authorize-request param to the same value as `state`) and is
+    ignored by providers with no id_token to check it against. Passing
+    None skips nonce verification entirely — used only by call sites that
+    have no transaction state to compare against (there are none in this
+    app's own routes; every real caller passes the OAuthTransaction's
+    `state`)."""
     if config.name == "google":
-        return _google_identity(config, code=code, code_verifier=code_verifier, client=client)
+        return _google_identity(
+            config,
+            code=code,
+            code_verifier=code_verifier,
+            client=client,
+            expected_nonce=expected_nonce,
+        )
     if config.name == "facebook":
         return _facebook_identity(config, code=code, code_verifier=code_verifier, client=client)
     if config.name == "linkedin":
@@ -176,7 +195,12 @@ def _post_token_request(
 
 
 def _google_identity(
-    config: ProviderConfig, *, code: str, code_verifier: str, client: httpx.Client
+    config: ProviderConfig,
+    *,
+    code: str,
+    code_verifier: str,
+    client: httpx.Client,
+    expected_nonce: str | None = None,
 ) -> VerifiedIdentity:
     token_body = _post_token_request(
         _GOOGLE_TOKEN_URL, config=config, code=code, code_verifier=code_verifier, client=client
@@ -200,6 +224,17 @@ def _google_identity(
 
     if claims.get("iss") not in _GOOGLE_ISSUERS:
         raise OAuthProviderError("Google id_token has an unexpected issuer")
+
+    # build_authorize_url sets the authorize request's `nonce` param to the
+    # same value as `state` (see its own comment) — verifying it round-trips
+    # unchanged in the returned id_token is what actually makes `nonce`
+    # meaningful: it binds this specific id_token to this specific
+    # authorization attempt, so a captured/replayed id_token from a
+    # *different* login attempt (even a legitimate one, e.g. via a
+    # malicious app on the same device intercepting a token) is rejected
+    # here rather than silently accepted.
+    if expected_nonce is not None and claims.get("nonce") != expected_nonce:
+        raise OAuthProviderError("Google id_token failed nonce verification")
 
     sub = claims.get("sub")
     if not isinstance(sub, str):

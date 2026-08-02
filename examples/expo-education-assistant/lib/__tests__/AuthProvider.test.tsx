@@ -376,11 +376,163 @@ describe('AuthProvider', () => {
     expect(box.current.status).toBe('unauthenticated');
     expect(box.current.user).toBeNull();
   });
+
+  it('normalizes the snake_case GET /auth/providers response (local_auth_enabled) into camelCase state (localAuthEnabled)', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/auth/refresh')) return jsonResponse({ detail: 'none' }, 401);
+      if (url.includes('/auth/providers')) {
+        return jsonResponse({ providers: [], dev_login_enabled: false, local_auth_enabled: true });
+      }
+      throw new Error(`unexpected fetch to ${url}`);
+    }) as unknown as typeof fetch;
+
+    const box = await renderAuth();
+
+    expect(box.current.localAuthEnabled).toBe(true);
+  });
+
+  it('login() authenticates and stores the returned user', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/auth/refresh')) return jsonResponse({ detail: 'none' }, 401);
+      if (url.includes('/auth/providers')) {
+        return jsonResponse({ providers: [], dev_login_enabled: false, local_auth_enabled: true });
+      }
+      if (url.includes('/auth/login')) {
+        const body = JSON.parse(String(init?.body));
+        expect(body).toEqual({ email: 'user@example.com', password: 'correct-password-1' });
+        return jsonResponse({
+          access_token: 'login-access-token',
+          refresh_token: 'login-refresh-token',
+          token_type: 'bearer',
+          expires_in: 900,
+          user: {
+            id: 'u1',
+            email: 'user@example.com',
+            display_name: null,
+            avatar_url: null,
+            is_dev_test_user: false,
+            provider: null,
+          },
+        });
+      }
+      throw new Error(`unexpected fetch to ${url}`);
+    }) as unknown as typeof fetch;
+
+    const box = await renderAuth();
+
+    await act(async () => {
+      await box.current.login('user@example.com', 'correct-password-1');
+    });
+
+    expect(box.current.status).toBe('authenticated');
+    expect(box.current.accessToken).toBe('login-access-token');
+    expect(box.current.user?.email).toBe('user@example.com');
+  });
+
+  it('login() failure surfaces the backend\'s generic error message and stays unauthenticated', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/auth/refresh')) return jsonResponse({ detail: 'none' }, 401);
+      if (url.includes('/auth/providers')) {
+        return jsonResponse({ providers: [], dev_login_enabled: false, local_auth_enabled: true });
+      }
+      if (url.includes('/auth/login')) {
+        return jsonResponse({ detail: 'Invalid email or password' }, 401);
+      }
+      throw new Error(`unexpected fetch to ${url}`);
+    }) as unknown as typeof fetch;
+
+    const box = await renderAuth();
+
+    await act(async () => {
+      await box.current.login('user@example.com', 'wrong-password');
+    });
+
+    expect(box.current.status).toBe('unauthenticated');
+    expect(box.current.error).toBe('Invalid email or password');
+  });
+
+  it('register() creates an account, signs in, and never sends a stale generation result', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/auth/refresh')) return jsonResponse({ detail: 'none' }, 401);
+      if (url.includes('/auth/providers')) {
+        return jsonResponse({ providers: [], dev_login_enabled: false, local_auth_enabled: true });
+      }
+      if (url.includes('/auth/register')) {
+        const body = JSON.parse(String(init?.body));
+        expect(body).toEqual({
+          email: 'new@example.com',
+          password: 'correct-password-1',
+          display_name: 'New User',
+        });
+        return jsonResponse(
+          {
+            access_token: 'register-access-token',
+            refresh_token: 'register-refresh-token',
+            token_type: 'bearer',
+            expires_in: 900,
+            user: {
+              id: 'u2',
+              email: 'new@example.com',
+              display_name: 'New User',
+              avatar_url: null,
+              is_dev_test_user: false,
+              provider: null,
+            },
+          },
+          201
+        );
+      }
+      throw new Error(`unexpected fetch to ${url}`);
+    }) as unknown as typeof fetch;
+
+    const box = await renderAuth();
+
+    await act(async () => {
+      await box.current.register('new@example.com', 'correct-password-1', 'New User');
+    });
+
+    expect(box.current.status).toBe('authenticated');
+    expect(box.current.user?.email).toBe('new@example.com');
+  });
+
+  it('register() failure (duplicate email) surfaces an error and stays unauthenticated', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/auth/refresh')) return jsonResponse({ detail: 'none' }, 401);
+      if (url.includes('/auth/providers')) {
+        return jsonResponse({ providers: [], dev_login_enabled: false, local_auth_enabled: true });
+      }
+      if (url.includes('/auth/register')) {
+        return jsonResponse({ detail: 'An account with this email already exists.' }, 409);
+      }
+      throw new Error(`unexpected fetch to ${url}`);
+    }) as unknown as typeof fetch;
+
+    const box = await renderAuth();
+
+    await act(async () => {
+      await box.current.register('dupe@example.com', 'correct-password-1');
+    });
+
+    expect(box.current.status).toBe('unauthenticated');
+    expect(box.current.error).toBe('An account with this email already exists.');
+  });
 });
 
 describe('describeAuthError', () => {
   it('maps email_required to a readable, actionable message', () => {
     expect(describeAuthError('email_required')).toMatch(/email/i);
+  });
+
+  it('maps email_conflict to a readable message that never confirms the account exists', () => {
+    const message = describeAuthError('email_conflict');
+    expect(message).toMatch(/email/i);
+    expect(message.toLowerCase()).not.toContain('already registered');
+    expect(message.toLowerCase()).not.toContain('already exists');
   });
 
   it('maps provider_error to a readable message', () => {

@@ -52,10 +52,12 @@ All five services run on one internal Docker network and share the `edumind-orac
 
 | Service | Container port | Published as | Notes |
 |---|---|---|---|
-| backend | 8000 | `0.0.0.0:8000` | **Temporary testing port** — see [Security guidance](#security-guidance) |
-| frontend | 80 | `0.0.0.0:8080` | **Temporary testing port** — see [Security guidance](#security-guidance) |
+| backend | 8000 | `127.0.0.1:8000` | Loopback only — reached publicly via Caddy + Cloudflare at `https://api.edum8.us`, see [Authentication](#authentication) |
+| frontend | 80 | `127.0.0.1:${FRONTEND_PORT:-8080}` | Loopback only — reached publicly via Caddy + Cloudflare at `https://edum8.us` |
 | qdrant | 6333 | `127.0.0.1:6333` | Loopback only — never exposed publicly |
 | ollama | 11434 | *(not published)* | Reachable only from sibling containers on the compose network |
+
+Caddy and Cloudflare (both configured outside this repo) terminate HTTPS on 80/443 and reverse-proxy to the two loopback ports above. Nothing in `deploy/oracle/` configures Caddy or Cloudflare themselves.
 
 ---
 
@@ -80,9 +82,11 @@ cp deploy/oracle/.env.oracle.example deploy/oracle/.env.oracle
 
 # 2. Fill in the placeholders in deploy/oracle/.env.oracle:
 #    - JWT_SECRET        (python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
-#    - <ORACLE_PUBLIC_IP> in CORS_ORIGINS / FRONTEND_URL / EXPO_PUBLIC_API_BASE_URL /
-#      ALLOWED_AUTH_REDIRECT_URIS — your VM's public IP or domain
-#    - OAuth client id/secret pairs, if you're enabling any provider
+#    - CORS_ORIGINS / FRONTEND_URL / EXPO_PUBLIC_API_BASE_URL / ALLOWED_AUTH_REDIRECT_URIS —
+#      already set to edum8.us's production domains; change only if deploying under a
+#      different domain — see the Authentication section for the exact values
+#    - GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET, only if enabling "Continue with Google"
+#      (local email/password sign-in needs no configuration — on by default)
 
 # 3. Start the stack
 ./deploy/oracle/scripts/oracle-start.sh --build   # --build on first run (images don't exist yet)
@@ -406,15 +410,128 @@ These came out of a full performance investigation and a series of targeted, mea
 
 ---
 
-## Security guidance
+## Authentication
 
-This deployment is currently configured for **testing, not public production use**. Before treating it as production:
+Production authentication for `https://edum8.us` — two independent ways to sign in (local email/password, and Google OAuth), sharing one JWT + refresh-token session architecture underneath. See `app/api/routes_auth.py`, `app/core/auth_service.py`, `app/core/oauth_providers.py`, `app/core/password_hashing.py`, `app/core/auth_rate_limiter.py`.
 
-- **Dev login is temporary.** `AUTH_DEV_LOGIN_ENABLED` exists purely for testing without a configured OAuth provider. It is hard-refused whenever `APP_ENV=production` regardless of this flag (`app/api/routes_auth.py`) — but you must actually set `APP_ENV=production` for that gate to take effect, and you must configure at least one real OAuth provider first, or no one will be able to log in.
-- **Production should use OAuth.** Fill in Google/Facebook/LinkedIn client id+secret in `.env.oracle` and update `ALLOWED_AUTH_REDIRECT_URIS` accordingly.
-- **Ports 8000 and 8080 are temporary testing ports.** They are published directly on the host for initial setup and debugging convenience.
-- **A final production deployment should expose only 80/443** through a reverse proxy (e.g. nginx, Caddy, or a cloud load balancer) in front of this stack, terminating TLS there — not by directly publishing 8000/8080 to the internet. Qdrant (6333) is already loopback-only and should stay that way.
-- Never commit `.env.oracle` or `.env.oracle.before-optimization` — see [Git safety](#git-safety) below.
+### Architecture
+
+- **Tokens:** a short-lived JWT access token (`JWT_ACCESS_TTL_MINUTES`, default 60 min) plus an opaque, hashed-at-rest refresh token (`REFRESH_TOKEN_TTL_DAYS`, default 30 days) stored in an HttpOnly cookie on web and `expo-secure-store` on native. Refresh is rotate-on-use: presenting an already-used refresh token is treated as theft and revokes every session for that user.
+- **Local and OAuth logins converge on the same `TokenResponse` shape and the same `sessions` table** — there is exactly one session/token system in this app, not two parallel ones.
+- **`users.password_hash` is nullable** — a user may have a password, one or more linked OAuth accounts (`oauth_accounts`), or both. Google account linking only ever merges into an existing user when the OAuth identity's email is *provider-verified*; an unverified email that collides with an existing address is refused (`auth_error=email_conflict` redirect), never silently merged and never a raw server error.
+
+### Required auth environment variables
+
+Set in `deploy/oracle/.env.oracle` — real secrets, git-ignored, never committed (see "Copying and configuring `.env.oracle`" above):
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `JWT_SECRET` | Signs access tokens. Generate with `python3 -c 'import secrets; print(secrets.token_urlsafe(32))'`. | *(required, min 16 chars)* |
+| `JWT_ACCESS_TTL_MINUTES` | Access token lifetime. | `60` |
+| `REFRESH_TOKEN_TTL_DAYS` | Refresh token lifetime. | `30` |
+| `AUTH_LOCAL_LOGIN_ENABLED` | Kill switch for `POST /auth/register` / `POST /auth/login`. | `true` |
+| `AUTH_LOGIN_RATE_LIMIT_MAX_ATTEMPTS` / `_WINDOW_SECONDS` | Login throttling — see "Rate limiting" below. | `10` / `300` |
+| `AUTH_REGISTER_RATE_LIMIT_MAX_ATTEMPTS` / `_WINDOW_SECONDS` | Registration throttling. | `5` / `3600` |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` | Enables "Continue with Google" — see setup below. | blank (disabled) |
+| `ALLOWED_AUTH_REDIRECT_URIS` | Allowlisted app-side redirect targets for `GET /auth/{provider}/authorize`. | `expoeducationassistant://auth-callback,https://edum8.us/auth-callback` |
+| `AUTH_DEV_LOGIN_ENABLED` | Dev-only test login. Hard-refused whenever `APP_ENV=production`, regardless of this flag. | `false` |
+| `FRONTEND_URL` | The canonical frontend — see below. | `https://edum8.us` |
+| `CORS_ORIGINS` | Exact-match allowlist, no wildcards. | `https://edum8.us,https://www.edum8.us,https://app.edum8.us` |
+
+### Local authentication
+
+`POST /auth/register` and `POST /auth/login` need no external configuration — on by default (`AUTH_LOCAL_LOGIN_ENABLED=true`), independent of whether any OAuth provider is configured. `GET /auth/providers` reports this separately from the OAuth `providers` list (`local_auth_enabled: true/false`) specifically so the frontend never mistakes "no OAuth providers configured" for "no way to sign in at all" — that conflation was the original bug this feature fixes.
+
+- **Password policy:** 8-128 characters, no composition rules (no forced uppercase/digit/symbol) — practical and password-manager-friendly, matching NIST SP 800-63B guidance. Empty/whitespace-only passwords are rejected.
+- **Password hashing:** Argon2id via `argon2-cffi`, library-default parameters (time_cost=3, memory_cost=64 MiB, parallelism=4) — no custom cryptography. Verification is constant-time via the library itself; an unknown email and a wrong password both take the same code path (a fixed dummy-hash comparison) so response timing can't be used to enumerate accounts. Password hashes are never included in any API response and never logged.
+- **Account linking:** registering with an email that already belongs to an OAuth-only user attaches the new password to that same account (no duplicate user row); registering with an email that already has a password returns `409 Conflict`. Email/password normalization (`.strip().lower()`) is centralized in `app/core/email_normalization.py` and used identically by registration, login, and OAuth linking.
+- **Email verification status: local registration does NOT verify email addresses.** This deployment has no email-delivery provider configured (no SMTP/SendGrid/SES/etc. anywhere in this stack), so there is no confirmation step — `users.email_verified` stays `false` for every locally-registered account, exactly as it would for an OAuth identity the provider itself hadn't confirmed. Do not represent local accounts as "verified" anywhere in the UI.
+- **Password-reset status: not implemented, on purpose.** Building a real reset flow (`POST /auth/password/forgot` / `POST /auth/password/reset`) requires a real mail provider to deliver the reset link/token, which this deployment does not have. The login screen's "Forgot password?" link shows a clear, honest "not available yet — contact your administrator" message; there is no broken route or dead link behind it. Once a mail provider is added, the reset endpoints can be built following the same session-revocation-on-reset, single-use-hashed-token pattern already used elsewhere in this codebase (see `oauth_transactions`).
+
+### Rate limiting
+
+`POST /auth/login` and `POST /auth/register` are protected by a **database-backed** sliding-window limiter (`app/core/auth_rate_limiter.py`), not the in-memory `app/core/rate_limiter.py` used for chat — this deployment runs `--workers 2` (`docker-compose.oracle.yml`), and an in-memory counter would silently under-count across workers. The limiter stores only a SHA-256 hash of `(route, "ip"|"email", identifier)` — never a raw email address or IP — in the `auth_rate_limit_hits` table, checked and pruned via short, indexed transactions.
+
+- **Scope: combined per-IP and per-email.** Either bucket being full is enough to reject; a single caller hammering one account from many IPs, or one IP spraying many accounts, are both stopped.
+- **Response:** `429 Too Many Requests` with a `Retry-After` header (seconds), and one generic message regardless of which bucket tripped or whether the target account exists — rate-limit behavior never reveals account existence.
+- **Defaults:** login allows 10 attempts / 5 minutes; registration allows 5 attempts / 1 hour (both overridable — see the env var table above).
+
+### Google OAuth setup
+
+1. In the [Google Cloud Console](https://console.cloud.google.com/) → APIs & Services → Credentials, create an OAuth 2.0 Client ID of type "Web application".
+2. **Authorized JavaScript origins:** add exactly
+   ```
+   https://edum8.us
+   ```
+3. **Authorized redirect URI:** add exactly
+   ```
+   https://api.edum8.us/auth/google/callback
+   ```
+4. Copy the generated Client ID and Client Secret into `.env.oracle`:
+   ```
+   GOOGLE_CLIENT_ID=<your client id>
+   GOOGLE_CLIENT_SECRET=<your client secret>
+   GOOGLE_REDIRECT_URI=https://api.edum8.us/auth/google/callback
+   ```
+5. Restart the backend for the new values to take effect (see [Daily operations](#daily-operations)).
+
+`GET /auth/providers` reports Google as enabled only once `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI` are **all** non-empty (`app/core/oauth_providers.py::get_provider_config`) — a partially-filled-in provider is treated identically to an unconfigured one, never a broken half-state. The client secret is read server-side only and never returned by any API response.
+
+PKCE (S256), server-side `state` validation, and OIDC `nonce` verification (the returned Google `id_token`'s `nonce` claim is checked against the value sent at authorize time) are all enforced on every login. The one-time `auth_code` handed back to the frontend is redeemed exactly once, expires after 60 seconds, and access/refresh tokens are never placed in a URL — they're returned only from `POST /auth/session/exchange`'s JSON body.
+
+### Canonical frontend and alternate frontend handling
+
+`https://edum8.us` is the **canonical** frontend — it's the one origin OAuth completes against (`ALLOWED_AUTH_REDIRECT_URIS`, `FRONTEND_URL`) and the one every post-login/post-registration redirect resolves to. `https://app.edum8.us` is an **alternate** frontend origin: it's allowed to call the API (listed in `CORS_ORIGINS`) so it can use local email/password sign-in and an already-established session, but it is deliberately **not** in `ALLOWED_AUTH_REDIRECT_URIS` — Google sign-in started from `app.edum8.us` is not supported unless that changes. Keeping exactly one OAuth redirect surface is a deliberate simplification, not an oversight.
+
+### Migration instructions
+
+Local email/password credentials and the rate-limit table are added by Alembic migration `0015_local_auth_credentials` (nullable `users.password_hash` + new `auth_rate_limit_hits` table). It runs automatically — `oracle-start.sh` and `oracle-update.sh` both run `backend-migrate` (which applies every pending Alembic migration) before `backend` starts, via the Compose `depends_on: condition: service_completed_successfully` graph; there is no separate manual migration step. Every existing `users`/`oauth_accounts`/`sessions` row is preserved untouched — the new column defaults to `NULL` (meaning "OAuth-only, no local password") for every pre-existing user.
+
+Downgrading past `0015` (`alembic downgrade -1` from head) drops `auth_rate_limit_hits` and the `password_hash` column — **any password set after upgrading is lost on downgrade**; this is the migration's one irreversible aspect. Every other table and row is unaffected by either direction.
+
+### Verification commands
+
+```bash
+# Confirm the backend is actually serving the new routes
+curl -s https://api.edum8.us/auth/providers | jq
+#  -> {"providers": [...], "dev_login_enabled": false, "local_auth_enabled": true}
+
+# Confirm local registration works end to end
+curl -s -X POST https://api.edum8.us/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"smoke-test@example.com","password":"correct horse battery"}' | jq
+
+# Confirm dev-login is refused in production (expect 404)
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://api.edum8.us/auth/dev-login \
+  -H 'Content-Type: application/json' -d '{"email":"x@example.com"}'
+```
+
+### Manual browser test checklist
+
+- [ ] Visit `https://edum8.us/login` — the email/password form is visible immediately (never the old "No sign-in providers are configured" dead end).
+- [ ] Create an account with a new email + an 8+ character password → lands signed in on `/chat`.
+- [ ] Sign out, sign back in with the same credentials → succeeds.
+- [ ] Attempt sign-in with a wrong password → generic "Invalid email or password", not "account not found" or anything that confirms the address is registered.
+- [ ] Switch to "Create account", then back to "Sign in" — email is preserved, password confirmation is cleared.
+- [ ] Click "Forgot password?" → shows the "not available yet" notice, no broken link, no crash.
+- [ ] If Google is configured: "Continue with Google" is visible, completes sign-in, and redirects back to `https://edum8.us`, never showing a token in the URL bar.
+- [ ] Refresh the page while signed in — session persists (silent refresh), no forced re-login.
+- [ ] Sign out — redirected to `/login`, and the app's protected routes (`/chat`, `/documents`, etc.) redirect back to `/login` if visited directly while signed out.
+
+### Rollback instructions
+
+Application code: `oracle-update.sh` prints the exact previous Git commit and pre-update backup restore command if the post-update health check fails — see [Updates](#updates). To roll back manually: `git checkout <previous-commit>` in `~/edumind-ai`, then `./deploy/oracle/scripts/oracle-start.sh --build`.
+
+Database: `alembic downgrade -1` inside the backend container reverts `0015_local_auth_credentials` alone (see "Migration instructions" above for what's lost). For a full point-in-time rollback, use `oracle-restore.sh` — see [Restores](#restores).
+
+### Security notes
+
+- No dev login, no mock authentication, and no hardcoded credentials anywhere in this path — `AUTH_DEV_LOGIN_ENABLED` is hard-refused whenever `APP_ENV=production` regardless of its own value.
+- No wildcard CORS origins; `CORS_ORIGINS` is an exact-match allowlist.
+- No open redirects: `GET /auth/{provider}/authorize`'s `redirect_uri` and every post-login destination are checked against `ALLOWED_AUTH_REDIRECT_URIS`, never taken from an arbitrary caller-supplied value.
+- Access and refresh tokens are never placed in a URL, ever — only in JSON response bodies, an HttpOnly cookie (web), or `expo-secure-store` (native).
+- Password hashes, raw passwords, refresh tokens, and reset tokens (n/a — not implemented) are never logged.
+- Refresh-token rotation and reuse (theft) detection, and PKCE/state/nonce for OAuth, are unchanged from the pre-existing implementation this work builds on — see "Architecture" above.
 
 ---
 

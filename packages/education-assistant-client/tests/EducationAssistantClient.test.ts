@@ -593,6 +593,7 @@ describe('auth', () => {
       jsonResponse({
         providers: [{ provider: 'google', display_name: 'Google' }],
         dev_login_enabled: false,
+        local_auth_enabled: true,
       })
     );
     const result = await makeClient().getAuthProviders();
@@ -600,6 +601,7 @@ describe('auth', () => {
     expect(result).toEqual({
       providers: [{ provider: 'google', display_name: 'Google' }],
       devLoginEnabled: false,
+      localAuthEnabled: true,
     });
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe('http://localhost:8000/auth/providers');
@@ -612,6 +614,7 @@ describe('auth', () => {
       jsonResponse({
         providers: [{ provider: 'google', display_name: 'Google' }],
         dev_login_enabled: false,
+        local_auth_enabled: true,
       })
     );
 
@@ -622,19 +625,23 @@ describe('auth', () => {
   });
 
   it('getAuthProviders() reports devLoginEnabled true with no OAuth providers configured', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ providers: [], dev_login_enabled: true }));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ providers: [], dev_login_enabled: true, local_auth_enabled: true })
+    );
 
     const result = await makeClient().getAuthProviders();
 
-    expect(result).toEqual({ providers: [], devLoginEnabled: true });
+    expect(result).toEqual({ providers: [], devLoginEnabled: true, localAuthEnabled: true });
   });
 
   it('getAuthProviders() reports devLoginEnabled false with no OAuth providers configured', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ providers: [], dev_login_enabled: false }));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ providers: [], dev_login_enabled: false, local_auth_enabled: true })
+    );
 
     const result = await makeClient().getAuthProviders();
 
-    expect(result).toEqual({ providers: [], devLoginEnabled: false });
+    expect(result).toEqual({ providers: [], devLoginEnabled: false, localAuthEnabled: true });
   });
 
   it('getAuthProviders() normalizes a missing/non-boolean dev_login_enabled to false, never truthy-coerced', async () => {
@@ -643,16 +650,36 @@ describe('auth', () => {
     // only a strict `=== true` counts.
     for (const rawValue of [undefined, null, 1, 'true', {}]) {
       fetchMock.mockResolvedValueOnce(
-        jsonResponse({ providers: [], dev_login_enabled: rawValue })
+        jsonResponse({ providers: [], dev_login_enabled: rawValue, local_auth_enabled: true })
       );
       const result = await makeClient().getAuthProviders();
       expect(result.devLoginEnabled).toBe(false);
     }
   });
 
+  it('getAuthProviders() normalizes a missing/non-boolean local_auth_enabled to false, never truthy-coerced', async () => {
+    // Same reasoning as dev_login_enabled above — an empty `providers`
+    // array must never be misread as "no auth available" (see
+    // login.tsx's computeLoginBranch), so this flag must never be
+    // silently coerced true from a bad/missing backend value either.
+    for (const rawValue of [undefined, null, 1, 'true', {}]) {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ providers: [], dev_login_enabled: false, local_auth_enabled: rawValue })
+      );
+      const result = await makeClient().getAuthProviders();
+      expect(result.localAuthEnabled).toBe(false);
+    }
+  });
+
   it('getAuthProviders() normalizes a missing/null providers field to an empty array', async () => {
     for (const rawValue of [undefined, null]) {
-      fetchMock.mockResolvedValueOnce(jsonResponse({ providers: rawValue, dev_login_enabled: true }));
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({
+          providers: rawValue,
+          dev_login_enabled: true,
+          local_auth_enabled: true,
+        })
+      );
       const result = await makeClient().getAuthProviders();
       expect(result.providers).toEqual([]);
     }
@@ -810,6 +837,112 @@ describe('auth', () => {
       jsonResponse({ detail: 'Invalid or expired access token' }, 401)
     );
     await expect(makeClient().getMe()).rejects.toBeInstanceOf(AuthenticationError);
+  });
+
+  it('register() POSTs email/password/display_name and sends credentials for the refresh cookie', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          access_token: 'access-5',
+          refresh_token: 'refresh-5',
+          token_type: 'bearer',
+          expires_in: 900,
+          user: {
+            id: 'u3',
+            email: 'new@example.com',
+            display_name: 'New User',
+            avatar_url: null,
+            is_dev_test_user: false,
+            provider: null,
+          },
+        },
+        201
+      )
+    );
+    const result = await makeClient().register({
+      email: 'new@example.com',
+      password: 'correct horse battery',
+      display_name: 'New User',
+    });
+
+    expect(result.user.email).toBe('new@example.com');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/auth/register');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({
+      email: 'new@example.com',
+      password: 'correct horse battery',
+      display_name: 'New User',
+    });
+    expect(init.credentials).toBe('include');
+  });
+
+  it('register() rejects with ConflictError on a duplicate email (409)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ detail: 'An account with this email already exists.' }, 409)
+    );
+    await expect(
+      makeClient().register({ email: 'dupe@example.com', password: 'correct horse battery' })
+    ).rejects.toMatchObject({ name: 'ConflictError' });
+  });
+
+  it('register() rejects with ValidationError on a weak password (422)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Password must be at least 8 characters.' }, 422));
+    await expect(
+      makeClient().register({ email: 'weak@example.com', password: 'short' })
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('login() POSTs email/password and sends credentials for the refresh cookie', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        access_token: 'access-6',
+        refresh_token: 'refresh-6',
+        token_type: 'bearer',
+        expires_in: 900,
+        user: {
+          id: 'u3',
+          email: 'existing@example.com',
+          display_name: null,
+          avatar_url: null,
+          is_dev_test_user: false,
+          provider: null,
+        },
+      })
+    );
+    const result = await makeClient().login({
+      email: 'existing@example.com',
+      password: 'correct-password-1',
+    });
+
+    expect(result.access_token).toBe('access-6');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/auth/login');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({
+      email: 'existing@example.com',
+      password: 'correct-password-1',
+    });
+    expect(init.credentials).toBe('include');
+  });
+
+  it('login() rejects with AuthenticationError on wrong credentials, with a generic message', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Invalid email or password' }, 401));
+    await expect(
+      makeClient().login({ email: 'x@example.com', password: 'wrong' })
+    ).rejects.toThrow('Invalid email or password');
+  });
+
+  it('login() rejects with RateLimitError when throttled (429)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: 'Too many attempts. Please try again later.' }), {
+        status: 429,
+        headers: { 'content-type': 'application/json', 'retry-after': '30' },
+      })
+    );
+    await expect(
+      makeClient().login({ email: 'x@example.com', password: 'wrong' })
+    ).rejects.toMatchObject({ name: 'RateLimitError' });
   });
 });
 

@@ -31,7 +31,14 @@ import type {
   GeneratedImageAttachment,
   ImageGenerationEvent,
 } from '../types/images';
-import type { AuthProviders, AuthProvidersResponse, AuthTokenResponse, AuthUser } from '../types/auth';
+import type {
+  AuthProviders,
+  AuthProvidersResponse,
+  AuthTokenResponse,
+  AuthUser,
+  LoginRequestBody,
+  RegisterRequestBody,
+} from '../types/auth';
 import type {
   ConversationDetail,
   ConversationListResponse,
@@ -396,7 +403,51 @@ export class EducationAssistantClient {
     return {
       providers: data.providers ?? [],
       devLoginEnabled: data.dev_login_enabled === true,
+      localAuthEnabled: data.local_auth_enabled === true,
     };
+  }
+
+  /**
+   * POST /auth/register — creates a local (email/password) account and
+   * immediately signs the caller in. Returns the same AuthTokenResponse
+   * shape every other login path returns (OAuth exchange, refresh,
+   * dev-login) — see rag-backend's app/schemas/auth.py TokenResponse.
+   * `password` is read once from `body` and handed straight to the
+   * request body; never logged, never included in a thrown error (see
+   * errors.ts's safeMessage, which only ever surfaces the backend's own
+   * `detail` string).
+   */
+  async register(
+    body: RegisterRequestBody,
+    options: RequestOptions = {}
+  ): Promise<AuthTokenResponse> {
+    const { data } = await requestJson<AuthTokenResponse>(this.context, {
+      method: 'POST',
+      path: '/auth/register',
+      body,
+      signal: options.signal,
+      credentials: 'include',
+    });
+    return data;
+  }
+
+  /**
+   * POST /auth/login — local email/password sign-in, reusing the exact
+   * same session/token architecture as OAuth (see `register` above).
+   * Always fails with a generic AuthenticationError message ("Invalid
+   * email or password") regardless of *why* — unknown email, wrong
+   * password, or an OAuth-only account with no password set — see
+   * rag-backend's app/core/auth_service.py::authenticate_local_user.
+   */
+  async login(body: LoginRequestBody, options: RequestOptions = {}): Promise<AuthTokenResponse> {
+    const { data } = await requestJson<AuthTokenResponse>(this.context, {
+      method: 'POST',
+      path: '/auth/login',
+      body,
+      signal: options.signal,
+      credentials: 'include',
+    });
+    return data;
   }
 
   /**

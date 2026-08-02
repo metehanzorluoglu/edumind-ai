@@ -33,6 +33,13 @@ interface AuthContextValue {
   error: string | null;
   providers: AuthProviderInfo[];
   devLoginEnabled: boolean;
+  /**
+   * Whether POST /auth/login and POST /auth/register are available at
+   * all — separate from `providers` (which only ever lists OAuth
+   * providers). An empty `providers` array must never be read as "no
+   * authentication available" when this is true; see login.tsx.
+   */
+  localAuthEnabled: boolean;
   providersLoading: boolean;
   refreshProviders: () => void;
   /** Starts one provider's OAuth flow — opens a system browser session on native, a top-level redirect on web. */
@@ -44,6 +51,13 @@ interface AuthContextValue {
    * handles the exchange internally.
    */
   exchangeCode: (authCode: string) => Promise<void>;
+  /** Local email/password sign-in — see POST /auth/login. Throws on
+   * failure (wrong credentials, disabled, rate-limited); callers should
+   * catch and surface `error` from context, same pattern as devLogin. */
+  login: (email: string, password: string) => Promise<void>;
+  /** Local email/password account creation — see POST /auth/register.
+   * Signs the caller in immediately on success, same as login. */
+  register: (email: string, password: string, displayName?: string) => Promise<void>;
   devLogin: (email: string, displayName?: string) => Promise<void>;
   logout: () => Promise<void>;
   clearError: () => void;
@@ -60,6 +74,14 @@ export function describeAuthError(code: string): string {
   switch (code) {
     case 'email_required':
       return "This sign-in provider didn't share an email address, which is required to create an account here. Please try a different sign-in method, or check that provider's permissions.";
+    case 'email_conflict':
+      // See rag-backend's UnverifiedEmailConflictError — an unverified
+      // provider email matched an address a different account already
+      // owns. Deliberately doesn't say "this address is already
+      // registered" (that would confirm the account's existence to
+      // whoever is attempting this sign-in) — same account-enumeration
+      // caution as the login form's generic error copy.
+      return "This sign-in provider didn't confirm its email address, so we can't verify who it belongs to. Try signing in with email and password instead, or a provider that confirms your email.";
     case 'provider_error':
       return 'Sign-in failed while contacting the identity provider. Please try again.';
     default:
@@ -86,6 +108,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [providers, setProviders] = useState<AuthProviderInfo[]>([]);
   const [devLoginEnabled, setDevLoginEnabled] = useState(false);
+  const [localAuthEnabled, setLocalAuthEnabled] = useState(false);
   const [providersLoading, setProvidersLoading] = useState(false);
 
   // Guards against silentRefresh() — fired once on mount to restore an
@@ -209,6 +232,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (providersGenerationRef.current !== generation) return;
         setProviders(response.providers);
         setDevLoginEnabled(response.devLoginEnabled);
+        setLocalAuthEnabled(response.localAuthEnabled);
       })
       .catch((err) => {
         if (__DEV__) {
@@ -217,6 +241,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (providersGenerationRef.current !== generation) return;
         setProviders([]);
         setDevLoginEnabled(false);
+        setLocalAuthEnabled(false);
         // Previously silent: a failed request looked identical to "the
         // backend genuinely has no providers/dev login configured" — same
         // providers: [], devLoginEnabled: false — with nothing to tell
@@ -294,6 +319,48 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [authClient, exchangeCode]
   );
 
+  const login = useCallback(
+    async (email: string, password: string) => {
+      const generation = beginAuthAction();
+      setError(null);
+      try {
+        const response = await authClient.login({ email, password });
+        if (authGenerationRef.current !== generation) return;
+        await applySession(response);
+      } catch (err) {
+        if (authGenerationRef.current !== generation) return;
+        // The backend already returns a generic "Invalid email or
+        // password" for every failure reason (unknown account,
+        // OAuth-only account, wrong password) — see
+        // rag-backend's app/core/auth_service.py::authenticate_local_user.
+        // This just passes that message through, same as every other
+        // BackendError-shaped failure elsewhere in this provider.
+        setError(err instanceof Error ? err.message : 'Sign-in failed.');
+      }
+    },
+    [authClient, applySession, beginAuthAction]
+  );
+
+  const register = useCallback(
+    async (email: string, password: string, displayName?: string) => {
+      const generation = beginAuthAction();
+      setError(null);
+      try {
+        const response = await authClient.register({
+          email,
+          password,
+          display_name: displayName ?? null,
+        });
+        if (authGenerationRef.current !== generation) return;
+        await applySession(response);
+      } catch (err) {
+        if (authGenerationRef.current !== generation) return;
+        setError(err instanceof Error ? err.message : 'Account creation failed.');
+      }
+    },
+    [authClient, applySession, beginAuthAction]
+  );
+
   const devLogin = useCallback(
     async (email: string, displayName?: string) => {
       const generation = beginAuthAction();
@@ -337,10 +404,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     error,
     providers,
     devLoginEnabled,
+    localAuthEnabled,
     providersLoading,
     refreshProviders,
     startOAuth,
     exchangeCode,
+    login,
+    register,
     devLogin,
     logout,
     clearError,

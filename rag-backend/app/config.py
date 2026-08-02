@@ -283,6 +283,24 @@ class Settings(BaseSettings):
     # misconfigured production deploy can never expose it.
     auth_dev_login_enabled: bool = False
 
+    # --- Auth: local email/password credentials ---
+    # Kill switch for POST /auth/register and POST /auth/login — separate
+    # from OAuth provider configuration entirely (see
+    # ProvidersResponse.local_auth_enabled), so an operator who wants
+    # Google-only sign-in can disable local auth without touching any OAuth
+    # setting. True by default: unlike a provider, local auth has no
+    # external credentials to configure, so it works out of the box.
+    auth_local_login_enabled: bool = True
+    # Sliding-window limits for POST /auth/login and POST /auth/register
+    # (see app/core/auth_rate_limiter.py) — deliberately separate settings
+    # per route: login is attempted far more often in normal use (a typo'd
+    # password) than registration, so it gets a shorter window and more
+    # allowed attempts.
+    auth_login_rate_limit_max_attempts: int = Field(default=10, ge=1, le=1000)
+    auth_login_rate_limit_window_seconds: float = Field(default=300.0, ge=1.0, le=86_400.0)
+    auth_register_rate_limit_max_attempts: int = Field(default=5, ge=1, le=1000)
+    auth_register_rate_limit_window_seconds: float = Field(default=3600.0, ge=1.0, le=86_400.0)
+
     # Optional: a user id (UUID string) to backfill onto pre-existing,
     # unowned Qdrant points/documents from before per-user scoping existed
     # (see `python -m cli.documents adopt-legacy`). Left blank by default —

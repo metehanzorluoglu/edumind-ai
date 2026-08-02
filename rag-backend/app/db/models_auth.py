@@ -18,6 +18,17 @@ class User(Base):
     email_verified: Mapped[bool] = mapped_column(default=False, nullable=False)
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    # Argon2id-encoded local password credential (see
+    # app/core/password_hashing.py) — nullable because most users still
+    # authenticate purely via OAuth and have no password at all. A user row
+    # may have a password_hash, one or more OAuthAccount rows, or both
+    # simultaneously (see POST /auth/register's account-linking docstring
+    # in app/api/routes_auth.py); this column's presence is the only
+    # authoritative signal of "this user can log in with a password" — it
+    # is deliberately independent of email_verified, which tracks a
+    # different question (whether the address itself was ever confirmed by
+    # an identity provider) and must never be inferred from this column.
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     # Marks accounts created via POST /auth/dev-login — never set by any real
     # OAuth provider path. Lets an admin/report distinguish real users from
@@ -134,3 +145,27 @@ class OAuthTransaction(Base):
         DateTime(timezone=True), nullable=False, index=True
     )
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AuthRateLimitHit(Base):
+    """One row per rate-limited local-auth attempt (see
+    app/core/auth_rate_limiter.py) — backs a DB-shared sliding-window
+    limiter for POST /auth/login and POST /auth/register, since this
+    deployment runs multiple uvicorn workers (`--workers 2`, see
+    deploy/oracle/docker-compose.oracle.yml) and app/core/rate_limiter.py's
+    in-memory limiter is explicitly single-process only.
+
+    `bucket_key` is a SHA-256 hash of (route, "ip"|"email", identifier) —
+    never a raw email address or IP — so this table cannot be used to
+    enumerate real user identities even with direct DB access. Rows are
+    deleted lazily by the same bucket the next time it's touched (see
+    auth_rate_limiter._check_and_record); there is no separate cleanup job.
+    """
+
+    __tablename__ = "auth_rate_limit_hits"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    bucket_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
