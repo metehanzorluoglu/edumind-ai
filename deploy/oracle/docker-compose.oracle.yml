@@ -28,7 +28,7 @@ services:
     restart: unless-stopped
 
     ports:
-      - "${FRONTEND_PORT:-8080}:80"
+      - "127.0.0.1:${FRONTEND_PORT:-8080}:80"
 
     depends_on:
       backend:
@@ -80,7 +80,22 @@ services:
     environment:
       OLLAMA_HOST: "0.0.0.0:11434"
       OLLAMA_NUM_PARALLEL: "1"
-      OLLAMA_MAX_LOADED_MODELS: "2"
+      # Overridable via .env.oracle — default 2 unchanged. A live
+      # investigation (see this repo's vision-attachment-timeout task
+      # report) measured qwen3:8b (5.9GB) + qwen2.5vl:7b (5.8GB) resident
+      # together at ~11.7GB, and separately qwen3:8b + qwen2.5vl:3b
+      # (3.2GB) at ~9.1GB — both comfortably under this container's 18GB
+      # mem_limit above, with mxbai-embed-large (~0.7GB) easily fitting
+      # alongside either pair too (~12.4GB combined). The constraint at 2
+      # is therefore a *model-count* limit, not a measured memory
+      # constraint: a conversation that alternates text and vision (or
+      # sends a vision+corpus message needing the embedding model too)
+      # can trigger avoidable evict-and-reload cycles under the default.
+      # Raising to 3 is supported by this measurement but deliberately
+      # left as an opt-in override, not a new default — see the README's
+      # "Model residency" section before changing it on a host running
+      # anything other than exactly these three models.
+      OLLAMA_MAX_LOADED_MODELS: "${OLLAMA_MAX_LOADED_MODELS:-2}"
       OLLAMA_KEEP_ALIVE: "30m"
       OLLAMA_DEBUG: "0"
 
@@ -166,7 +181,7 @@ services:
       PYTHONPATH: "/app"
 
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
 
     mem_limit: 4g
     cpus: "1.0"

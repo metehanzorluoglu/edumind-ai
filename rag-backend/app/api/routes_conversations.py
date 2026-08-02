@@ -808,16 +808,34 @@ def _stream_vision_reply(
     scope_settings: ConversationScopeRecord,
     approved_items: list[ProjectKnowledgeRecord],
     profiles: list[ProjectProfileRecord],
+    timer: RequestTimer,
 ) -> StreamingResponse:
     """The vision-routed counterpart to _stream_text_reply (milestone V3)
     — never short-circuits on "insufficient evidence" the way the text
     path does: the attached image(s)/page(s) are themselves evidence the
     model can reason about even when `route.use_retrieval` is False, or
     True but retrieval happened to find nothing in the corpus for this
-    query, so this always actually calls the vision model. Also gets
-    _stream_text_reply's same request-cancellation guarantee for free
-    (see that function's docstring) — its event_stream() below has the
-    identical shape (yield inside a loop, persist only after it)."""
+    query, so this always actually calls the vision model.
+
+    `event_stream` below is an *async* generator (unlike
+    _stream_text_reply's sync one) because VisionService.stream_chat is
+    async — see that module's docstring for why: real cancellation
+    propagation and a genuinely separate generation-stall timeout both
+    require it. Starlette's StreamingResponse natively accepts an async
+    generator as `content` (no `iterate_in_threadpool` wrapping — see
+    Starlette's own StreamingResponse.__init__), so a client disconnect
+    here correctly delivers asyncio.CancelledError at whatever `await`
+    this generator is currently suspended on, including mid-wait for the
+    vision model's first token — the exact case the old sync
+    thread-pooled generator could not be cancelled during (see this
+    task's investigation). A cancelled generation is never persisted as
+    if it had finished, same guarantee _stream_text_reply documents for
+    its own (differently-implemented) cancellation path.
+
+    `timer` (see app/core/request_timing.py) is passed explicitly for the
+    same reason _stream_text_reply's is: event_stream() below runs after
+    FastAPI's dependency AsyncExitStack (and the ambient "current timer"
+    it binds) has already closed."""
     if route.use_retrieval:
         evidence = retrieve_and_cite(
             retriever,
@@ -843,16 +861,49 @@ def _stream_vision_reply(
         parsed.query, evidence.sources, project_context=project_context
     )
 
-    def event_stream() -> Iterator[str]:
+    prompt_chars = len(system_prompt) + len(user_prompt)
+    if prompt_chars > settings.vision_max_prompt_chars:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"This message's combined prompt is {prompt_chars} characters, exceeds the "
+                f"{settings.vision_max_prompt_chars}-character limit for a vision request — "
+                "try a shorter question, disabling 'use my research corpus' for this message, "
+                "or a conversation with fewer approved Project Memory items."
+            ),
+        )
+
+    async def event_stream() -> AsyncIterator[str]:
+        # Same purpose as _stream_text_reply's progress events (see
+        # ChatProgressEvent's docstring) — a vision request's "loading_model"
+        # + "generating" wait was measured at 114-232+ seconds even fully
+        # warm during this task's investigation, with nothing sent to the
+        # client in the meantime before this existed.
+        yield _sse(ChatProgressEvent(stage="connected"))
+        if route.use_retrieval:
+            yield _sse(ChatProgressEvent(stage="retrieving"))
+        yield _sse(ChatProgressEvent(stage="processing_context"))
+
+        if timer.enabled:
+            timer.record_metric("estimated_prompt_tokens", round(prompt_chars / 4))
+
+        yield _sse(ChatProgressEvent(stage="loading_model"))
+        yield _sse(ChatProgressEvent(stage="generating"))
+
         answer_parts: list[str] = []
+        raw_stream = vision_service.stream_chat(
+            system_prompt=system_prompt, prompt=user_prompt, images=images, timer=timer
+        )
+        token_stream = (
+            _timed_async_token_stream(raw_stream, timer) if timer.enabled else raw_stream
+        )
         try:
-            for token in vision_service.stream_chat(
-                system_prompt=system_prompt, prompt=user_prompt, images=images
-            ):
+            async for token in token_stream:
                 answer_parts.append(token)
                 yield _sse(ChatTokenEvent(content=token))
         except VisionServiceError as exc:
-            yield _sse(ChatErrorEvent(message=str(exc)))
+            timer.log_summary(note=f"vision_error:{exc.category}")
+            yield _sse(ChatErrorEvent(message=str(exc), error_category=str(exc.category)))
             return
 
         answer = "".join(answer_parts)
@@ -869,11 +920,15 @@ def _stream_vision_reply(
             )
         )
         yield _sse(ChatSourcesEvent(sources=evidence.sources))
+        if timer.enabled:
+            timer.record_metric("vision_total_ms", timer.total_ms())
+        timer.log_summary()
         yield _sse(
             ChatDoneEvent(
                 citations=evidence.citations,
                 citation_warnings=validation.warnings,
                 transparency=TransparencyResponse.model_validate(transparency),
+                debug_timings=timer.as_dict() or None,
             )
         )
         repository.add_assistant_message(
@@ -886,7 +941,8 @@ def _stream_vision_reply(
             transparency=transparency,
         )
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    headers = {"Server-Timing": timer.server_timing_header()} if timer.enabled else None
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
 
 
 def _handle_conversation_message(
@@ -1115,6 +1171,7 @@ def _handle_conversation_message(
             scope_settings,
             approved_items,
             profiles,
+            timer,
         )
     return _stream_text_reply(
         conversation_id,

@@ -11,13 +11,60 @@ from app.core.context_preparation import (
     DEFAULT_MAX_CHUNKS_PER_DOCUMENT,
     DEFAULT_MAX_TOTAL_CONTEXT_CHARS,
     DEFAULT_SIMILARITY_THRESHOLD,
+    SourceOrder,
     prepare_context,
 )
 from app.core.llm_provider import LLMProvider
-from app.core.prompt_builder import NO_EVIDENCE_ANSWER, build_chat_prompt
+from app.core.prompt_builder import NO_EVIDENCE_ANSWER, PromptVariant, build_chat_prompt
 from app.core.request_timing import RequestTimer, get_current_timer
 from app.core.retrieval_schemas import RetrievalFilters, RetrievedChunk
 from app.core.scoped_retrieval import execute_scope_plan, resolve_scope_plan
+
+
+def _record_prompt_metadata(
+    timer: RequestTimer,
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    query: str,
+    sources: list[RetrievedChunk],
+) -> None:
+    """Safe prompt-composition metadata (PERFORMANCE_PROFILING=true only —
+    see app/core/request_timing.py) added to investigate prompt-prefill
+    latency on the Oracle CPU host: character/token-estimate counts for
+    every distinct part of the final prompt, plus a per-source breakdown,
+    so a slow request's actual composition (a handful of long chunks? many
+    short ones? an oversized question?) is visible without ever recording
+    the prompt's own content.
+
+    Deliberately records only lengths — never system_prompt, user_prompt,
+    query, or any chunk's .text. Token counts here are the same chars/4
+    heuristic used elsewhere in this codebase (see estimated_prompt_tokens
+    in app/api/routes_conversations.py) — a rough estimate, not a real
+    tokenizer call; Ollama's own authoritative prompt_eval_count is
+    recorded separately once the LLM call finishes (see
+    app/core/llm_provider.py's _record_ollama_metrics) and is the number
+    to trust for actual prefill cost.
+
+    retrieved_chunk_count/context_characters/estimated_prompt_tokens
+    already exist as separate metrics recorded in
+    app/api/routes_conversations.py (computed slightly later, from
+    prepared.retrieved_sources) — not duplicated here to avoid two
+    call sites computing the same value; this function only adds the
+    fields neither of those cover."""
+    if not timer.enabled:
+        return
+    context_chars = sum(len(chunk.text) for chunk in sources)
+    timer.record_metric("system_prompt_characters", len(system_prompt))
+    timer.record_metric("system_prompt_tokens_est", round(len(system_prompt) / 4))
+    timer.record_metric("context_tokens_est", round(context_chars / 4))
+    timer.record_metric("question_characters", len(query))
+    timer.record_metric("question_tokens_est", round(len(query) / 4))
+    timer.record_metric("final_prompt_characters", len(system_prompt) + len(user_prompt))
+    for index, chunk in enumerate(sources, start=1):
+        timer.record_metric(f"chunk_{index}_characters", len(chunk.text))
+        timer.record_metric(f"chunk_{index}_tokens_est", round(len(chunk.text) / 4))
+
 
 DEFAULT_TOP_K = 8
 # Per-tier budgets for scope-aware retrieval (contextual research scopes) —
@@ -64,6 +111,7 @@ def retrieve_and_cite(
     include_chat: bool = True,
     include_project: bool = True,
     include_general: bool = True,
+    source_order: SourceOrder = "relevance",
 ) -> CorpusEvidence:
     """Retrieval -> context-prep -> citation-building, shared by
     RagService.prepare() (text-only chat) below and
@@ -106,6 +154,7 @@ def retrieve_and_cite(
             max_per_document=max_chunks_per_document,
             max_total_chars=max_total_context_chars,
             similarity_threshold=dedup_similarity_threshold,
+            source_order=source_order,
         )
         citations = build_citations(prepared_sources)
     return CorpusEvidence(sources=prepared_sources, citations=citations)
@@ -149,7 +198,15 @@ class RagService:
         dedup_similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
         chat_scope_top_k: int = DEFAULT_CHAT_SCOPE_TOP_K,
         project_scope_top_k: int = DEFAULT_PROJECT_SCOPE_TOP_K,
+        prompt_variant: PromptVariant = "current",
+        source_order: SourceOrder = "relevance",
     ) -> None:
+        """`prompt_variant`/`source_order` (Settings.rag_prompt_variant /
+        Settings.rag_source_order — see app/core/prompt_builder.py and
+        app/core/context_preparation.py) both default to this class's
+        original, unchanged behavior; a caller that doesn't pass them
+        (every call site before this Oracle CPU-host prompt-prefill
+        investigation) is unaffected."""
         self._retriever = retriever
         self._llm_provider = llm_provider
         self._model_name = model_name
@@ -158,6 +215,8 @@ class RagService:
         self._dedup_similarity_threshold = dedup_similarity_threshold
         self._chat_scope_top_k = chat_scope_top_k
         self._project_scope_top_k = project_scope_top_k
+        self._prompt_variant = prompt_variant
+        self._source_order = source_order
 
     def prepare(
         self,
@@ -189,12 +248,23 @@ class RagService:
             include_chat=include_chat,
             include_project=include_project,
             include_general=include_general,
+            source_order=self._source_order,
         )
         insufficient_evidence = len(evidence.sources) == 0
         with get_current_timer().stage("prompt_construction"):
             system_prompt, user_prompt = build_chat_prompt(
-                query, evidence.sources, project_context=project_context
+                query,
+                evidence.sources,
+                project_context=project_context,
+                prompt_variant=self._prompt_variant,
             )
+        _record_prompt_metadata(
+            get_current_timer(),
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            query=query,
+            sources=evidence.sources,
+        )
 
         return PreparedChat(
             system_prompt=system_prompt,

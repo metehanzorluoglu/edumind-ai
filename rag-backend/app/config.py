@@ -319,6 +319,18 @@ class Settings(BaseSettings):
     context_max_total_chars: int = Field(default=8000, ge=500, le=100_000)
     context_dedup_similarity_threshold: float = Field(default=0.92, ge=0.0, le=1.0)
 
+    # --- RAG prompt shape (Oracle CPU-host prompt-prefill investigation)
+    # — a live measurement found qwen3:8b prompt evaluation the dominant
+    # cost of a chat turn (161.9s of a 198.2s total for a 2,640-token
+    # prompt, ~16.3 tokens/second prefill throughput on this CPU-only ARM
+    # host). Both settings below default to this codebase's original,
+    # unchanged behavior; see app/core/prompt_builder.py and
+    # app/core/context_preparation.py for what each variant actually
+    # changes and why. Neither is a model change — same qwen3:8b, same
+    # retrieval results, only the prompt's own text and chunk order.
+    rag_prompt_variant: Literal["current", "compact"] = "current"
+    rag_source_order: Literal["relevance", "stable"] = "relevance"
+
     @field_validator("retrieval_min_score", mode="before")
     @classmethod
     def _blank_env_value_means_disabled(cls, value: object) -> object:

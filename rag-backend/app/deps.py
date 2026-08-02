@@ -190,6 +190,8 @@ def get_rag_service() -> RagService:
         dedup_similarity_threshold=settings.context_dedup_similarity_threshold,
         chat_scope_top_k=settings.retrieval_chat_scope_top_k,
         project_scope_top_k=settings.retrieval_project_scope_top_k,
+        prompt_variant=settings.rag_prompt_variant,
+        source_order=settings.rag_source_order,
     )
 
 

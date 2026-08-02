@@ -5,9 +5,11 @@
 # Adapted from deploy/prod/scripts/prod-start.sh — extended with Compose
 # config validation, an optional --build, a mandatory post-start health
 # check (skippable with --no-healthcheck), and an optional post-health-check
-# Ollama model prewarm (see oracle-prewarm-model.sh — only runs when
-# OLLAMA_PREWARM_ENABLED=true in .env.oracle; skippable with
-# --no-prewarm). Does not touch deploy/prod or deploy/rpi5.
+# Ollama model prewarm (see oracle-prewarm-model.sh — the text-model
+# prewarm only runs when OLLAMA_PREWARM_ENABLED=true, and the vision-model
+# prewarm only when OLLAMA_VISION_PREWARM_ENABLED=true, both independently,
+# in .env.oracle; skippable together with --no-prewarm). Does not touch
+# deploy/prod or deploy/rpi5.
 
 set -Eeuo pipefail
 

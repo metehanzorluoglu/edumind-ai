@@ -155,6 +155,118 @@ but prewarming removes the cold-load delay entirely for that first request).
   `OLLAMA_KEEP_ALIVE` (currently `30m`, see `docker-compose.oracle.yml`)
   still governs how long a loaded model stays resident between requests.
 
+### Vision model prewarm
+
+The same script also, independently, prewarms the vision model
+(`OLLAMA_VISION_MODEL`) with a single tiny (1x1 pixel) synthetic image —
+gated by its own flag, `OLLAMA_VISION_PREWARM_ENABLED=true` (or
+`--vision-force` for a standalone run), and its own timeout
+(`OLLAMA_VISION_PREWARM_TIMEOUT_SECONDS`, default 300s — vision cold-load
+was measured noticeably slower than text's; see "Current performance
+optimizations" below). Same guarantees as the text prewarm: off by
+default, never blocks startup, output never printed.
+
+One difference worth knowing before enabling it: because
+`OLLAMA_MAX_LOADED_MODELS` defaults to 2, prewarming the vision model
+*can* evict whichever model was just prewarmed by the text-model step
+above (or vice versa, if the vision prewarm runs first and a real text
+request evicts it later). `oracle-prewarm-model.sh` checks `ollama ps`
+before and after its vision prewarm and prints an explicit `[WARN]` line
+naming exactly what got evicted, if anything — it is never silent about
+this. See "Model residency" below for whether raising
+`OLLAMA_MAX_LOADED_MODELS` to 3 is appropriate for your traffic.
+
+---
+
+## Model residency
+
+Ollama's `OLLAMA_MAX_LOADED_MODELS` (currently `2`, see
+`docker-compose.oracle.yml`) caps how many models stay resident at once —
+loading a model beyond that count evicts the least-recently-used one, even
+if there's ample free memory. This deployment uses **three** distinct
+models (`OLLAMA_LLM_MODEL`, `OLLAMA_VISION_MODEL`, `OLLAMA_EMBED_MODEL`),
+so any conversation flow that needs two of them back-to-back with the
+third already loaded (e.g. a vision message that also uses "my research
+corpus", which needs the embedding model *and* the vision model) can
+trigger an avoidable evict-and-reload cycle under the current limit.
+
+Live measurements across two investigations (vision-attachment-timeout,
+then a follow-up text/vision latency optimization pass) found:
+
+| Models resident together | Combined memory | Fits under the 18GB Ollama limit? | Source |
+|---|---|---|---|
+| `qwen3:8b` + `qwen2.5vl:7b` | ~11.7GB | Yes, ~6.3GB headroom | prior measurement |
+| `qwen3:8b` + `qwen2.5vl:3b` | 9.1GB | Yes, ~8.9GB headroom | measured directly |
+| `qwen2.5vl:7b` + `qwen2.5vl:3b` | 9.0GB (11.0GB incl. overhead) | Yes | measured directly |
+| All three + `mxbai-embed-large` (~0.7GB) | ~9.8-12.4GB | Yes, comfortably | arithmetic from above |
+
+LRU eviction was directly observed multiple times: loading a 3rd distinct
+model always evicts whichever of the other two was used least recently,
+regardless of how much memory is actually free — a strict count limit,
+not a memory-driven decision.
+
+So the current default of 2 is a **model-count** limit, not one this
+host's 18GB memory budget actually requires — raising
+`OLLAMA_MAX_LOADED_MODELS` to `3` (via `.env.oracle`, now read by
+`docker-compose.oracle.yml`) is supported by measurement for exactly this
+deployment's three models. It was deliberately **left at 2** by both
+investigations rather than changed, per each task's "do not change it
+until measured" instruction — measuring is done twice now; changing it is
+a call for whoever operates this deployment to make, since it depends on
+your actual concurrent traffic pattern, not just raw memory arithmetic.
+To apply it: uncomment `OLLAMA_MAX_LOADED_MODELS=3` in `.env.oracle` (see
+`.env.oracle.example`) and run `oracle-restart.sh`.
+
+`oracle-status.sh` reports the current value *and* (as of the latency
+optimization pass) the Ollama container's actual resident memory via
+`docker stats` — a real number to check the table above against, not
+just the configured limit; `ollama ps` (via `oracle-logs.sh ollama` or
+`docker compose exec ollama ollama ps`) shows what's resident at any
+moment.
+
+---
+
+## Text RAG prompt-prefill
+
+A live measurement (2,640-token real prompt) found **prompt evaluation**,
+not decode, dominates a text chat turn's latency on this CPU-only ARM
+host: 161.9s of a 198.2s total (81.7%) at ~16.3 tokens/second prefill
+throughput, vs. decode's 3.56 tokens/second on 129 completion tokens — a
+rounding error by comparison. Three contributing factors, and what
+addresses each:
+
+- **Prompt size** (~2,600-2,700 tokens/turn: a 2,600-character fixed
+  system prompt + up to 8,000 characters of retrieved context at the
+  default `RETRIEVAL_TOP_K=8`). A compact system prompt variant
+  (`RAG_PROMPT_VARIANT=compact`, see `app/core/prompt_builder.py`) cuts
+  the always-sent portion to 1,310 characters (49.6% smaller) by making
+  the project-context-rule paragraph conditional (it was previously sent
+  on every turn even without one) and tightening every section's wording
+  — no rule was dropped, only reworded more compactly.
+- **Retrieval context size.** `RETRIEVAL_TOP_K=3` + `CONTEXT_MAX_TOTAL_CHARS=3500`
+  (down from 8/8000) cut one measured real prompt from 2,600 to 1,158
+  tokens and its prompt-eval time from ~164s to **3.75s in a clean,
+  uncontended run** — a far larger reduction than token count alone
+  predicts. Quality was spot-checked (an insufficient-evidence question
+  and a factual/citation question both answered correctly under this
+  configuration) but not exhaustively re-validated against a full
+  evaluation set.
+- **No reliable cross-request prompt caching on this shared host.**
+  Ollama's llama.cpp backend does have real slot-level KV-cache reuse
+  (confirmed directly — an identical vision request repeated immediately
+  completed prompt-eval in 0.22s instead of ~96s), but a text prompt
+  repeated back to back on this production instance took 50.0s the
+  second time, not near-zero — real concurrent traffic evicts the cached
+  state unpredictably. A `RAG_SOURCE_ORDER=stable` option (sorts the
+  final selected sources by identity instead of relevance rank, without
+  ever changing *which* chunks are selected) is available and safe to
+  enable, but its cache-reuse benefit should not be counted on.
+
+Neither `RAG_PROMPT_VARIANT` nor `RAG_SOURCE_ORDER` nor the retrieval
+values above were changed from their original defaults — all four are
+documented, commented alternatives in `.env.oracle.example`, left for you
+to apply.
+
 ---
 
 ## Health checks
@@ -272,7 +384,7 @@ These came out of a full performance investigation and a series of targeted, mea
 
 | Setting | Value | Why |
 |---|---|---|
-| `OLLAMA_MAX_LOADED_MODELS` | `2` | The original config (inherited from the Pi's 8 GB budget) allowed only 1 loaded model, forcing a full model reload (measured: **~108 seconds**) every time a chat turn's embedding step and generation step used different models. `2` lets the LLM and embedding model stay resident together. |
+| `OLLAMA_MAX_LOADED_MODELS` | `2` (overridable — see "Model residency" below) | The original config (inherited from the Pi's 8 GB budget) allowed only 1 loaded model, forcing a full model reload (measured: **~108 seconds**) every time a chat turn's embedding step and generation step used different models. `2` lets the LLM and embedding model stay resident together — though a later measurement (the vision-attachment-timeout investigation) found all *three* of this deployment's models fit comfortably within the 18GB memory limit together, meaning `3` is measured-safe for memory but was deliberately left as an opt-in, not a new default. |
 | `OLLAMA_KEEP_ALIVE` | `30m` | Keeps models resident across the idle gaps between requests, reducing cold-reload frequency. |
 | `OLLAMA_NUM_PARALLEL` | `1` | Serializes Ollama requests — appropriate for this CPU-only host, where concurrent generations would only contend for the same limited compute. |
 | Ollama memory limit | `18g` | Raised from the Pi's `6g` — this host has 24 GB total; 18 GB gives Ollama enough headroom to hold multiple full-size models without the container-level thrashing the old 6 GB limit caused. |
@@ -284,6 +396,13 @@ These came out of a full performance investigation and a series of targeted, mea
 | Nginx gzip + immutable caching | on | `deploy/frontend/nginx.conf` gzips text/JS/CSS/font responses and serves hashed static assets (`js/css/fonts/images`) with `Cache-Control: public, immutable` + a 1-year `expires`. |
 | SSE progress events | always on | The chat stream now sends `connected` / `retrieving` / `processing_context` / `loading_model` / `generating` status events before the first answer token, so the frontend shows real status instead of an indefinite "Connecting…" spinner while a cold model load (~44s measured) or a long prompt evaluation (155s+ measured past 2,560 tokens) is in progress. See `app/schemas/chat.py`'s `ChatProgressEvent`. |
 | `OLLAMA_PREWARM_ENABLED` | `false` | Optional: preloads the chat model at startup so the *first* post-restart chat request skips the cold-load cost too. See "Ollama model prewarm" above. |
+| `VISION_REQUEST_TIMEOUT_SECONDS` | `300` (raised from `180`) | The direct fix for this deployment's "model did not respond in time" vision-attachment production error: a live measurement found `qwen2.5vl:7b` prompt-evaluation alone taking **114-232+ seconds even fully warm** for a single modest image — already past the old 180s default before any cold-load time. See `app/config.py`'s `vision_request_timeout_seconds` docstring. |
+| `VISION_GENERATION_TIMEOUT_SECONDS` | `60` (new) | A separate, materially tighter budget for a stall *after* generation has already started — enforced independently of the above via `asyncio.wait_for()` around each streamed chunk (`app/services/vision_service.py`), which is why the vision pipeline now uses `ollama.AsyncClient` instead of the sync client the text pipeline still uses. |
+| `VISION_MAX_IMAGE_DIMENSION` | `1024` (lowered from `1568`) | The same measurement found prompt-eval time tracks vision-token count, which tracks decoded pixel count, not file size/format — a 640x360 image measured ~114s vs. a 1568-capped ~1568x882 image at ~232s. 1024 cuts worst-case pixel area by more than half while remaining legible for document text/screenshot UI. |
+| Vision safety limits | new | `VISION_MAX_IMAGE_PIXELS`/`VISION_MAX_TOTAL_PIXELS`/`VISION_MAX_PROMPT_CHARS` — rejected with a clear error *before* ever calling Ollama, not measured/tuned individually but set to generous, unlikely-to-trigger-normally values. See `.env.oracle.example`. |
+| Vision SSE progress events + profiling metrics | always on | The vision path previously sent *nothing* to the client until the first answer token (or an error) — now mirrors the text path's `connected`/`retrieving`/`processing_context`/`loading_model`/`generating` events, plus (`PERFORMANCE_PROFILING=true`) `vision_model_load_ms`/`vision_prompt_eval_ms`/`vision_completion_tokens`/`vision_decode_tokens_per_second`/`vision_time_to_first_token_ms`/`vision_total_ms`. See `app/api/routes_conversations.py`'s `_stream_vision_reply`. |
+| Vision error classification | always on | A vision failure's `ChatErrorEvent` now carries a backend-only `error_category` (`model_load_or_prompt_eval_timeout`, `generation_timeout`, `request_too_large`, `too_many_pages`, `preprocessing_failure`, `ollama_unavailable`) alongside the existing human-readable `message` — see `app/core/errors.py`'s `VisionErrorCategory`. |
+| `OLLAMA_VISION_PREWARM_ENABLED` | `false` | Optional: preloads the vision model at startup, independent of the text prewarm above. See "Vision model prewarm" above. |
 
 ---
 

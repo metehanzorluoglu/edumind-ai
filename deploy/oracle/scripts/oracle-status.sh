@@ -46,11 +46,19 @@ SAFE_CONFIG_KEYS=(
     OLLAMA_THINKING_ENABLED
     OLLAMA_NUM_PREDICT
     OLLAMA_PREWARM_ENABLED
+    OLLAMA_VISION_PREWARM_ENABLED
+    OLLAMA_MAX_LOADED_MODELS
+    VISION_REQUEST_TIMEOUT_SECONDS
+    VISION_GENERATION_TIMEOUT_SECONDS
+    VISION_MAX_IMAGE_DIMENSION
     EMBEDDING_BATCH_SIZE
     QDRANT_COLLECTION_NAME
     QDRANT_MODE
     AUTH_DEV_LOGIN_ENABLED
     RETRIEVAL_TOP_K
+    CONTEXT_MAX_TOTAL_CHARS
+    RAG_PROMPT_VARIANT
+    RAG_SOURCE_ORDER
     FRONTEND_PORT
 )
 
@@ -104,6 +112,23 @@ main() {
     print_section "Ollama loaded models (ollama ps)"
     if ! oracle_ollama_ps; then
         warn "Could not query Ollama (container starting or unreachable)."
+    fi
+
+    print_section "Ollama container memory (model residency)"
+    # Actual resident memory for the whole Ollama process — the sum of
+    # every model listed above, plus its own runtime overhead. Compared
+    # against OLLAMA_MAX_LOADED_MODELS (in "Effective model configuration"
+    # below) and the container's own mem_limit (docker-compose.oracle.yml)
+    # this is what answers "is raising OLLAMA_MAX_LOADED_MODELS to 3 safe
+    # on this host" empirically, rather than by estimate — see README.md's
+    # "Model residency" section for the measurements this was added from.
+    local ollama_id
+    ollama_id="$(oracle_container_id ollama)"
+    if [[ -n "$ollama_id" ]]; then
+        docker stats --no-stream --format "  {{.MemUsage}}  ({{.MemPerc}} of container limit)" "$ollama_id" \
+            || warn "Could not read Ollama container memory."
+    else
+        warn "Ollama container is not running."
     fi
 
     print_section "Host memory and swap"

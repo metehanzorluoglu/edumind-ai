@@ -80,7 +80,9 @@ def validate_image(data: bytes, *, max_bytes: int, max_pixels: int | None = None
     separate check from the byte-size one (a small file can still decode
     to an enormous pixmap)."""
     if not data:
-        raise VisionServiceError("Image data is empty", category=VisionErrorCategory.PREPROCESSING_FAILURE)
+        raise VisionServiceError(
+            "Image data is empty", category=VisionErrorCategory.PREPROCESSING_FAILURE
+        )
     if len(data) > max_bytes:
         raise VisionServiceError(
             f"Image is {len(data)} bytes, exceeds the {max_bytes}-byte limit",
@@ -90,7 +92,8 @@ def validate_image(data: bytes, *, max_bytes: int, max_pixels: int | None = None
         pixmap = pymupdf.Pixmap(data)  # type: ignore[no-untyped-call]
     except Exception as exc:
         raise VisionServiceError(
-            f"Could not decode image data: {exc}", category=VisionErrorCategory.PREPROCESSING_FAILURE
+            f"Could not decode image data: {exc}",
+            category=VisionErrorCategory.PREPROCESSING_FAILURE,
         ) from exc
     if max_pixels is not None and pixmap.width * pixmap.height > max_pixels:
         raise VisionServiceError(
@@ -135,7 +138,8 @@ def resize_image(
         pixmap = pymupdf.Pixmap(data)  # type: ignore[no-untyped-call]
     except Exception as exc:
         raise VisionServiceError(
-            f"Could not decode image data: {exc}", category=VisionErrorCategory.PREPROCESSING_FAILURE
+            f"Could not decode image data: {exc}",
+            category=VisionErrorCategory.PREPROCESSING_FAILURE,
         ) from exc
 
     longest_side = max(pixmap.width, pixmap.height)
@@ -426,7 +430,9 @@ def _record_vision_metrics(timer: RequestTimer, final_chunk: object) -> None:
             and eval_duration_ns > 0
         ):
             decode_tokens_per_second = eval_count / (eval_duration_ns / 1_000_000_000)
-            timer.record_metric("vision_decode_tokens_per_second", round(decode_tokens_per_second, 2))
+            timer.record_metric(
+                "vision_decode_tokens_per_second", round(decode_tokens_per_second, 2)
+            )
     except Exception:
         pass
 
@@ -546,7 +552,9 @@ class VisionService:
             )
             raise VisionServiceError(_timeout_message(self._model), category=category) from exc
         except Exception as exc:
-            category = classify_vision_error_category(exc, received_first_token=received_first_token)
+            category = classify_vision_error_category(
+                exc, received_first_token=received_first_token
+            )
             raise VisionServiceError(
                 classify_ollama_error(exc, model=self._model, action="Vision chat generation"),
                 category=category,
