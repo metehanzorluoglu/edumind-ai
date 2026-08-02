@@ -317,10 +317,12 @@ function deepTextIncludes(node: ReactTestInstance, substring: string): boolean {
 }
 
 // Coverage for the thinking preview that replaced the old centered
-// "Connecting…" + spinner pending state: a muted, animated placeholder
-// inside the assistant bubble from submission until the first streamed
-// token, rotating only truthful, context-appropriate status text, with all
-// timers/animations cleaned up on unmount.
+// "Connecting…" + spinner pending state: a fixed "Preparing a response..."
+// title with a muted, animated shadow box underneath it (truthful rotating
+// status text + animated dots) inside the assistant bubble from submission
+// until the first streamed token, fading out (never coexisting with the
+// answer) once the turn leaves the thinking state, with all timers/
+// animations cleaned up on unmount.
 describe('ConversationTurnCard thinking placeholder', () => {
   beforeEach(() => {
     jest.useFakeTimers();
@@ -333,7 +335,22 @@ describe('ConversationTurnCard thinking placeholder', () => {
   const textOnly = { hasAttachments: false, retrievalEnabled: true };
   const visionOnly = { hasAttachments: true, retrievalEnabled: false };
 
-  it('shows the placeholder immediately while waiting, and never the old "Connecting…" label or a spinner', async () => {
+  /** Long enough for the card's ~200ms exit-fade linger to elapse. */
+  async function finishFadeOut(): Promise<void> {
+    await act(async () => {
+      jest.advanceTimersByTime(400);
+    });
+  }
+
+  // Host instances only (typeof type === 'string'): RN 0.81's View is a
+  // composite wrapper around the host view, and both layers expose the
+  // testID prop, which would double-count.
+  const shadowBoxes = (root: ReactTestInstance): ReactTestInstance[] =>
+    root.findAll(
+      (node) => typeof node.type === 'string' && node.props.testID === 'thinking-shadow-box'
+    );
+
+  it('shows "Preparing a response..." with the shadow box immediately while waiting, and never the old "Connecting…" label or a spinner', async () => {
     let renderer!: ReturnType<typeof create>;
     await act(async () => {
       renderer = create(
@@ -346,7 +363,11 @@ describe('ConversationTurnCard thinking placeholder', () => {
       await Promise.resolve();
     });
 
-    expect(queryByText(renderer.root, 'Understanding your question')).toBeTruthy();
+    // The fixed title and the first in-box status are both live from the
+    // moment the turn exists.
+    expect(queryByText(renderer.root, 'Preparing a response...')).toBeTruthy();
+    expect(queryByText(renderer.root, 'Understanding your question...')).toBeTruthy();
+    expect(shadowBoxes(renderer.root)).toHaveLength(1);
     // The retired pending state must not leak back in any waiting phase.
     expect(queryByText(renderer.root, 'Connecting…')).toBeNull();
     expect(renderer.root.findAllByType(ActivityIndicator)).toHaveLength(0);
@@ -366,11 +387,12 @@ describe('ConversationTurnCard thinking placeholder', () => {
       );
       await Promise.resolve();
     });
+    expect(shadowBoxes(renderer.root)).toHaveLength(1);
     expect(queryByText(renderer.root, 'Connecting…')).toBeNull();
     expect(renderer.root.findAllByType(ActivityIndicator)).toHaveLength(0);
   });
 
-  it('rotates the status text every ~2.8s and stops on the final message', async () => {
+  it('rotates the box text every 2s and parks on the final message', async () => {
     let renderer!: ReturnType<typeof create>;
     await act(async () => {
       renderer = create(
@@ -382,25 +404,30 @@ describe('ConversationTurnCard thinking placeholder', () => {
       );
       await Promise.resolve();
     });
-    expect(queryByText(renderer.root, 'Understanding your question')).toBeTruthy();
+    expect(queryByText(renderer.root, 'Understanding your question...')).toBeTruthy();
 
     await act(async () => {
-      jest.advanceTimersByTime(2800);
+      jest.advanceTimersByTime(2000);
     });
-    expect(queryByText(renderer.root, 'Searching your documents')).toBeTruthy();
-    expect(queryByText(renderer.root, 'Understanding your question')).toBeNull();
+    expect(queryByText(renderer.root, 'Organizing key information...')).toBeTruthy();
+    expect(queryByText(renderer.root, 'Understanding your question...')).toBeNull();
 
     await act(async () => {
-      jest.advanceTimersByTime(2800);
+      jest.advanceTimersByTime(2000);
     });
-    expect(queryByText(renderer.root, 'Preparing a response')).toBeTruthy();
+    expect(queryByText(renderer.root, 'Searching your documents...')).toBeTruthy();
+
+    await act(async () => {
+      jest.advanceTimersByTime(2000);
+    });
+    expect(queryByText(renderer.root, 'Preparing the final response...')).toBeTruthy();
 
     // Parked on the final status — never cycles back to the start.
     await act(async () => {
-      jest.advanceTimersByTime(2800 * 4);
+      jest.advanceTimersByTime(2000 * 4);
     });
-    expect(queryByText(renderer.root, 'Preparing a response')).toBeTruthy();
-    expect(queryByText(renderer.root, 'Understanding your question')).toBeNull();
+    expect(queryByText(renderer.root, 'Preparing the final response...')).toBeTruthy();
+    expect(queryByText(renderer.root, 'Understanding your question...')).toBeNull();
   });
 
   it('never shows retrieval-specific text for a request that does not use retrieval', async () => {
@@ -415,21 +442,21 @@ describe('ConversationTurnCard thinking placeholder', () => {
       );
       await Promise.resolve();
     });
-    expect(queryByText(renderer.root, 'Reviewing the attached images')).toBeTruthy();
+    expect(queryByText(renderer.root, 'Reviewing the attached images...')).toBeTruthy();
     expect(queryByText(renderer.root, 'Searching your documents')).toBeNull();
 
     // Walk the entire rotation — document-searching text may not appear at
     // any point for a vision-only request.
     for (let i = 0; i < 4; i++) {
       await act(async () => {
-        jest.advanceTimersByTime(2800);
+        jest.advanceTimersByTime(2000);
       });
       expect(queryByText(renderer.root, 'Searching your documents')).toBeNull();
     }
-    expect(queryByText(renderer.root, 'Preparing a response')).toBeTruthy();
+    expect(queryByText(renderer.root, 'Preparing the final response...')).toBeTruthy();
   });
 
-  it('falls back to the always-true status when no context is available', async () => {
+  it('falls back to always-true statuses when no context is available', async () => {
     let renderer!: ReturnType<typeof create>;
     await act(async () => {
       renderer = create(
@@ -442,10 +469,10 @@ describe('ConversationTurnCard thinking placeholder', () => {
       await Promise.resolve();
     });
 
-    expect(queryByText(renderer.root, 'Preparing a response')).toBeTruthy();
+    expect(queryByText(renderer.root, 'Organizing key information...')).toBeTruthy();
   });
 
-  it('the first streamed token replaces the placeholder in the same card, not a second bubble', async () => {
+  it('the first streamed token fades the placeholder out and reveals the answer in the same card — never both at once', async () => {
     let renderer!: ReturnType<typeof create>;
     await act(async () => {
       renderer = create(
@@ -457,7 +484,7 @@ describe('ConversationTurnCard thinking placeholder', () => {
       );
       await Promise.resolve();
     });
-    expect(queryByText(renderer.root, 'Understanding your question')).toBeTruthy();
+    expect(shadowBoxes(renderer.root)).toHaveLength(1);
 
     await act(async () => {
       renderer.update(
@@ -473,9 +500,22 @@ describe('ConversationTurnCard thinking placeholder', () => {
       await Promise.resolve();
     });
 
-    // Placeholder gone, real answer rendered (by the real MarkdownAnswer)
-    // inside the same card — never both at once.
-    expect(queryByText(renderer.root, 'Understanding your question')).toBeNull();
+    // Mid-fade: the box is still mounted (fading out) but the answer is
+    // deliberately held back — the two are never on screen at the same time.
+    expect(
+      deepTextIncludes(
+        renderer.root,
+        'Based on the information in your uploaded documents, plants need light.'
+      )
+    ).toBe(false);
+
+    await finishFadeOut();
+
+    // Fade finished: placeholder (title + box) gone, real answer rendered by
+    // the real MarkdownAnswer inside the same card.
+    expect(shadowBoxes(renderer.root)).toHaveLength(0);
+    expect(queryByText(renderer.root, 'Preparing a response...')).toBeNull();
+    expect(queryByText(renderer.root, 'Understanding your question...')).toBeNull();
     expect(
       deepTextIncludes(
         renderer.root,
@@ -496,7 +536,7 @@ describe('ConversationTurnCard thinking placeholder', () => {
       );
       await Promise.resolve();
     });
-    expect(queryByText(renderer.root, 'Understanding your question')).toBeTruthy();
+    expect(shadowBoxes(renderer.root)).toHaveLength(1);
 
     await act(async () => {
       renderer.update(
@@ -513,8 +553,12 @@ describe('ConversationTurnCard thinking placeholder', () => {
       await Promise.resolve();
     });
 
-    expect(queryByText(renderer.root, 'Understanding your question')).toBeNull();
+    // The error state shows immediately; the box finishes its fade and is
+    // gone right after.
     expect(queryByText(renderer.root, 'model unreachable')).toBeTruthy();
+    await finishFadeOut();
+    expect(shadowBoxes(renderer.root)).toHaveLength(0);
+    expect(queryByText(renderer.root, 'Understanding your question...')).toBeNull();
   });
 
   it('removes the placeholder when generation is cancelled', async () => {
@@ -529,7 +573,7 @@ describe('ConversationTurnCard thinking placeholder', () => {
       );
       await Promise.resolve();
     });
-    expect(queryByText(renderer.root, 'Understanding your question')).toBeTruthy();
+    expect(shadowBoxes(renderer.root)).toHaveLength(1);
 
     await act(async () => {
       renderer.update(
@@ -542,10 +586,13 @@ describe('ConversationTurnCard thinking placeholder', () => {
       await Promise.resolve();
     });
 
-    expect(queryByText(renderer.root, 'Understanding your question')).toBeNull();
+    await finishFadeOut();
+    expect(shadowBoxes(renderer.root)).toHaveLength(0);
+    expect(queryByText(renderer.root, 'Preparing a response...')).toBeNull();
+    expect(queryByText(renderer.root, 'Understanding your question...')).toBeNull();
   });
 
-  it('cleans up its rotation timer and dots animation on unmount', async () => {
+  it('cleans up its rotation timer, fade, and dots animation on unmount — even mid-fade', async () => {
     // Baseline: the same card with no pending assistant turn schedules
     // nothing of its own — whatever the environment itself keeps alive
     // under fake timers is not this component's responsibility.
@@ -575,6 +622,22 @@ describe('ConversationTurnCard thinking placeholder', () => {
     // The rotation interval and the dots animation frame are both live.
     expect(jest.getTimerCount()).toBeGreaterThan(baseline);
 
+    // Leave the thinking state so the exit-fade linger timer is scheduled
+    // too, then unmount in the middle of the fade — everything must still
+    // be released.
+    await act(async () => {
+      renderer.update(
+        <ConversationTurnCard
+          userContent="hi"
+          assistant={streamingAssistant({
+            thinking: null,
+            content: 'The answer.',
+          })}
+          onCitationPress={() => {}}
+        />
+      );
+      await Promise.resolve();
+    });
     await act(async () => {
       renderer.unmount();
     });
@@ -585,7 +648,7 @@ describe('ConversationTurnCard thinking placeholder', () => {
       jest.advanceTimersByTime(60000);
     });
     // Everything the placeholder scheduled is gone — no leaked interval,
-    // no orphaned animation frame.
+    // linger timer, or orphaned animation frame.
     expect(jest.getTimerCount()).toBe(baseline);
   });
 });

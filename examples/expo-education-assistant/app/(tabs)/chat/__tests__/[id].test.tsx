@@ -355,6 +355,11 @@ describe('ChatConversationRoute ([id])', () => {
       await Promise.resolve();
     });
 
+    // The thinking placeholder's short exit fade holds the answer back
+    // briefly after the stream finishes — let it elapse.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
     expect(findByText(renderer.root, 'Yes.')).toBeTruthy();
     expect(refreshConversations).toHaveBeenCalled();
   });
@@ -394,9 +399,11 @@ describe('ChatConversationRoute ([id])', () => {
     });
 
     // Immediately after submission — before any SSE event has arrived — the
-    // pending assistant bubble shows the truthful placeholder for a plain
-    // chat request, never the retired "Connecting…" label or a spinner.
-    expect(queryByText(renderer.root, 'Understanding your question')).toBeTruthy();
+    // pending assistant bubble shows the "Preparing a response..." title and
+    // the truthful shadow-box status for a plain chat request, never the
+    // retired "Connecting…" label or a spinner.
+    expect(queryByText(renderer.root, 'Preparing a response...')).toBeTruthy();
+    expect(queryByText(renderer.root, 'Understanding your question...')).toBeTruthy();
     expect(queryByText(renderer.root, 'Connecting…')).toBeNull();
     // Exactly one turn card: the pending assistant message was appended in
     // place, not as a second bubble.
@@ -410,7 +417,15 @@ describe('ChatConversationRoute ([id])', () => {
       await Promise.resolve();
     });
 
-    expect(queryByText(renderer.root, 'Understanding your question')).toBeNull();
+    // The answer is held back until the placeholder's short exit fade
+    // completes — the two are never rendered at the same time.
+    expect(queryByText(renderer.root, 'With sunlight.')).toBeNull();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+
+    expect(queryByText(renderer.root, 'Preparing a response...')).toBeNull();
+    expect(queryByText(renderer.root, 'Understanding your question...')).toBeNull();
     expect(findByText(renderer.root, 'With sunlight.')).toBeTruthy();
     expect(renderer.root.findAllByType(ConversationTurnCard)).toHaveLength(1);
 
@@ -735,6 +750,11 @@ describe('ChatConversationRoute ([id])', () => {
       await Promise.resolve();
     });
 
+    // The thinking placeholder's short exit fade holds the answer back
+    // briefly after the stream finishes — let it elapse.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
     expect(findByText(renderer.root, 'Yes.')).toBeTruthy();
     expect(queryByText(renderer.root, 'LLM unavailable')).toBeNull();
     expect(queryByText(renderer.root, 'Retry')).toBeNull();

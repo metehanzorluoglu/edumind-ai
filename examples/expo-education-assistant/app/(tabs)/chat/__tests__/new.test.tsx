@@ -431,9 +431,10 @@ describe('NewChatScreen', () => {
       expect(findByText(renderer.root, 'What about Fictional Grade 4?')).toBeTruthy();
       expect(JSON.parse(messageBodies[0]!).query).toBe('What about Fictional Grade 4?');
       // The pending first turn shows the thinking placeholder immediately —
-      // truthful text for a plain chat request, never the retired
-      // "Connecting…" label.
-      expect(queryByText(renderer.root, 'Understanding your question')).toBeTruthy();
+      // "Preparing a response..." over the truthful shadow-box status for a
+      // plain chat request, never the retired "Connecting…" label.
+      expect(queryByText(renderer.root, 'Preparing a response...')).toBeTruthy();
+      expect(queryByText(renderer.root, 'Understanding your question...')).toBeTruthy();
       expect(queryByText(renderer.root, 'Connecting…')).toBeNull();
 
       await act(async () => {
@@ -443,9 +444,14 @@ describe('NewChatScreen', () => {
       });
 
       // Still on /chat/new — token arrived, but the turn hasn't finished.
-      // The first token replaced the placeholder inside the same bubble.
+      // The first token replaced the placeholder inside the same bubble,
+      // once its short exit fade finished.
       expect(mockReplace).not.toHaveBeenCalled();
-      expect(queryByText(renderer.root, 'Understanding your question')).toBeNull();
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      });
+      expect(queryByText(renderer.root, 'Preparing a response...')).toBeNull();
+      expect(queryByText(renderer.root, 'Understanding your question...')).toBeNull();
       expect(findByText(renderer.root, 'Grade 4 covers...')).toBeTruthy();
       expect(findByText(renderer.root, 'What about Fictional Grade 4?')).toBeTruthy();
 
@@ -546,6 +552,11 @@ describe('NewChatScreen', () => {
       await Promise.resolve();
     });
 
+    // The thinking placeholder's short exit fade holds the answer back
+    // briefly after the stream finishes — let it elapse.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
     expect(findByText(renderer.root, 'Yes.')).toBeTruthy();
     expect(mockReplace).toHaveBeenCalledWith('/chat/new-conversation-id');
 
@@ -585,7 +596,8 @@ describe('NewChatScreen', () => {
 
     expect(findPressableByText(renderer.root, 'Cancel')).toBeTruthy();
     // While in flight, the thinking placeholder is live.
-    expect(queryByText(renderer.root, 'Understanding your question')).toBeTruthy();
+    expect(queryByText(renderer.root, 'Preparing a response...')).toBeTruthy();
+    expect(queryByText(renderer.root, 'Understanding your question...')).toBeTruthy();
 
     await act(async () => {
       findPressableByText(renderer.root, 'Cancel').props.onPress();
@@ -598,8 +610,13 @@ describe('NewChatScreen', () => {
     expect(findPressableByText(renderer.root, 'Retry')).toBeTruthy();
     expect(mockReplace).not.toHaveBeenCalled();
     // Cancelling stops the animation and replaces the placeholder with the
-    // cancelled state — it never keeps rotating.
-    expect(queryByText(renderer.root, 'Understanding your question')).toBeNull();
+    // cancelled state — once its short exit fade finishes, it never keeps
+    // rotating.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+    expect(queryByText(renderer.root, 'Preparing a response...')).toBeNull();
+    expect(queryByText(renderer.root, 'Understanding your question...')).toBeNull();
     controllable!.close();
   });
 

@@ -1,6 +1,6 @@
 import { mapSourcesToCitations, splitAnswerIntoSegments } from 'education-assistant-client';
 import type { DisplayMessage, RetrievedChunk } from 'education-assistant-client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { AttachmentChip } from '@/components/AttachmentChip';
 import { AttachmentLightbox } from '@/components/AttachmentLightbox';
@@ -10,6 +10,11 @@ import { MarkdownAnswer } from '@/components/MarkdownAnswer';
 import { SourceCard, UnavailableSourceChip } from '@/components/SourceCard';
 import { ThinkingPlaceholder } from '@/components/ThinkingPlaceholder';
 import type { AttachmentChipInfo, PendingAttachment } from '@/lib/chatAttachments';
+
+/** How long the card keeps the thinking placeholder mounted after the turn
+ * leaves the thinking state, so its ~180ms exit fade finishes before the
+ * streamed answer (or error state) takes its place — see thinkingLinger. */
+const THINKING_FADE_OUT_MS = 200;
 
 /** DisplaySource unifies persisted/live sources but allows a null document_id (a since-deleted document); mapSourcesToCitations only uses document_id for its join key, never for display, so substituting '' here is safe — see types/conversations.ts. */
 function toRetrievedChunk(source: DisplayMessage['sources'][number]): RetrievedChunk {
@@ -71,6 +76,29 @@ export function ConversationTurnCard({
   const viewableAttachments = userAttachments.filter((a) => a.remote !== null);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
+  // Thinking-preview lifecycle. `thinkingActive` is the SDK's state machine
+  // as-is (placeholder while `thinking` is set and no token has landed);
+  // `thinkingLinger` extends the placeholder's mount for the duration of its
+  // exit fade once that state clears, and holds the streamed answer back
+  // until the fade is done — so the placeholder and the real answer are
+  // never on screen at the same time. A retry that lands within the window
+  // simply flips `visible` back on and the box fades straight back in.
+  const thinkingActive = assistant?.thinking != null && answer.length === 0;
+  const [thinkingLinger, setThinkingLinger] = useState(false);
+  useEffect(() => {
+    if (thinkingActive) {
+      setThinkingLinger(true);
+      return;
+    }
+    // Reading thinkingLinger from this render's closure is intentional: the
+    // only transition that matters is thinkingActive flipping to false, at
+    // which point the captured value is the fresh one.
+    if (!thinkingLinger) return;
+    const timer = setTimeout(() => setThinkingLinger(false), THINKING_FADE_OUT_MS);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [thinkingActive]);
+
   return (
     <View style={styles.turn}>
       {userContent.length > 0 && (
@@ -118,11 +146,14 @@ export function ConversationTurnCard({
           </>
         ) : (
           <>
-            {assistant?.thinking != null && answer.length === 0 && (
-              <ThinkingPlaceholder context={assistant.thinkingContext} />
+            {(thinkingActive || thinkingLinger) && (
+              <ThinkingPlaceholder
+                context={assistant?.thinkingContext ?? null}
+                visible={thinkingActive}
+              />
             )}
 
-            {answer.length > 0 && (
+            {answer.length > 0 && !thinkingLinger && (
               <MarkdownAnswer
                 answer={answer}
                 citations={citations}
