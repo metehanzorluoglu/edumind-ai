@@ -14,7 +14,7 @@ import { describeAuthError, useAuth } from '@/lib/AuthProvider';
  * robustness / manual testing.
  */
 export default function AuthCallbackScreen() {
-  const { exchangeCode, status } = useAuth();
+  const { exchangeCode, status, error } = useAuth();
   const params = useLocalSearchParams<{ auth_code?: string; auth_error?: string }>();
   const [localError, setLocalError] = useState<string | null>(null);
   const handled = useRef(false);
@@ -35,11 +35,23 @@ export default function AuthCallbackScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (localError) {
+  // exchangeCode() has no return value this screen can await directly
+  // (see AuthProvider.exchangeCode) — a failed exchange (an invalid,
+  // expired, or already-used auth_code; a network error; a backend
+  // error) surfaces only through the shared `error` context value, with
+  // `status` flipping to 'unauthenticated'. Without also reading it here,
+  // this screen had no way to detect that failure at all and was stuck
+  // showing "Completing sign-in…" forever — the same user-visible
+  // symptom as the silentRefresh/exchangeCode race this file's tests
+  // cover, but from an entirely different, independent cause.
+  const exchangeFailed = status === 'unauthenticated' && Boolean(error);
+  const displayError = localError ?? (exchangeFailed ? error : null);
+
+  if (displayError) {
     return (
       <View style={styles.container}>
         <Text style={styles.errorTitle}>Sign-in failed</Text>
-        <Text style={styles.errorText}>{localError}</Text>
+        <Text style={styles.errorText}>{displayError}</Text>
         <Link href="/login" style={styles.link}>
           <Text style={styles.linkText}>Back to sign in</Text>
         </Link>

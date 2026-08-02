@@ -96,6 +96,46 @@ describe('AuthProvider', () => {
     expect(box.current.devLoginEnabled).toBe(false);
   });
 
+  it('silentRefresh() restores an existing session automatically on mount when a valid refresh token/cookie exists — e.g. an expired access token but a still-valid refresh token', async () => {
+    // On every fresh page load (including a normal reload), the app
+    // holds no access token in memory at all yet — silentRefresh()'s
+    // entire job is exchanging whatever refresh credential exists
+    // (an HttpOnly cookie on web) for a fresh access token, with no
+    // user action required. This is what "expired access token, valid
+    // refresh token" actually looks like from this provider's
+    // perspective: nothing to do with any *stale* access token value,
+    // since one is never persisted across a reload in the first place.
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/auth/refresh')) {
+        return jsonResponse({
+          access_token: 'restored-access-token',
+          refresh_token: 'restored-refresh-token',
+          token_type: 'bearer',
+          expires_in: 900,
+          user: {
+            id: 'u1',
+            email: 'restored@example.com',
+            display_name: null,
+            avatar_url: null,
+            is_dev_test_user: false,
+            provider: 'google',
+          },
+        });
+      }
+      if (url.includes('/auth/providers')) {
+        return jsonResponse({ providers: [], dev_login_enabled: false, local_auth_enabled: true });
+      }
+      throw new Error(`unexpected fetch to ${url}`);
+    }) as unknown as typeof fetch;
+
+    const box = await renderAuth();
+
+    expect(box.current.status).toBe('authenticated');
+    expect(box.current.accessToken).toBe('restored-access-token');
+    expect(box.current.user?.email).toBe('restored@example.com');
+  });
+
   it('normalizes the snake_case GET /auth/providers response (dev_login_enabled) into camelCase state (devLoginEnabled)', async () => {
     global.fetch = jest.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

@@ -47,6 +47,8 @@ jest.mock('expo-document-picker', () => ({
 const mockParams: { id: string } = { id: 'c1' };
 jest.mock('expo-router', () => ({
   useLocalSearchParams: () => mockParams,
+  usePathname: () => '/chat/c1',
+  useGlobalSearchParams: () => ({}),
 }));
 
 function findByText(root: ReactTestInstance, text: string): ReactTestInstance {

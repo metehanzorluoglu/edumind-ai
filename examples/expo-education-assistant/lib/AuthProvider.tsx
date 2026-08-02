@@ -6,6 +6,7 @@ import {
   type AuthUser,
 } from 'education-assistant-client';
 import * as Linking from 'expo-linking';
+import { useGlobalSearchParams, usePathname } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
 import {
   createContext,
@@ -126,6 +127,8 @@ export function describeAuthError(code: string): string {
  * an acceptable limitation for a dev convenience knob.
  */
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
+  const globalSearchParams = useGlobalSearchParams<{ auth_code?: string }>();
   const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);
   const [baseUrlHydrated, setBaseUrlHydrated] = useState(false);
   const [status, setStatus] = useState<AuthStatus>('loading');
@@ -155,6 +158,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Its own, separate counter from authGenerationRef — see
   // refreshProviders' own comment for why sharing one would be wrong.
   const providersGenerationRef = useRef(0);
+
+  // Always holds whether the *current* render is on the OAuth callback
+  // route with an auth_code already present in the URL — read (not
+  // subscribed to) by the silentRefresh-triggering effect below via a
+  // ref, not a dependency, specifically so a route/param change alone
+  // never re-fires that effect (silentRefresh must still run at most
+  // once per app session). See that effect's own comment for why this
+  // check exists at all.
+  //
+  // Deliberately an *exact* pathname match, not a substring/includes()
+  // check — a substring match would also (wrongly) match any hypothetical
+  // future route whose path merely contains "auth-callback" (e.g. a
+  // "/settings/auth-callback-history" screen), silently skipping
+  // silentRefresh() somewhere it has no business being skipped.
+  const willExchangeCodeOnMountRef = useRef(false);
+  willExchangeCodeOnMountRef.current =
+    pathname === `/${AUTH_CALLBACK_PATH}` && typeof globalSearchParams.auth_code === 'string';
 
   useEffect(() => {
     let cancelled = false;
@@ -214,6 +234,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!baseUrlHydrated) return;
+    // Skip the ambient silent-session-restore when landing on the OAuth
+    // callback route (see AUTH_CALLBACK_PATH) with an auth_code already
+    // in the URL — that route's own effect is about to call
+    // exchangeCode(), which both shares authGenerationRef with this call
+    // (see beginAuthAction) *and* is the actually-authoritative action
+    // for this page load. Without this guard, silentRefresh() reliably
+    // starts (calls beginAuthAction()) *after* exchangeCode() does,
+    // because this effect is gated behind an async AsyncStorage/
+    // localStorage read (getStoredBaseUrl) that exchangeCode's own
+    // effect has no equivalent of — so exchangeCode's eventual,
+    // successful resolution gets discarded as "stale" by the generation
+    // guard the instant silentRefresh starts, regardless of which one's
+    // network request actually finishes first. The user-visible symptom
+    // was the login screen getting stuck on "Completing sign-in…" after
+    // a repeat Google login/logout cycle: the backend had already
+    // completed the login (a fresh refresh cookie was already set by the
+    // discarded exchange), which is exactly why reloading the page
+    // "fixed" it — a fresh, unraced silentRefresh() then succeeded
+    // against that already-valid cookie.
+    //
+    // Deliberately narrow (checks for an actual auth_code, not just the
+    // route) so every other case — landing on /auth-callback with an
+    // auth_error, or with no params at all — is completely unaffected:
+    // exchangeCode() never runs in those cases, so there is no
+    // competing action for silentRefresh() to race in the first place.
+    if (willExchangeCodeOnMountRef.current) return;
     silentRefresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseUrlHydrated]);

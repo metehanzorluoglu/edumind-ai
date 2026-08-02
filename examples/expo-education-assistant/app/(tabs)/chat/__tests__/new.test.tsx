@@ -32,6 +32,8 @@ jest.mock('expo-image-picker', () => ({
 const mockReplace = jest.fn();
 jest.mock('expo-router', () => ({
   useRouter: () => ({ replace: mockReplace, push: jest.fn() }),
+  usePathname: () => '/chat',
+  useGlobalSearchParams: () => ({}),
 }));
 
 function findByText(root: ReactTestInstance, text: string): ReactTestInstance {
