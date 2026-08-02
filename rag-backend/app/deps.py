@@ -6,6 +6,7 @@ from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
+from app.core.email_provider import ConsoleEmailProvider, EmailProvider, SmtpEmailProvider
 from app.core.embedding_provider import (
     MXBAI_EMBED_LARGE_DIMENSIONS,
     EmbeddingProvider,
@@ -176,6 +177,25 @@ def get_image_generation_service() -> ImageGenerationService:
 
 
 ImageGenerationServiceDep = Annotated[ImageGenerationService, Depends(get_image_generation_service)]
+
+
+@lru_cache
+def get_email_provider() -> EmailProvider:
+    settings = get_settings()
+    if settings.email_provider == "smtp":
+        return SmtpEmailProvider(
+            host=settings.smtp_host,
+            port=settings.smtp_port,
+            username=settings.smtp_username,
+            password=settings.smtp_password,
+            use_tls=settings.smtp_use_tls,
+            from_name=settings.email_from_name,
+            from_address=settings.email_from_address,
+        )
+    return ConsoleEmailProvider()
+
+
+EmailProviderDep = Annotated[EmailProvider, Depends(get_email_provider)]
 
 
 @lru_cache

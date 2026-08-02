@@ -15,7 +15,16 @@ class User(Base):
     # True only when the identity provider itself asserts the address is
     # verified (e.g. Google's `email_verified` claim) — never inferred, since
     # this flag is what account-linking-by-email safety decisions key off.
+    # For a local (password) account, this becomes True only once
+    # POST /auth/verify-email successfully redeems a token — see
+    # app/core/verification_service.py.
     email_verified: Mapped[bool] = mapped_column(default=False, nullable=False)
+    # When `email_verified` most recently became True — None until then.
+    # Kept alongside the boolean (not derived from it) so "when" is
+    # preserved even if verification is ever re-checked/re-triggered later.
+    email_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     # Argon2id-encoded local password credential (see
@@ -169,3 +178,40 @@ class AuthRateLimitHit(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class EmailVerificationToken(Base):
+    """One row per issued email-verification token (see
+    app/core/verification_service.py) — the raw token is emailed to the
+    user and never stored; only `token_hash` (SHA-256 of the raw value) is
+    persisted, so a database read alone can never yield a usable
+    verification credential, mirroring `Session.refresh_token_hash`'s
+    same design for refresh tokens.
+
+    `consumed_at` and `revoked_at` are deliberately separate columns
+    (rather than one shared "invalidated_at"): `consumed_at` means this
+    exact token successfully verified the account; `revoked_at` means it
+    was invalidated for another reason — currently, always because a
+    newer token was issued for the same user (see
+    verification_service.issue_verification_token, which revokes every
+    other still-active token for that user before creating a new one) —
+    keeping them distinct preserves *why* a token is no longer usable.
+    A token is valid to redeem only when both are NULL and `expires_at`
+    is in the future.
+    """
+
+    __tablename__ = "email_verification_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

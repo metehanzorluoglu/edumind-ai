@@ -1,4 +1,4 @@
-import { Redirect } from 'expo-router';
+import { Redirect, useRouter } from 'expo-router';
 import { useState } from 'react';
 import {
   ActivityIndicator,
@@ -9,7 +9,9 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { providerIcon } from '@/components/ProviderIcon';
 import { useAuth } from '@/lib/AuthProvider';
+import { evaluatePasswordChecklist } from '@/lib/passwordChecklist';
 
 export type AuthMode = 'signin' | 'signup';
 
@@ -57,7 +59,7 @@ export function computeLoginSections(state: {
 }
 
 const EMAIL_FORMAT_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
-const MIN_PASSWORD_LENGTH = 8;
+const MIN_PASSWORD_LENGTH = 12;
 
 export function validateEmailField(email: string): string | null {
   if (!email.trim()) return 'Email is required.';
@@ -87,13 +89,16 @@ export default function LoginScreen() {
     localAuthEnabled,
     providersLoading,
     error,
+    unverifiedEmail,
     startOAuth,
     login,
     register,
+    resendVerification,
     devLogin,
     clearError,
     refreshProviders,
   } = useAuth();
+  const router = useRouter();
 
   const [mode, setMode] = useState<AuthMode>('signin');
   const [email, setEmail] = useState('');
@@ -106,6 +111,8 @@ export default function LoginScreen() {
   const [busyProvider, setBusyProvider] = useState<string | null>(null);
   const [devEmail, setDevEmail] = useState('');
   const [showForgotPasswordNotice, setShowForgotPasswordNotice] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [resendSent, setResendSent] = useState(false);
 
   // A session restored (or just completed) elsewhere must never leave the
   // user stuck looking at the login form — bounce straight into the app.
@@ -120,6 +127,8 @@ export default function LoginScreen() {
     devLoginEnabled,
     localAuthEnabled,
   });
+  const passwordChecklist =
+    mode === 'signup' ? evaluatePasswordChecklist(password, email, displayName) : [];
 
   function switchMode(nextMode: AuthMode): void {
     setMode(nextMode);
@@ -161,10 +170,26 @@ export default function LoginScreen() {
       if (mode === 'signin') {
         await login(email.trim(), password);
       } else {
-        await register(email.trim(), password, displayName.trim() || undefined);
+        const trimmedEmail = email.trim();
+        const result = await register(trimmedEmail, password, displayName.trim() || undefined);
+        if (result.emailVerificationRequired) {
+          router.push({ pathname: '/check-email', params: { email: trimmedEmail } });
+        }
       }
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleResendForUnverified(): Promise<void> {
+    if (!unverifiedEmail || resending) return;
+    setResending(true);
+    setResendSent(false);
+    try {
+      await resendVerification(unverifiedEmail);
+    } finally {
+      setResending(false);
+      setResendSent(true);
     }
   }
 
@@ -204,6 +229,28 @@ export default function LoginScreen() {
           </View>
         )}
 
+        {unverifiedEmail && (
+          <View style={styles.noticeBox} accessibilityRole="alert">
+            <Text style={styles.noticeTitle}>
+              Please verify your email address before signing in.
+            </Text>
+            {resendSent ? (
+              <Text style={styles.noticeText}>Verification email sent.</Text>
+            ) : (
+              <Pressable
+                onPress={handleResendForUnverified}
+                disabled={resending}
+                accessibilityRole="button"
+                accessibilityLabel="Resend verification email"
+              >
+                <Text style={styles.noticeLink}>
+                  {resending ? 'Sending…' : 'Resend verification email'}
+                </Text>
+              </Pressable>
+            )}
+          </View>
+        )}
+
         {sections.showLoadingSpinner && (
           <View style={styles.centered}>
             <ActivityIndicator />
@@ -223,7 +270,10 @@ export default function LoginScreen() {
               {busyProvider === provider.provider ? (
                 <ActivityIndicator color="#1F2937" />
               ) : (
-                <Text style={styles.oauthButtonText}>Continue with {provider.display_name}</Text>
+                <View style={styles.oauthButtonContent}>
+                  {providerIcon(provider.provider)}
+                  <Text style={styles.oauthButtonText}>Continue with {provider.display_name}</Text>
+                </View>
               )}
             </Pressable>
           ))}
@@ -303,7 +353,7 @@ export default function LoginScreen() {
                       setFieldErrors((prev) => ({ ...prev, password: undefined }));
                     }
                   }}
-                  placeholder={mode === 'signup' ? 'At least 8 characters' : 'Your password'}
+                  placeholder={mode === 'signup' ? 'At least 12 characters' : 'Your password'}
                   placeholderTextColor="#94A3B8"
                   secureTextEntry={!showPassword}
                   autoCapitalize="none"
@@ -325,9 +375,6 @@ export default function LoginScreen() {
               {fieldErrors.password && (
                 <Text style={styles.fieldErrorText}>{fieldErrors.password}</Text>
               )}
-              {mode === 'signup' && !fieldErrors.password && (
-                <Text style={styles.helperText}>At least 8 characters.</Text>
-              )}
             </View>
 
             {showForgotPasswordNotice && (
@@ -336,6 +383,20 @@ export default function LoginScreen() {
                   Password recovery isn&apos;t available yet. Please contact your administrator, or
                   sign in with Google if you&apos;ve linked it to this account.
                 </Text>
+              </View>
+            )}
+
+            {mode === 'signup' && (
+              <View style={styles.checklistBox}>
+                <Text style={styles.checklistTitle}>Password must contain:</Text>
+                {passwordChecklist.map((item) => (
+                  <Text
+                    key={item.id}
+                    style={[styles.checklistItem, item.met && styles.checklistItemMet]}
+                  >
+                    {`${item.met ? '✓' : '•'} ${item.label}`}
+                  </Text>
+                ))}
               </View>
             )}
 
@@ -515,6 +576,7 @@ const styles = StyleSheet.create({
     minHeight: 44,
     marginBottom: 10,
   },
+  oauthButtonContent: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   oauthButtonText: { color: '#1F2937', fontWeight: '600', fontSize: 15 },
   dividerRow: {
     flexDirection: 'row',
@@ -546,7 +608,6 @@ const styles = StyleSheet.create({
   },
   inputError: { borderColor: '#DC2626' },
   fieldErrorText: { fontSize: 12, color: '#B91C1C' },
-  helperText: { fontSize: 12, color: '#94A3B8' },
   passwordRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   passwordInput: { flex: 1 },
   showHideButton: {
@@ -560,8 +621,23 @@ const styles = StyleSheet.create({
     backgroundColor: '#F1F5F9',
     borderRadius: 8,
     padding: 12,
+    gap: 4,
+    marginBottom: 12,
   },
+  noticeTitle: { fontSize: 13, color: '#334155', fontWeight: '600' },
   noticeText: { fontSize: 12, color: '#475569', lineHeight: 18 },
+  noticeLink: { fontSize: 13, color: '#208AEF', fontWeight: '600' },
+  checklistBox: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 8,
+    padding: 12,
+    gap: 4,
+  },
+  checklistTitle: { fontSize: 12, fontWeight: '700', color: '#334155', marginBottom: 2 },
+  checklistItem: { fontSize: 12, color: '#94A3B8' },
+  checklistItemMet: { color: '#16A34A' },
   submitButton: {
     backgroundColor: '#208AEF',
     borderRadius: 8,

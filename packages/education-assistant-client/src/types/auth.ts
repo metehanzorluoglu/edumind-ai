@@ -73,3 +73,39 @@ export interface LoginRequestBody {
   email: string;
   password: string;
 }
+
+/**
+ * POST /auth/register's response — see app/schemas/auth.py's
+ * RegisterResponse. Always this one shape (never a bare AuthTokenResponse),
+ * so callers never have to branch on which shape they got:
+ * - `email_verification_required: true` (the default) — no tokens yet;
+ *   every token/user field is null. The caller should route to
+ *   /check-email.
+ * - `email_verification_required: false` (an operator disabled
+ *   verification) — behaves like every other login path; every token/user
+ *   field is populated immediately.
+ */
+export interface RegisterResult {
+  email_verification_required: boolean;
+  message: string;
+  access_token: string | null;
+  refresh_token: string | null;
+  token_type: 'bearer';
+  expires_in: number | null;
+  user: AuthUser | null;
+}
+
+/** POST /auth/resend-verification's request body — see
+ * app/schemas/auth.py's ResendVerificationRequest. */
+export interface ResendVerificationRequestBody {
+  email: string;
+}
+
+/** A deliberately uninformative response — currently only
+ * POST /auth/resend-verification, which must never let its response
+ * shape/content vary with whether the account exists, is already
+ * verified, or is OAuth-only. See app/schemas/auth.py's
+ * GenericMessageResponse. */
+export interface GenericMessageResult {
+  detail: string;
+}

@@ -85,8 +85,12 @@ cp deploy/oracle/.env.oracle.example deploy/oracle/.env.oracle
 #    - CORS_ORIGINS / FRONTEND_URL / EXPO_PUBLIC_API_BASE_URL / ALLOWED_AUTH_REDIRECT_URIS —
 #      already set to edum8.us's production domains; change only if deploying under a
 #      different domain — see the Authentication section for the exact values
-#    - GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET, only if enabling "Continue with Google"
-#      (local email/password sign-in needs no configuration — on by default)
+#    - EMAIL_PROVIDER=smtp + SMTP_HOST/SMTP_USERNAME/SMTP_PASSWORD — REQUIRED before
+#      APP_ENV=production; the backend refuses to start otherwise (verification emails
+#      would silently never be delivered) — see "Email delivery (SMTP) setup"
+#    - GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET, FACEBOOK_CLIENT_ID / FACEBOOK_CLIENT_SECRET,
+#      LINKEDIN_CLIENT_ID / LINKEDIN_CLIENT_SECRET — only for the OAuth providers you want
+#      to enable (local email/password sign-in needs no configuration — on by default)
 
 # 3. Start the stack
 ./deploy/oracle/scripts/oracle-start.sh --build   # --build on first run (images don't exist yet)
@@ -412,13 +416,14 @@ These came out of a full performance investigation and a series of targeted, mea
 
 ## Authentication
 
-Production authentication for `https://edum8.us` — two independent ways to sign in (local email/password, and Google OAuth), sharing one JWT + refresh-token session architecture underneath. See `app/api/routes_auth.py`, `app/core/auth_service.py`, `app/core/oauth_providers.py`, `app/core/password_hashing.py`, `app/core/auth_rate_limiter.py`.
+Production authentication for `https://edum8.us` — local email/password (with mandatory email verification) and three OAuth providers (Google, Facebook, LinkedIn), sharing one JWT + refresh-token session architecture underneath. See `app/api/routes_auth.py`, `app/core/auth_service.py`, `app/core/oauth_providers.py`, `app/core/password_hashing.py`, `app/core/password_policy.py`, `app/core/verification_service.py`, `app/core/email_provider.py`, `app/core/auth_rate_limiter.py`.
 
 ### Architecture
 
 - **Tokens:** a short-lived JWT access token (`JWT_ACCESS_TTL_MINUTES`, default 60 min) plus an opaque, hashed-at-rest refresh token (`REFRESH_TOKEN_TTL_DAYS`, default 30 days) stored in an HttpOnly cookie on web and `expo-secure-store` on native. Refresh is rotate-on-use: presenting an already-used refresh token is treated as theft and revokes every session for that user.
 - **Local and OAuth logins converge on the same `TokenResponse` shape and the same `sessions` table** — there is exactly one session/token system in this app, not two parallel ones.
-- **`users.password_hash` is nullable** — a user may have a password, one or more linked OAuth accounts (`oauth_accounts`), or both. Google account linking only ever merges into an existing user when the OAuth identity's email is *provider-verified*; an unverified email that collides with an existing address is refused (`auth_error=email_conflict` redirect), never silently merged and never a raw server error.
+- **`users.password_hash` is nullable** — a user may have a password, one or more linked OAuth accounts (`oauth_accounts`), or both. OAuth account linking only ever merges into an existing user when the identity's email is *provider-verified*; an unverified email that collides with an existing address is refused (`auth_error=email_conflict` redirect), never silently merged and never a raw server error. Linking a verified OAuth identity onto an existing, previously-unverified local account also marks that account `email_verified` — see "Email verification lifecycle" below.
+- **A newly-registered local account cannot sign in until it verifies its email** (`AUTH_EMAIL_VERIFICATION_REQUIRED=true`, the default) — `POST /auth/register` issues no tokens for that case; `POST /auth/login` refuses a correct password with `403 email_verification_required` until the account verifies.
 
 ### Required auth environment variables
 
@@ -432,7 +437,18 @@ Set in `deploy/oracle/.env.oracle` — real secrets, git-ignored, never committe
 | `AUTH_LOCAL_LOGIN_ENABLED` | Kill switch for `POST /auth/register` / `POST /auth/login`. | `true` |
 | `AUTH_LOGIN_RATE_LIMIT_MAX_ATTEMPTS` / `_WINDOW_SECONDS` | Login throttling — see "Rate limiting" below. | `10` / `300` |
 | `AUTH_REGISTER_RATE_LIMIT_MAX_ATTEMPTS` / `_WINDOW_SECONDS` | Registration throttling. | `5` / `3600` |
+| `AUTH_VERIFY_RATE_LIMIT_MAX_ATTEMPTS` / `_WINDOW_SECONDS` | `GET /auth/verify-email` throttling (per-IP; protects against token-guessing). | `10` / `900` |
+| `AUTH_RESEND_VERIFICATION_RATE_LIMIT_MAX_ATTEMPTS` / `_WINDOW_SECONDS` | `POST /auth/resend-verification` throttling. | `3` / `3600` |
+| `AUTH_EMAIL_VERIFICATION_REQUIRED` | Whether local accounts must verify before signing in. | `true` |
+| `EMAIL_PROVIDER` | `console` (never delivers, refused in production) or `smtp` (real delivery). | `console` |
+| `EMAIL_FROM_NAME` / `EMAIL_FROM_ADDRESS` | Verification email's From header. | `EduM8` / `no-reply@example.com` |
+| `EMAIL_VERIFICATION_TOKEN_TTL_MINUTES` | How long a verification link stays valid. | `60` |
+| `EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS` | Minimum gap between resends for one account. | `60` |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_USE_TLS` | Required when `EMAIL_PROVIDER=smtp` — see "Email delivery (SMTP) setup" below. | blank / `587` / blank / blank / `true` |
+| `BACKEND_PUBLIC_URL` | This backend's own public URL, used to build verification links. | `https://api.edum8.us` |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` | Enables "Continue with Google" — see setup below. | blank (disabled) |
+| `FACEBOOK_CLIENT_ID` / `FACEBOOK_CLIENT_SECRET` / `FACEBOOK_REDIRECT_URI` | Enables "Continue with Facebook" — see setup below. | blank (disabled) |
+| `LINKEDIN_CLIENT_ID` / `LINKEDIN_CLIENT_SECRET` / `LINKEDIN_REDIRECT_URI` | Enables "Continue with LinkedIn" — see setup below. | blank (disabled) |
 | `ALLOWED_AUTH_REDIRECT_URIS` | Allowlisted app-side redirect targets for `GET /auth/{provider}/authorize`. | `expoeducationassistant://auth-callback,https://edum8.us/auth-callback` |
 | `AUTH_DEV_LOGIN_ENABLED` | Dev-only test login. Hard-refused whenever `APP_ENV=production`, regardless of this flag. | `false` |
 | `FRONTEND_URL` | The canonical frontend — see below. | `https://edum8.us` |
@@ -440,21 +456,55 @@ Set in `deploy/oracle/.env.oracle` — real secrets, git-ignored, never committe
 
 ### Local authentication
 
-`POST /auth/register` and `POST /auth/login` need no external configuration — on by default (`AUTH_LOCAL_LOGIN_ENABLED=true`), independent of whether any OAuth provider is configured. `GET /auth/providers` reports this separately from the OAuth `providers` list (`local_auth_enabled: true/false`) specifically so the frontend never mistakes "no OAuth providers configured" for "no way to sign in at all" — that conflation was the original bug this feature fixes.
+`POST /auth/register` and `POST /auth/login` need no external configuration to be *usable* — on by default (`AUTH_LOCAL_LOGIN_ENABLED=true`), independent of whether any OAuth provider is configured. `GET /auth/providers` reports this separately from the OAuth `providers` list (`local_auth_enabled: true/false`) specifically so the frontend never mistakes "no OAuth providers configured" for "no way to sign in at all" — that conflation was the original bug this feature fixes. Actually *delivering* verification email does need `EMAIL_PROVIDER=smtp` configured — see below.
 
-- **Password policy:** 8-128 characters, no composition rules (no forced uppercase/digit/symbol) — practical and password-manager-friendly, matching NIST SP 800-63B guidance. Empty/whitespace-only passwords are rejected.
-- **Password hashing:** Argon2id via `argon2-cffi`, library-default parameters (time_cost=3, memory_cost=64 MiB, parallelism=4) — no custom cryptography. Verification is constant-time via the library itself; an unknown email and a wrong password both take the same code path (a fixed dummy-hash comparison) so response timing can't be used to enumerate accounts. Password hashes are never included in any API response and never logged.
+- **Password policy** (`app/core/password_policy.py`, one shared module used by registration and any future password-change/reset route): 12-128 characters; at least one uppercase letter, one lowercase letter, one digit, and one symbol; rejects passwords that are entirely one repeated character or one ascending/descending run (e.g. `aaaaaaaaaaaa`, `abcdefghijkl`); rejects a small curated denylist of common/formulaic passwords (`12345678`, `password123`, `Password123!`, `qwerty123`, `letmein`, `admin123`, `welcome123`, and their close variants — never checked against a third-party service); rejects a password containing the user's full normalized email, its local-part (when ≥4 characters), or their display name (word parts ≥3 characters). Every violated rule is reported at once (not just the first) so the frontend's live checklist can show the complete picture.
+- **Password hashing:** Argon2id via `argon2-cffi`, library-default parameters (time_cost=3, memory_cost=64 MiB, parallelism=4) — no custom cryptography. Verification is constant-time via the library itself; an unknown email and a wrong password both take the same code path (a fixed dummy-hash comparison) so response timing can't be used to enumerate accounts. Password hashes are never included in any API response and never logged. Both `hash_password`/`verify_password` also defensively reject an over-length input themselves (128 chars), independent of the policy check, bounding worst-case Argon2 CPU cost against a malicious oversized input.
 - **Account linking:** registering with an email that already belongs to an OAuth-only user attaches the new password to that same account (no duplicate user row); registering with an email that already has a password returns `409 Conflict`. Email/password normalization (`.strip().lower()`) is centralized in `app/core/email_normalization.py` and used identically by registration, login, and OAuth linking.
-- **Email verification status: local registration does NOT verify email addresses.** This deployment has no email-delivery provider configured (no SMTP/SendGrid/SES/etc. anywhere in this stack), so there is no confirmation step — `users.email_verified` stays `false` for every locally-registered account, exactly as it would for an OAuth identity the provider itself hadn't confirmed. Do not represent local accounts as "verified" anywhere in the UI.
-- **Password-reset status: not implemented, on purpose.** Building a real reset flow (`POST /auth/password/forgot` / `POST /auth/password/reset`) requires a real mail provider to deliver the reset link/token, which this deployment does not have. The login screen's "Forgot password?" link shows a clear, honest "not available yet — contact your administrator" message; there is no broken route or dead link behind it. Once a mail provider is added, the reset endpoints can be built following the same session-revocation-on-reset, single-use-hashed-token pattern already used elsewhere in this codebase (see `oauth_transactions`).
+- **Password-reset status: still not implemented as a self-service flow.** This deployment now has real email delivery (for verification — see below), which makes a reset flow feasible to add later using the same single-use-hashed-token pattern verification already uses, but it has not been built. The login screen's "Forgot password?" link shows a clear, honest "not available yet — contact your administrator" message; there is no broken route or dead link behind it.
+
+### Email verification lifecycle
+
+A newly-registered local account is created unverified. `POST /auth/register` (when `AUTH_EMAIL_VERIFICATION_REQUIRED=true`, the default) issues a single-use, hashed, time-limited token (`email_verification_tokens` table — only a SHA-256 hash of the token is ever stored, mirroring `sessions.refresh_token_hash`), emails a link (`GET {BACKEND_PUBLIC_URL}/auth/verify-email?token=...`), and returns a generic success message — no tokens, no session yet.
+
+- Clicking the link redeems the token server-side, marks `users.email_verified`/`email_verified_at`, and redirects the browser to `{FRONTEND_URL}/verify-email?status=success|invalid|expired|already_used`.
+- `POST /auth/login` with correct credentials for a still-unverified account returns `403` with the stable code `email_verification_required` (never a full sentence, so the frontend can branch on it reliably) and issues no tokens.
+- `POST /auth/resend-verification` always returns the same generic response regardless of whether the address is registered, already verified, or OAuth-only — never reveals account existence. A new token revokes every previously-issued, still-active token for that user. Protected by both a request-rate limit and a separate per-account cooldown (`EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS`).
+- **Pre-existing accounts (migration `0016_email_verification`):** an OAuth-verified user is backfilled `email_verified_at = created_at`; a local account that predates this feature is grandfathered to verified (also backfilled) rather than being unexpectedly locked out — see "Migration instructions" below.
+- Linking a **provider-verified** OAuth identity onto an existing (possibly still-unverified) local account also marks that account verified — a provider vouching for the address is treated the same as clicking the local verification link.
+
+### Email delivery (SMTP) setup
+
+`EMAIL_PROVIDER=console` (the default) never actually sends anything — safe for local development, but **hard-refused at backend startup whenever `APP_ENV=production`** (`app/config.py::refuse_dev_email_backend_in_production`, called from `app/main.py`): the process will not start until `EMAIL_PROVIDER=smtp` and the `SMTP_*` values are filled in. This is deliberate — a misconfigured email setting would otherwise silently leave every new user permanently unable to verify their account.
+
+1. Choose an SMTP provider (e.g. your registrar's mail service, or a transactional-email provider's SMTP endpoint) capable of sending from `no-reply@edum8.us` (or whatever `EMAIL_FROM_ADDRESS` you configure).
+2. Fill in `.env.oracle`:
+   ```
+   EMAIL_PROVIDER=smtp
+   EMAIL_FROM_NAME=EduM8
+   EMAIL_FROM_ADDRESS=no-reply@edum8.us
+   SMTP_HOST=<your provider's SMTP host>
+   SMTP_PORT=587
+   SMTP_USERNAME=<your SMTP username>
+   SMTP_PASSWORD=<your SMTP password>
+   SMTP_USE_TLS=true
+   ```
+3. **DNS records for deliverability** — add these for the domain `EMAIL_FROM_ADDRESS` uses (typically `edum8.us`), values as provided by your SMTP provider:
+   - **SPF** (TXT on the root domain): authorizes your SMTP provider's servers to send as `edum8.us`, e.g. `v=spf1 include:<provider's SPF include> ~all`.
+   - **DKIM** (TXT on a provider-specific selector subdomain, e.g. `<selector>._domainkey.edum8.us`): the provider's public signing key.
+   - **DMARC** (TXT on `_dmarc.edum8.us`): a policy such as `v=DMARC1; p=quarantine; rua=mailto:<an address you monitor>`.
+   Exact record names/values are provider-specific — follow your SMTP provider's own domain-verification instructions; the three record *types* above are what every provider will ask you to add.
+4. Restart the backend (see [Daily operations](#daily-operations)).
+
+Never commit `SMTP_PASSWORD` (or any `.env.oracle` value) — see "Which secrets must never be committed" below.
 
 ### Rate limiting
 
-`POST /auth/login` and `POST /auth/register` are protected by a **database-backed** sliding-window limiter (`app/core/auth_rate_limiter.py`), not the in-memory `app/core/rate_limiter.py` used for chat — this deployment runs `--workers 2` (`docker-compose.oracle.yml`), and an in-memory counter would silently under-count across workers. The limiter stores only a SHA-256 hash of `(route, "ip"|"email", identifier)` — never a raw email address or IP — in the `auth_rate_limit_hits` table, checked and pruned via short, indexed transactions.
+`POST /auth/login`, `POST /auth/register`, `GET /auth/verify-email`, and `POST /auth/resend-verification` are all protected by a **database-backed** sliding-window limiter (`app/core/auth_rate_limiter.py`), not the in-memory `app/core/rate_limiter.py` used for chat — this deployment runs `--workers 2` (`docker-compose.oracle.yml`), and an in-memory counter would silently under-count across workers. The limiter stores only a SHA-256 hash of `(route, "ip"|"email", identifier)` — never a raw email address or IP — in the `auth_rate_limit_hits` table, checked and pruned via short, indexed transactions.
 
-- **Scope: combined per-IP and per-email.** Either bucket being full is enough to reject; a single caller hammering one account from many IPs, or one IP spraying many accounts, are both stopped.
+- **Scope: combined per-IP and per-email** for login/register/resend; **per-IP only** for verify-email (no account is known until the token is looked up). Either bucket being full is enough to reject; a single caller hammering one account from many IPs, or one IP spraying many accounts, are both stopped.
 - **Response:** `429 Too Many Requests` with a `Retry-After` header (seconds), and one generic message regardless of which bucket tripped or whether the target account exists — rate-limit behavior never reveals account existence.
-- **Defaults:** login allows 10 attempts / 5 minutes; registration allows 5 attempts / 1 hour (both overridable — see the env var table above).
+- **Defaults:** login 10/5min; registration 5/hour; verify-email 10/15min; resend-verification 3/hour (all overridable — see the env var table above).
 
 ### Google OAuth setup
 
@@ -467,17 +517,57 @@ Set in `deploy/oracle/.env.oracle` — real secrets, git-ignored, never committe
    ```
    https://api.edum8.us/auth/google/callback
    ```
-4. Copy the generated Client ID and Client Secret into `.env.oracle`:
+4. **Scopes:** `openid email profile` (already hardcoded in `app/core/oauth_providers.py` — nothing to configure on the app side beyond enabling the consent screen for these).
+5. Copy the generated Client ID and Client Secret into `.env.oracle`:
    ```
    GOOGLE_CLIENT_ID=<your client id>
    GOOGLE_CLIENT_SECRET=<your client secret>
    GOOGLE_REDIRECT_URI=https://api.edum8.us/auth/google/callback
    ```
-5. Restart the backend for the new values to take effect (see [Daily operations](#daily-operations)).
+6. Restart the backend for the new values to take effect (see [Daily operations](#daily-operations)).
 
 `GET /auth/providers` reports Google as enabled only once `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI` are **all** non-empty (`app/core/oauth_providers.py::get_provider_config`) — a partially-filled-in provider is treated identically to an unconfigured one, never a broken half-state. The client secret is read server-side only and never returned by any API response.
 
-PKCE (S256), server-side `state` validation, and OIDC `nonce` verification (the returned Google `id_token`'s `nonce` claim is checked against the value sent at authorize time) are all enforced on every login. The one-time `auth_code` handed back to the frontend is redeemed exactly once, expires after 60 seconds, and access/refresh tokens are never placed in a URL — they're returned only from `POST /auth/session/exchange`'s JSON body.
+PKCE (S256), server-side `state` validation, and OIDC `nonce` verification (the returned Google `id_token`'s `nonce` claim is checked against the value sent at authorize time) are all enforced on every login. The one-time `auth_code` handed back to the frontend is redeemed exactly once, expires after 60 seconds, and access/refresh tokens are never placed in a URL — they're returned only from `POST /auth/session/exchange`'s JSON body. Google's `email_verified` claim is trusted directly for account-linking decisions.
+
+### Facebook OAuth setup
+
+1. In [Facebook for Developers](https://developers.facebook.com/) → My Apps, create an app (type "Consumer" or "Business", whichever your Facebook account offers) and add the "Facebook Login" product.
+2. Under Facebook Login → Settings, **Valid OAuth Redirect URIs:** add exactly
+   ```
+   https://api.edum8.us/auth/facebook/callback
+   ```
+3. **Scopes:** `email public_profile` (already hardcoded in `app/core/oauth_providers.py`).
+4. Copy the App ID and App Secret into `.env.oracle`:
+   ```
+   FACEBOOK_CLIENT_ID=<your app id>
+   FACEBOOK_CLIENT_SECRET=<your app secret>
+   FACEBOOK_REDIRECT_URI=https://api.edum8.us/auth/facebook/callback
+   ```
+5. Move the app out of "Development" mode (App Review) once ready for real users to sign in — a Development-mode app only allows logins from accounts with a role on the app (admins/developers/testers).
+6. Restart the backend.
+
+Facebook's Graph API only ever returns an `email` field for an account with a confirmed address, and only when the user actually granted the `email` permission — there is no separate "verified" flag to check, so this app treats *presence* of the field as the verification signal (`app/core/oauth_providers.py::_facebook_identity`).
+
+### LinkedIn OAuth setup
+
+Uses LinkedIn's current OpenID Connect flow (`/oauth/v2/accessToken` + `/v2/userinfo`), not LinkedIn's older, now-deprecated API surface.
+
+1. In the [LinkedIn Developer Portal](https://www.linkedin.com/developers/apps), create an app and add the "Sign In with LinkedIn using OpenID Connect" product.
+2. Under Auth, **Authorized redirect URLs for your app:** add exactly
+   ```
+   https://api.edum8.us/auth/linkedin/callback
+   ```
+3. **Scopes:** `openid profile email` (already hardcoded in `app/core/oauth_providers.py` — matches what the OpenID Connect product grants by default).
+4. Copy the Client ID and Client Secret into `.env.oracle`:
+   ```
+   LINKEDIN_CLIENT_ID=<your client id>
+   LINKEDIN_CLIENT_SECRET=<your client secret>
+   LINKEDIN_REDIRECT_URI=https://api.edum8.us/auth/linkedin/callback
+   ```
+5. Restart the backend.
+
+LinkedIn's `/v2/userinfo` response includes an OIDC `email_verified` claim, which this app trusts directly (`app/core/oauth_providers.py::_linkedin_identity`) — the same trust level as Google's own `email_verified` claim.
 
 ### Canonical frontend and alternate frontend handling
 
@@ -485,9 +575,12 @@ PKCE (S256), server-side `state` validation, and OIDC `nonce` verification (the 
 
 ### Migration instructions
 
-Local email/password credentials and the rate-limit table are added by Alembic migration `0015_local_auth_credentials` (nullable `users.password_hash` + new `auth_rate_limit_hits` table). It runs automatically — `oracle-start.sh` and `oracle-update.sh` both run `backend-migrate` (which applies every pending Alembic migration) before `backend` starts, via the Compose `depends_on: condition: service_completed_successfully` graph; there is no separate manual migration step. Every existing `users`/`oauth_accounts`/`sessions` row is preserved untouched — the new column defaults to `NULL` (meaning "OAuth-only, no local password") for every pre-existing user.
+Two Alembic migrations back this feature set, both run automatically — `oracle-start.sh` and `oracle-update.sh` run `backend-migrate` (applies every pending migration) before `backend` starts, via the Compose `depends_on: condition: service_completed_successfully` graph; there is no separate manual migration step.
 
-Downgrading past `0015` (`alembic downgrade -1` from head) drops `auth_rate_limit_hits` and the `password_hash` column — **any password set after upgrading is lost on downgrade**; this is the migration's one irreversible aspect. Every other table and row is unaffected by either direction.
+- **`0015_local_auth_credentials`** — nullable `users.password_hash` + new `auth_rate_limit_hits` table. Existing rows get `password_hash = NULL` ("OAuth-only, no local password").
+- **`0016_email_verification`** — nullable `users.email_verified_at` + new `email_verification_tokens` table, plus a data backfill: an already-`email_verified` user (OAuth) gets `email_verified_at` backfilled to `created_at`; a **pre-existing local (password) account is grandfathered to verified** (also backfilled to `created_at`) rather than being unexpectedly locked out by a feature that didn't exist when it registered — see the migration file's own docstring for the full policy writeup. Every new local account created *after* this migration follows the real flow (unverified until confirmed).
+
+Downgrading either migration (`alembic downgrade -1`, repeatable) drops the new column(s)/table(s) it added — **any password set, or verification-token history, created after upgrading is lost on downgrade**; this is each migration's one irreversible aspect. Every other table and row is unaffected by either direction.
 
 ### Verification commands
 
@@ -496,42 +589,80 @@ Downgrading past `0015` (`alembic downgrade -1` from head) drops `auth_rate_limi
 curl -s https://api.edum8.us/auth/providers | jq
 #  -> {"providers": [...], "dev_login_enabled": false, "local_auth_enabled": true}
 
-# Confirm local registration works end to end
+# Confirm local registration works end to end (expect email_verification_required: true)
 curl -s -X POST https://api.edum8.us/auth/register \
   -H 'Content-Type: application/json' \
-  -d '{"email":"smoke-test@example.com","password":"correct horse battery"}' | jq
+  -d '{"email":"smoke-test@example.com","password":"Str0ng!Passphrase#1"}' | jq
+
+# Confirm login is refused before verification (expect 403, "email_verification_required")
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://api.edum8.us/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"smoke-test@example.com","password":"Str0ng!Passphrase#1"}'
+
+# Confirm resend never reveals account existence (expect 200, identical response either way)
+curl -s -X POST https://api.edum8.us/auth/resend-verification \
+  -H 'Content-Type: application/json' -d '{"email":"smoke-test@example.com"}' | jq
+curl -s -X POST https://api.edum8.us/auth/resend-verification \
+  -H 'Content-Type: application/json' -d '{"email":"definitely-not-registered@example.com"}' | jq
+
+# After clicking the emailed link (or extracting the token from a test
+# EMAIL_PROVIDER=console log line in a non-production environment),
+# confirm verify-email redirects with status=success:
+curl -sI "https://api.edum8.us/auth/verify-email?token=<token>" | grep -i location
+
+# Confirm login now succeeds
+curl -s -X POST https://api.edum8.us/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"smoke-test@example.com","password":"Str0ng!Passphrase#1"}' | jq
 
 # Confirm dev-login is refused in production (expect 404)
 curl -s -o /dev/null -w '%{http_code}\n' -X POST https://api.edum8.us/auth/dev-login \
   -H 'Content-Type: application/json' -d '{"email":"x@example.com"}'
 ```
 
+### How to test email verification
+
+With `EMAIL_PROVIDER=console` (non-production only), the verification link is logged, never sent — check `oracle-logs.sh backend` right after registering for a `[dev email backend] would send ...` line, and separately confirm the app never actually delivered mail. With `EMAIL_PROVIDER=smtp` configured for real, register with an address you control, confirm the email arrives (check spam too — this is exactly what SPF/DKIM/DMARC above reduce the risk of), click the link, and confirm it lands on `https://edum8.us/verify-email?status=success`.
+
 ### Manual browser test checklist
 
+**Local registration and verification:**
 - [ ] Visit `https://edum8.us/login` — the email/password form is visible immediately (never the old "No sign-in providers are configured" dead end).
-- [ ] Create an account with a new email + an 8+ character password → lands signed in on `/chat`.
-- [ ] Sign out, sign back in with the same credentials → succeeds.
+- [ ] Select "Create account", enter a weak password (e.g. `12345678`) — rejected with a clear explanation, live checklist shown.
+- [ ] Enter a strong password meeting every checklist item, submit — lands on `/check-email`, showing a masked version of the address.
+- [ ] Attempt to sign in before verifying — denied, with a "Resend verification email" action offered.
+- [ ] Open the verification link (from the real email, or the console-logged URL in non-production) — lands on `/verify-email` showing success.
+- [ ] Sign in — lands on `/chat`.
+- [ ] Refresh the browser — session persists (silent refresh), no forced re-login.
+- [ ] Log out — redirected to `/login`, and protected routes (`/chat`, `/documents`, etc.) redirect back to `/login` if visited directly while signed out.
 - [ ] Attempt sign-in with a wrong password → generic "Invalid email or password", not "account not found" or anything that confirms the address is registered.
-- [ ] Switch to "Create account", then back to "Sign in" — email is preserved, password confirmation is cleared.
 - [ ] Click "Forgot password?" → shows the "not available yet" notice, no broken link, no crash.
-- [ ] If Google is configured: "Continue with Google" is visible, completes sign-in, and redirects back to `https://edum8.us`, never showing a token in the URL bar.
-- [ ] Refresh the page while signed in — session persists (silent refresh), no forced re-login.
-- [ ] Sign out — redirected to `/login`, and the app's protected routes (`/chat`, `/documents`, etc.) redirect back to `/login` if visited directly while signed out.
+
+**OAuth (repeat for each configured provider — Google, Facebook, LinkedIn):**
+- [ ] The provider's button is visible only when that provider is fully configured.
+- [ ] Clicking it begins authorization and completes successfully, returning to `https://edum8.us` with a valid session — never a token visible in the URL bar.
+- [ ] Refresh works; logout works.
+- [ ] Cancelling/denying the provider's consent screen produces a friendly in-app error, not a crash or a raw provider error.
 
 ### Rollback instructions
 
 Application code: `oracle-update.sh` prints the exact previous Git commit and pre-update backup restore command if the post-update health check fails — see [Updates](#updates). To roll back manually: `git checkout <previous-commit>` in `~/edumind-ai`, then `./deploy/oracle/scripts/oracle-start.sh --build`.
 
-Database: `alembic downgrade -1` inside the backend container reverts `0015_local_auth_credentials` alone (see "Migration instructions" above for what's lost). For a full point-in-time rollback, use `oracle-restore.sh` — see [Restores](#restores).
+Database: `alembic downgrade -1` inside the backend container reverts the most recent migration (`0016_email_verification`); run it twice to also revert `0015_local_auth_credentials` (see "Migration instructions" above for what's lost each time). For a full point-in-time rollback, use `oracle-restore.sh` — see [Restores](#restores).
+
+### Which secrets must never be committed
+
+`deploy/oracle/.env.oracle` itself is git-ignored and must never be committed (see "Copying and configuring `.env.oracle`" above). Within it, treat these as real secrets: `JWT_SECRET`, `GOOGLE_CLIENT_SECRET`, `FACEBOOK_CLIENT_SECRET`, `LINKEDIN_CLIENT_SECRET`, `SMTP_PASSWORD`. None of these are ever logged, returned by any API response, or written anywhere by this codebase — if you ever see one in a log line, that's a bug, not expected behavior.
 
 ### Security notes
 
-- No dev login, no mock authentication, and no hardcoded credentials anywhere in this path — `AUTH_DEV_LOGIN_ENABLED` is hard-refused whenever `APP_ENV=production` regardless of its own value.
+- No dev login, no mock authentication, and no hardcoded credentials anywhere in this path — `AUTH_DEV_LOGIN_ENABLED` is hard-refused whenever `APP_ENV=production` regardless of its own value. `EMAIL_PROVIDER=console` (the non-delivering dev backend) is likewise hard-refused at startup whenever `APP_ENV=production`.
 - No wildcard CORS origins; `CORS_ORIGINS` is an exact-match allowlist.
 - No open redirects: `GET /auth/{provider}/authorize`'s `redirect_uri` and every post-login destination are checked against `ALLOWED_AUTH_REDIRECT_URIS`, never taken from an arbitrary caller-supplied value.
-- Access and refresh tokens are never placed in a URL, ever — only in JSON response bodies, an HttpOnly cookie (web), or `expo-secure-store` (native).
-- Password hashes, raw passwords, refresh tokens, and reset tokens (n/a — not implemented) are never logged.
+- Access and refresh tokens are never placed in a URL, ever — only in JSON response bodies, an HttpOnly cookie (web), or `expo-secure-store` (native). The one exception anywhere in this feature is the verification token in `GET /auth/verify-email?token=...`, which is exactly the short-lived, single-use, non-session credential the constraints explicitly carve out room for (an email link has no other transport) — it is immediately consumed and never re-usable.
+- Password hashes, raw passwords, refresh tokens, and verification tokens are never logged. `EMAIL_PROVIDER=console`'s dev backend logs only a subject/recipient line, never the message body (which carries the verification link).
 - Refresh-token rotation and reuse (theft) detection, and PKCE/state/nonce for OAuth, are unchanged from the pre-existing implementation this work builds on — see "Architecture" above.
+- Password reset remains unimplemented (see "Local authentication" above) — not a regression, a scope boundary this task's own instructions explicitly allow.
 
 ---
 

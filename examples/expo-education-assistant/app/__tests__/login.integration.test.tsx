@@ -28,6 +28,7 @@ jest.mock('expo-secure-store', () => ({
 
 jest.mock('expo-router', () => ({
   Redirect: () => null,
+  useRouter: () => ({ push: jest.fn(), replace: jest.fn() }),
 }));
 
 function installWindow(): void {

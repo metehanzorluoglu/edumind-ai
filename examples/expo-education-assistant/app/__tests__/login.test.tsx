@@ -10,6 +10,12 @@ jest.mock('@/lib/AuthProvider', () => ({
   useAuth: () => mockUseAuth(),
 }));
 
+const mockRouterPush = jest.fn();
+jest.mock('expo-router', () => ({
+  Redirect: () => null,
+  useRouter: () => ({ push: mockRouterPush, replace: jest.fn() }),
+}));
+
 function baseAuth(overrides: Partial<ReturnType<typeof mockUseAuth>> = {}) {
   return {
     status: 'unauthenticated',
@@ -18,9 +24,11 @@ function baseAuth(overrides: Partial<ReturnType<typeof mockUseAuth>> = {}) {
     localAuthEnabled: true,
     providersLoading: false,
     error: null,
+    unverifiedEmail: null,
     startOAuth: jest.fn(),
     login: jest.fn(),
-    register: jest.fn(),
+    register: jest.fn().mockResolvedValue({ emailVerificationRequired: false }),
+    resendVerification: jest.fn(),
     devLogin: jest.fn(),
     clearError: jest.fn(),
     refreshProviders: jest.fn(),
@@ -62,6 +70,7 @@ function containsText(root: ReactTestInstance, substring: string): boolean {
 describe('LoginScreen', () => {
   afterEach(() => {
     mockUseAuth.mockReset();
+    mockRouterPush.mockReset();
   });
 
   it('shows the email/password form when local auth is enabled and no OAuth providers exist — never the old dead-end message', () => {
@@ -310,7 +319,7 @@ describe('LoginScreen', () => {
   });
 
   it('submitting Create account with matching valid fields calls register()', async () => {
-    const register = jest.fn().mockResolvedValue(undefined);
+    const register = jest.fn().mockResolvedValue({ emailVerificationRequired: true });
     mockUseAuth.mockReturnValue(baseAuth({ register }));
 
     let renderer!: ReturnType<typeof create>;
@@ -334,6 +343,57 @@ describe('LoginScreen', () => {
     });
 
     expect(register).toHaveBeenCalledWith('user@example.com', 'correct-password-1', undefined);
+    expect(mockRouterPush).toHaveBeenCalledWith({
+      pathname: '/check-email',
+      params: { email: 'user@example.com' },
+    });
+  });
+
+  it('shows the password checklist in Create account mode, updating live as the password is typed', () => {
+    mockUseAuth.mockReturnValue(baseAuth());
+
+    let renderer!: ReturnType<typeof create>;
+    act(() => {
+      renderer = create(<LoginScreen />);
+    });
+
+    expect(findByText(renderer.root, 'Password must contain:')).toBeNull();
+
+    act(() => {
+      findPressableByLabel(renderer.root, 'Create account')!.props.onPress();
+    });
+    expect(findByText(renderer.root, 'Password must contain:')).toBeTruthy();
+    expect(containsText(renderer.root, 'At least 12 characters')).toBe(true);
+
+    act(() => {
+      findInputByLabel(renderer.root, 'Password')!.props.onChangeText('Xq7!vTr9zLmP#4word');
+    });
+    // A strong password should flip every checklist item to its "met" (✓) form.
+    expect(containsText(renderer.root, '✓ At least 12 characters')).toBe(true);
+    expect(containsText(renderer.root, '✓ One uppercase letter')).toBe(true);
+  });
+
+  it('shows the unverified-account notice and resend action when unverifiedEmail is set', async () => {
+    const resendVerification = jest.fn().mockResolvedValue(undefined);
+    mockUseAuth.mockReturnValue(
+      baseAuth({ unverifiedEmail: 'unverified@example.com', resendVerification })
+    );
+
+    let renderer!: ReturnType<typeof create>;
+    act(() => {
+      renderer = create(<LoginScreen />);
+    });
+
+    expect(
+      findByText(renderer.root, 'Please verify your email address before signing in.')
+    ).toBeTruthy();
+
+    await act(async () => {
+      findPressableByLabel(renderer.root, 'Resend verification email')!.props.onPress();
+    });
+
+    expect(resendVerification).toHaveBeenCalledWith('unverified@example.com');
+    expect(findByText(renderer.root, 'Verification email sent.')).toBeTruthy();
   });
 
   it('the password visibility toggle switches secureTextEntry off and on', () => {
@@ -490,11 +550,11 @@ describe('validatePasswordField', () => {
     expect(validatePasswordField('')).toBe('Password is required.');
   });
 
-  it('rejects a password shorter than 8 characters', () => {
-    expect(validatePasswordField('short')).toBe('Password must be at least 8 characters.');
+  it('rejects a password shorter than 12 characters', () => {
+    expect(validatePasswordField('short')).toBe('Password must be at least 12 characters.');
   });
 
-  it('accepts an 8+ character password', () => {
+  it('accepts a 12+ character password', () => {
     expect(validatePasswordField('correct-password-1')).toBeNull();
   });
 });

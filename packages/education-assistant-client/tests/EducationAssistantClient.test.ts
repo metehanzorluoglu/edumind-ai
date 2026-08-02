@@ -275,7 +275,10 @@ describe('listDocuments / uploadDocument', () => {
     expect(result).toBeInstanceOf(BackendError);
     expect((result as BackendError).message).toBe('Ollama embedding provider unreachable');
     expect(onProgress).toHaveBeenCalledTimes(1);
-    expect(onProgress.mock.calls[0]![0]).toMatchObject({ status: 'processing', embedded_chunks: 4 });
+    expect(onProgress.mock.calls[0]![0]).toMatchObject({
+      status: 'processing',
+      embedded_chunks: 4,
+    });
 
     vi.useRealTimers();
   });
@@ -843,6 +846,8 @@ describe('auth', () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse(
         {
+          email_verification_required: false,
+          message: 'Account created.',
           access_token: 'access-5',
           refresh_token: 'refresh-5',
           token_type: 'bearer',
@@ -865,7 +870,8 @@ describe('auth', () => {
       display_name: 'New User',
     });
 
-    expect(result.user.email).toBe('new@example.com');
+    expect(result.email_verification_required).toBe(false);
+    expect(result.user?.email).toBe('new@example.com');
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe('http://localhost:8000/auth/register');
     expect(init.method).toBe('POST');
@@ -875,6 +881,31 @@ describe('auth', () => {
       display_name: 'New User',
     });
     expect(init.credentials).toBe('include');
+  });
+
+  it('register() with verification required returns null token/user fields', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          email_verification_required: true,
+          message: 'Account created. Check your email.',
+          access_token: null,
+          refresh_token: null,
+          token_type: 'bearer',
+          expires_in: null,
+          user: null,
+        },
+        201
+      )
+    );
+    const result = await makeClient().register({
+      email: 'needsverify@example.com',
+      password: 'correct horse battery',
+    });
+
+    expect(result.email_verification_required).toBe(true);
+    expect(result.access_token).toBeNull();
+    expect(result.user).toBeNull();
   });
 
   it('register() rejects with ConflictError on a duplicate email (409)', async () => {
@@ -887,7 +918,9 @@ describe('auth', () => {
   });
 
   it('register() rejects with ValidationError on a weak password (422)', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Password must be at least 8 characters.' }, 422));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ detail: 'Password must be at least 8 characters.' }, 422)
+    );
     await expect(
       makeClient().register({ email: 'weak@example.com', password: 'short' })
     ).rejects.toBeInstanceOf(ValidationError);
@@ -928,9 +961,9 @@ describe('auth', () => {
 
   it('login() rejects with AuthenticationError on wrong credentials, with a generic message', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Invalid email or password' }, 401));
-    await expect(
-      makeClient().login({ email: 'x@example.com', password: 'wrong' })
-    ).rejects.toThrow('Invalid email or password');
+    await expect(makeClient().login({ email: 'x@example.com', password: 'wrong' })).rejects.toThrow(
+      'Invalid email or password'
+    );
   });
 
   it('login() rejects with RateLimitError when throttled (429)', async () => {
@@ -943,6 +976,41 @@ describe('auth', () => {
     await expect(
       makeClient().login({ email: 'x@example.com', password: 'wrong' })
     ).rejects.toMatchObject({ name: 'RateLimitError' });
+  });
+
+  it('login() rejects with AuthorizationError and the stable code for an unverified account', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'email_verification_required' }, 403));
+    await expect(
+      makeClient().login({ email: 'unverified@example.com', password: 'correct-password-1' })
+    ).rejects.toMatchObject({ name: 'AuthorizationError', message: 'email_verification_required' });
+  });
+
+  it('resendVerification() POSTs the email and returns the generic response', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        detail:
+          'If an account exists for this email and still needs verification, a new verification email has been sent.',
+      })
+    );
+    const result = await makeClient().resendVerification('someone@example.com');
+
+    expect(result.detail).toMatch(/verification email has been sent/);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/auth/resend-verification');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ email: 'someone@example.com' });
+  });
+
+  it('resendVerification() rejects with RateLimitError when throttled (429)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: 'Too many attempts. Please try again later.' }), {
+        status: 429,
+        headers: { 'content-type': 'application/json' },
+      })
+    );
+    await expect(makeClient().resendVerification('someone@example.com')).rejects.toMatchObject({
+      name: 'RateLimitError',
+    });
   });
 });
 
@@ -1162,7 +1230,10 @@ describe('conversations', () => {
       );
 
       const file = { uri: 'file:///tmp/doc.pdf', name: 'doc.pdf', type: 'application/pdf' };
-      await makeClient().postConversationMessage('c1', { query: 'summarize', attachments: [{ file }] });
+      await makeClient().postConversationMessage('c1', {
+        query: 'summarize',
+        attachments: [{ file }],
+      });
 
       const [, init] = fetchMock.mock.calls[0]!;
       expect(init.headers['Content-Type']).toBeUndefined();
@@ -1310,7 +1381,11 @@ describe('conversations', () => {
         ])
       );
 
-      const rnFile = { uri: 'file:///data/user/0/app/cache/photo.jpg', name: 'photo.jpg', type: 'image/jpeg' };
+      const rnFile = {
+        uri: 'file:///data/user/0/app/cache/photo.jpg',
+        name: 'photo.jpg',
+        type: 'image/jpeg',
+      };
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       for await (const _ of makeClient().sendVisionMessage('c1', {
         query: 'What is this?',
@@ -1325,7 +1400,10 @@ describe('conversations', () => {
     });
 
     it('sendVisionMessage() rejects (does not send a request) when images is empty', async () => {
-      const generator = makeClient().sendVisionMessage('c1', { query: 'What is this?', images: [] });
+      const generator = makeClient().sendVisionMessage('c1', {
+        query: 'What is this?',
+        images: [],
+      });
 
       await expect(generator.next()).rejects.toThrow(TypeError);
       expect(fetchMock).not.toHaveBeenCalled();
@@ -1387,9 +1465,7 @@ describe('conversations', () => {
     });
 
     it('fetchAttachmentBlob() rejects with NotFoundError on a 404', async () => {
-      fetchMock.mockResolvedValueOnce(
-        jsonResponse({ detail: 'Attachment not found' }, 404)
-      );
+      fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Attachment not found' }, 404));
 
       await expect(makeClient().fetchAttachmentBlob('c1', 'm1', 'a1')).rejects.toBeInstanceOf(
         NotFoundError
@@ -1404,11 +1480,9 @@ describe('conversations', () => {
     });
 
     it('getAttachmentImageSource() omits Authorization when there is no token', async () => {
-      const source = await makeClient({ getAccessToken: async () => null }).getAttachmentImageSource(
-        'c1',
-        'm1',
-        'a1'
-      );
+      const source = await makeClient({
+        getAccessToken: async () => null,
+      }).getAttachmentImageSource('c1', 'm1', 'a1');
 
       expect(source.headers).toEqual({});
     });
@@ -1417,7 +1491,9 @@ describe('conversations', () => {
   describe('PDF page preview (milestone V4)', () => {
     it('buildAttachmentUrl() appends /preview?page=N when a page is given', () => {
       const url = makeClient().buildAttachmentUrl('c1', 'm1', 'a1', 3);
-      expect(url).toBe('http://localhost:8000/conversations/c1/messages/m1/attachments/a1/preview?page=3');
+      expect(url).toBe(
+        'http://localhost:8000/conversations/c1/messages/m1/attachments/a1/preview?page=3'
+      );
     });
 
     it('buildAttachmentUrl() omits /preview entirely when no page is given', () => {
@@ -1434,7 +1510,9 @@ describe('conversations', () => {
 
       expect(await result.text()).toBe('page-png-bytes');
       const [url] = fetchMock.mock.calls[0]!;
-      expect(url).toBe('http://localhost:8000/conversations/c1/messages/m1/attachments/a1/preview?page=2');
+      expect(url).toBe(
+        'http://localhost:8000/conversations/c1/messages/m1/attachments/a1/preview?page=2'
+      );
     });
 
     it('getAttachmentImageSource() resolves to the preview URI when a page is given', async () => {
@@ -1700,9 +1778,7 @@ describe('images', () => {
 
   it('generateImages() throws BackendError when the stream emits an "error" event', async () => {
     fetchMock.mockResolvedValueOnce(
-      sseResponse([
-        sseEvent({ type: 'error', message: "Model 'x/flux2-klein' is not installed." }),
-      ])
+      sseResponse([sseEvent({ type: 'error', message: "Model 'x/flux2-klein' is not installed." })])
     );
 
     await expect(
@@ -1742,7 +1818,11 @@ describe('images', () => {
           type: 'done',
           message_id: 'm1',
           conversation_id: 'c1',
-          images: [generatedAttachment(), generatedAttachment({ id: 'a2' }), generatedAttachment({ id: 'a3' })],
+          images: [
+            generatedAttachment(),
+            generatedAttachment({ id: 'a2' }),
+            generatedAttachment({ id: 'a3' }),
+          ],
         }),
       ])
     );
@@ -1903,7 +1983,9 @@ describe('images', () => {
       { signal: controller.signal }
     );
 
-    streamController.enqueue(encoder.encode(sseEvent({ type: 'progress', completed: 1, total: 3 })));
+    streamController.enqueue(
+      encoder.encode(sseEvent({ type: 'progress', completed: 1, total: 3 }))
+    );
     const first = await iterator.next();
     received.push(first.value);
     expect(first.done).toBe(false);

@@ -9,7 +9,14 @@ import {
 } from './request';
 import { fetchAllChatEvents, streamChatEvents } from './stream';
 import { fetchAllImageGenerationEvents, streamImageGenerationEvents } from './imageStream';
-import { BackendError, NetworkError, RequestCancelledError, TimeoutError, errorFromResponse, extractRequestId } from './errors';
+import {
+  BackendError,
+  NetworkError,
+  RequestCancelledError,
+  TimeoutError,
+  errorFromResponse,
+  extractRequestId,
+} from './errors';
 import { normalizeBaseUrl } from '../utils/url';
 import type { HealthResponse, ReadinessResponse } from '../types/health';
 import type { StatusResponse } from '../types/status';
@@ -36,8 +43,10 @@ import type {
   AuthProvidersResponse,
   AuthTokenResponse,
   AuthUser,
+  GenericMessageResult,
   LoginRequestBody,
   RegisterRequestBody,
+  RegisterResult,
 } from '../types/auth';
 import type {
   ConversationDetail,
@@ -397,7 +406,6 @@ export class EducationAssistantClient {
     // this class of bug is confirmed fixed; never logs a token or any
     // auth-secret value, only the providers list + dev_login_enabled flag.
     if (process.env.NODE_ENV !== 'production') {
-       
       console.log('[EducationAssistantClient] GET /auth/providers raw response:', data);
     }
     return {
@@ -408,20 +416,19 @@ export class EducationAssistantClient {
   }
 
   /**
-   * POST /auth/register — creates a local (email/password) account and
-   * immediately signs the caller in. Returns the same AuthTokenResponse
-   * shape every other login path returns (OAuth exchange, refresh,
-   * dev-login) — see rag-backend's app/schemas/auth.py TokenResponse.
-   * `password` is read once from `body` and handed straight to the
-   * request body; never logged, never included in a thrown error (see
-   * errors.ts's safeMessage, which only ever surfaces the backend's own
-   * `detail` string).
+   * POST /auth/register — creates a local (email/password) account.
+   * Returns a RegisterResult, not a bare AuthTokenResponse: when email
+   * verification is required (the default — see
+   * `result.email_verification_required`), no tokens are issued yet and
+   * every token/user field is null; the caller should route to
+   * /check-email. Only when an operator has disabled verification are
+   * tokens populated immediately. `password` is read once from `body` and
+   * handed straight to the request body; never logged, never included in
+   * a thrown error (see errors.ts's safeMessage, which only ever surfaces
+   * the backend's own `detail` string).
    */
-  async register(
-    body: RegisterRequestBody,
-    options: RequestOptions = {}
-  ): Promise<AuthTokenResponse> {
-    const { data } = await requestJson<AuthTokenResponse>(this.context, {
+  async register(body: RegisterRequestBody, options: RequestOptions = {}): Promise<RegisterResult> {
+    const { data } = await requestJson<RegisterResult>(this.context, {
       method: 'POST',
       path: '/auth/register',
       body,
@@ -437,7 +444,11 @@ export class EducationAssistantClient {
    * Always fails with a generic AuthenticationError message ("Invalid
    * email or password") regardless of *why* — unknown email, wrong
    * password, or an OAuth-only account with no password set — see
-   * rag-backend's app/core/auth_service.py::authenticate_local_user.
+   * rag-backend's app/core/auth_service.py::authenticate_local_user. For
+   * a correct password on an unverified local account, fails instead with
+   * an AuthorizationError (HTTP 403) whose message is the stable code
+   * "email_verification_required" — never a full sentence, so callers can
+   * branch on it reliably (see rag-backend's POST /auth/login docstring).
    */
   async login(body: LoginRequestBody, options: RequestOptions = {}): Promise<AuthTokenResponse> {
     const { data } = await requestJson<AuthTokenResponse>(this.context, {
@@ -446,6 +457,25 @@ export class EducationAssistantClient {
       body,
       signal: options.signal,
       credentials: 'include',
+    });
+    return data;
+  }
+
+  /**
+   * POST /auth/resend-verification — always resolves with the same
+   * generic message regardless of whether the address is registered,
+   * already verified, or OAuth-only (see rag-backend's
+   * GenericMessageResponse) — never throws to signal "no such account".
+   */
+  async resendVerification(
+    email: string,
+    options: RequestOptions = {}
+  ): Promise<GenericMessageResult> {
+    const { data } = await requestJson<GenericMessageResult>(this.context, {
+      method: 'POST',
+      path: '/auth/resend-verification',
+      body: { email },
+      signal: options.signal,
     });
     return data;
   }

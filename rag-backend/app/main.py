@@ -13,13 +13,14 @@ from app.api.routes_images import router as images_router
 from app.api.routes_projects import router as projects_router
 from app.api.routes_search import router as search_router
 from app.api.routes_status import router as status_router
-from app.config import get_settings
+from app.config import get_settings, refuse_dev_email_backend_in_production
 from app.logging_config import configure_logging
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(settings)
+    refuse_dev_email_backend_in_production(settings)
 
     app = FastAPI(
         title="Education Research RAG Assistant",

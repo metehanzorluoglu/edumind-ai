@@ -1,4 +1,5 @@
 import {
+  AuthorizationError,
   EducationAssistantClient,
   type AuthProviderInfo,
   type AuthTokenResponse,
@@ -31,6 +32,15 @@ interface AuthContextValue {
   user: AuthUser | null;
   accessToken: string | null;
   error: string | null;
+  /**
+   * Set to the email a login attempt just failed for, only when that
+   * failure was specifically "correct credentials, unverified account"
+   * (backend 403 "email_verification_required" — see `login` below).
+   * login.tsx uses this to show a "verify your email" message with a
+   * resend action addressed to this exact email, instead of the generic
+   * error banner. Cleared by clearError() and by any other auth action.
+   */
+  unverifiedEmail: string | null;
   providers: AuthProviderInfo[];
   devLoginEnabled: boolean;
   /**
@@ -55,9 +65,25 @@ interface AuthContextValue {
    * failure (wrong credentials, disabled, rate-limited); callers should
    * catch and surface `error` from context, same pattern as devLogin. */
   login: (email: string, password: string) => Promise<void>;
-  /** Local email/password account creation — see POST /auth/register.
-   * Signs the caller in immediately on success, same as login. */
-  register: (email: string, password: string, displayName?: string) => Promise<void>;
+  /**
+   * Local email/password account creation — see POST /auth/register.
+   * Resolves with `emailVerificationRequired: true` (the default) when
+   * the account was created but needs email confirmation before any
+   * session exists yet — the caller (login.tsx) should route to
+   * /check-email in that case. `emailVerificationRequired: false` means
+   * verification is disabled and the caller is already signed in, same
+   * as login.
+   */
+  register: (
+    email: string,
+    password: string,
+    displayName?: string
+  ) => Promise<{ emailVerificationRequired: boolean }>;
+  /** POST /auth/resend-verification — see EducationAssistantClient.resendVerification.
+   * Always resolves (never throws for "no such account"); the generic
+   * response text is available for display but this app already shows
+   * its own fixed copy instead (see login.tsx). */
+  resendVerification: (email: string) => Promise<void>;
   devLogin: (email: string, displayName?: string) => Promise<void>;
   logout: () => Promise<void>;
   clearError: () => void;
@@ -106,6 +132,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
   const [providers, setProviders] = useState<AuthProviderInfo[]>([]);
   const [devLoginEnabled, setDevLoginEnabled] = useState(false);
   const [localAuthEnabled, setLocalAuthEnabled] = useState(false);
@@ -323,14 +350,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (email: string, password: string) => {
       const generation = beginAuthAction();
       setError(null);
+      setUnverifiedEmail(null);
       try {
         const response = await authClient.login({ email, password });
         if (authGenerationRef.current !== generation) return;
         await applySession(response);
       } catch (err) {
         if (authGenerationRef.current !== generation) return;
+        if (err instanceof AuthorizationError && err.message === 'email_verification_required') {
+          // Correct credentials, but the account hasn't confirmed its
+          // email yet — a distinct case from every other login failure
+          // (see rag-backend's POST /auth/login docstring), surfaced via
+          // `unverifiedEmail` rather than the generic `error` banner so
+          // login.tsx can offer a "Resend verification email" action
+          // addressed to this exact address.
+          setUnverifiedEmail(email);
+          return;
+        }
         // The backend already returns a generic "Invalid email or
-        // password" for every failure reason (unknown account,
+        // password" for every other failure reason (unknown account,
         // OAuth-only account, wrong password) — see
         // rag-backend's app/core/auth_service.py::authenticate_local_user.
         // This just passes that message through, same as every other
@@ -345,20 +383,53 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (email: string, password: string, displayName?: string) => {
       const generation = beginAuthAction();
       setError(null);
+      setUnverifiedEmail(null);
       try {
         const response = await authClient.register({
           email,
           password,
           display_name: displayName ?? null,
         });
-        if (authGenerationRef.current !== generation) return;
-        await applySession(response);
+        if (authGenerationRef.current !== generation) {
+          return { emailVerificationRequired: response.email_verification_required };
+        }
+        if (response.email_verification_required) {
+          // No session yet — see POST /auth/register's docstring. The
+          // caller (login.tsx) is responsible for routing to /check-email;
+          // this provider only reports the outcome, never navigates.
+          return { emailVerificationRequired: true };
+        }
+        await applySession({
+          access_token: response.access_token as string,
+          refresh_token: response.refresh_token as string,
+          token_type: response.token_type,
+          expires_in: response.expires_in as number,
+          user: response.user as AuthUser,
+        });
+        return { emailVerificationRequired: false };
       } catch (err) {
-        if (authGenerationRef.current !== generation) return;
+        if (authGenerationRef.current !== generation) return { emailVerificationRequired: false };
         setError(err instanceof Error ? err.message : 'Account creation failed.');
+        return { emailVerificationRequired: false };
       }
     },
     [authClient, applySession, beginAuthAction]
+  );
+
+  const resendVerification = useCallback(
+    async (email: string) => {
+      try {
+        await authClient.resendVerification(email);
+      } catch {
+        // Never surfaced: resendVerification() itself already resolves
+        // with a generic response for every real-world case (unknown
+        // account, already verified, rate-limited-but-still-200) — only a
+        // genuine network failure reaches here, and silently allowing a
+        // retry is preferable to alarming the user over something they
+        // cannot act on.
+      }
+    },
+    [authClient]
   );
 
   const devLogin = useCallback(
@@ -392,16 +463,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setStatus('unauthenticated');
     setError(null);
+    setUnverifiedEmail(null);
     if (Platform.OS !== 'web') await setStoredRefreshToken(null);
   }, [authClient, beginAuthAction]);
 
-  const clearError = useCallback(() => setError(null), []);
+  const clearError = useCallback(() => {
+    setError(null);
+    setUnverifiedEmail(null);
+  }, []);
 
   const value: AuthContextValue = {
     status,
     user,
     accessToken,
     error,
+    unverifiedEmail,
     providers,
     devLoginEnabled,
     localAuthEnabled,
@@ -411,6 +487,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     exchangeCode,
     login,
     register,
+    resendVerification,
     devLogin,
     logout,
     clearError,

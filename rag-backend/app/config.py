@@ -300,6 +300,46 @@ class Settings(BaseSettings):
     auth_login_rate_limit_window_seconds: float = Field(default=300.0, ge=1.0, le=86_400.0)
     auth_register_rate_limit_max_attempts: int = Field(default=5, ge=1, le=1000)
     auth_register_rate_limit_window_seconds: float = Field(default=3600.0, ge=1.0, le=86_400.0)
+    # Sliding-window limits for POST /auth/verify-email (token-guessing
+    # brute force) and POST /auth/resend-verification (mail-bombing an
+    # address) — see app/core/auth_rate_limiter.py, same DB-backed
+    # mechanism as login/register above.
+    auth_verify_rate_limit_max_attempts: int = Field(default=10, ge=1, le=1000)
+    auth_verify_rate_limit_window_seconds: float = Field(default=900.0, ge=1.0, le=86_400.0)
+    auth_resend_verification_rate_limit_max_attempts: int = Field(default=3, ge=1, le=1000)
+    auth_resend_verification_rate_limit_window_seconds: float = Field(
+        default=3600.0, ge=1.0, le=86_400.0
+    )
+
+    # --- Auth: email verification ---
+    # Whether a newly-registered local account must confirm its email
+    # before POST /auth/login will issue real tokens for it (see
+    # app/core/verification_service.py). True by default — the
+    # entire point of this feature; a self-hosted single-operator
+    # deployment that doesn't want the friction may set this false.
+    # Never affects OAuth accounts, which get their verified-email
+    # status directly from the provider (see upsert_user_from_identity).
+    auth_email_verification_required: bool = True
+
+    # --- Email delivery (verification, and any future password-reset) ---
+    # "console" (default) never actually delivers anything — it only logs
+    # a subject/recipient line (see app/core/email_provider.py's
+    # ConsoleEmailProvider) — and is hard-refused whenever
+    # app_env=="production" by the validator below, so a misconfigured
+    # production deploy can never silently ship "verification emails are
+    # never delivered." Switch to "smtp" and fill in SMTP_* to send real
+    # mail.
+    email_provider: Literal["console", "smtp"] = "console"
+    email_from_name: str = "EduM8"
+    email_from_address: str = "no-reply@example.com"
+    email_verification_token_ttl_minutes: int = Field(default=60, ge=1, le=1440)
+    email_verification_resend_cooldown_seconds: int = Field(default=60, ge=1, le=3600)
+
+    smtp_host: str = ""
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_use_tls: bool = True
 
     # Optional: a user id (UUID string) to backfill onto pre-existing,
     # unowned Qdrant points/documents from before per-user scoping existed
@@ -309,6 +349,14 @@ class Settings(BaseSettings):
     dev_legacy_owner_user_id: str = ""
 
     frontend_url: str = "http://localhost:8081"
+    # This backend's own publicly-reachable base URL — needed to build an
+    # absolute verification-email link (GET {backend_public_url}/auth/
+    # verify-email?token=...). Not derivable from the incoming request
+    # (Request.base_url) because this deployment's uvicorn runs without
+    # --proxy-headers (see deploy/oracle/docker-compose.oracle.yml), so it
+    # only ever sees Caddy's own loopback connection, never the real
+    # public scheme/host Cloudflare + Caddy terminate for callers.
+    backend_public_url: str = "http://localhost:8000"
 
     # --- Retrieval / context-preparation tuning (milestone 8 §9) ---
     # Defaults below are exactly the values that were previously hardcoded
@@ -381,3 +429,29 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()  # type: ignore[call-arg]
+
+
+def refuse_dev_email_backend_in_production(settings: Settings) -> None:
+    """Refuses to start the real application process with the
+    non-delivering dev email backend in production — called from
+    app/main.py's create_app(), mirrors app/api/routes_auth.py's
+    `_dev_login_available` pattern (a plain runtime check tied to the
+    actual app_env=="production" case, not a pydantic Settings-level
+    constraint, which would also fire for every ad-hoc
+    `Settings(app_env="production", ...)` built in tests for unrelated
+    reasons elsewhere in this codebase — see tests/unit/api/
+    test_routes_auth.py). A misconfigured *email* setting would otherwise
+    silently leave every new local user permanently unable to verify
+    their account — worse than a loud crash on boot. Deliberately a
+    plain function (not itself decorated as a Settings validator) so it
+    can be unit-tested (tests/unit/test_main.py) without importing
+    app.main, which would otherwise trigger this exact check via its own
+    module-level `app = create_app()`.
+    """
+    if settings.app_env == "production" and settings.email_provider == "console":
+        raise RuntimeError(
+            "EMAIL_PROVIDER=console (the non-delivering dev backend) is refused when "
+            "APP_ENV=production. Set EMAIL_PROVIDER=smtp and configure SMTP_HOST/"
+            "SMTP_USERNAME/SMTP_PASSWORD before deploying, or verification emails would "
+            "silently never be delivered."
+        )

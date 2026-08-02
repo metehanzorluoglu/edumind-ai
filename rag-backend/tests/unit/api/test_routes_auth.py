@@ -19,6 +19,7 @@ dependency.
 """
 
 import os
+import re
 import tempfile
 import time
 import uuid
@@ -39,6 +40,7 @@ from app.core.time_utils import utcnow
 from app.db.base import Base
 from app.db.models_auth import OAuthTransaction, User
 from app.db.session import get_db
+from app.deps import get_email_provider
 
 _TEST_JWT_SECRET = "test-only-secret-not-a-real-credential-32chars"
 
@@ -70,6 +72,28 @@ def db_engine() -> Iterator[object]:
         os.remove(path)
 
 
+class _CapturingEmailProvider:
+    """Test double standing in for EmailProviderDep — captures every
+    "sent" email instead of delivering it, so a test can extract the
+    verification token from the same link a real recipient would click
+    (see _extract_verification_token) rather than reaching into the DB
+    for something only the raw email ever carries."""
+
+    def __init__(self) -> None:
+        self.sent: list[dict[str, str]] = []
+
+    def send(self, *, to: str, subject: str, html_body: str, text_body: str) -> None:
+        self.sent.append(
+            {"to": to, "subject": subject, "html_body": html_body, "text_body": text_body}
+        )
+
+
+def _extract_verification_token(email_body: str) -> str:
+    match = re.search(r"token=([^&\s\"<]+)", email_body)
+    assert match is not None, f"no token= found in email body: {email_body!r}"
+    return match.group(1)
+
+
 def _make_client(db_engine: object, settings: Settings) -> TestClient:
     app = FastAPI()
     app.include_router(auth_router)
@@ -82,9 +106,36 @@ def _make_client(db_engine: object, settings: Settings) -> TestClient:
         finally:
             db.close()
 
+    email_provider = _CapturingEmailProvider()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_db] = override_get_db
-    return TestClient(app)
+    app.dependency_overrides[get_email_provider] = lambda: email_provider
+    client = TestClient(app)
+    client.sent_emails = email_provider.sent  # type: ignore[attr-defined]
+    return client
+
+
+def _register_and_verify(
+    client: TestClient,
+    *,
+    email: str,
+    password: str,
+    display_name: str | None = None,
+) -> None:
+    """Registers a local account and immediately redeems its verification
+    email's token — the standard setup step for any test that needs a
+    ready-to-log-in local account and isn't itself testing the
+    registration/verification flow."""
+    client.post(
+        "/auth/register",
+        json={"email": email, "password": password, "display_name": display_name},
+    )
+    sent_emails: list[dict[str, str]] = client.sent_emails  # type: ignore[attr-defined]
+    assert sent_emails, "expected a verification email to have been sent"
+    token = _extract_verification_token(sent_emails[-1]["text_body"])
+    response = client.get("/auth/verify-email", params={"token": token}, follow_redirects=False)
+    assert response.status_code == 302
+    assert "status=success" in response.headers["location"]
 
 
 def _seed_oauth_user(db_engine: object, *, email: str = "oauthonly@example.com") -> uuid.UUID:
@@ -146,43 +197,72 @@ def _extract_auth_code(location: str) -> str:
 
 
 class TestRegister:
-    def test_success_returns_token_response_shape(self, db_engine: object) -> None:
+    def test_success_with_verification_required_returns_generic_response_and_sends_email(
+        self, db_engine: object
+    ) -> None:
         client = _make_client(db_engine, _build_settings())
         response = client.post(
             "/auth/register",
-            json={"email": "new@example.com", "password": "correct horse battery"},
+            json={"email": "new@example.com", "password": "Str0ng!Passphrase#1"},
         )
         assert response.status_code == 201
         body = response.json()
+        assert body["email_verification_required"] is True
+        assert body["access_token"] is None
+        assert body["refresh_token"] is None
+        assert body["user"] is None
+        sent_emails: list[dict[str, str]] = client.sent_emails  # type: ignore[attr-defined]
+        assert len(sent_emails) == 1
+        assert sent_emails[0]["to"] == "new@example.com"
+        assert sent_emails[0]["subject"] == "Verify your EduM8 email address"
+
+    def test_success_with_verification_disabled_issues_tokens_immediately(
+        self, db_engine: object
+    ) -> None:
+        client = _make_client(db_engine, _build_settings(auth_email_verification_required=False))
+        response = client.post(
+            "/auth/register",
+            json={"email": "new2@example.com", "password": "Str0ng!Passphrase#1"},
+        )
+        assert response.status_code == 201
+        body = response.json()
+        assert body["email_verification_required"] is False
         assert body["access_token"]
         assert body["refresh_token"]
         assert body["token_type"] == "bearer"
         assert body["expires_in"] > 0
-        assert body["user"]["email"] == "new@example.com"
+        assert body["user"]["email"] == "new2@example.com"
+        sent_emails: list[dict[str, str]] = client.sent_emails  # type: ignore[attr-defined]
+        assert sent_emails == []
 
     def test_normalizes_email(self, db_engine: object) -> None:
         client = _make_client(db_engine, _build_settings())
         response = client.post(
             "/auth/register",
-            json={"email": "  User@Example.COM ", "password": "correct horse battery"},
+            json={"email": "  User@Example.COM ", "password": "Str0ng!Passphrase#1"},
         )
         assert response.status_code == 201
-        assert response.json()["user"]["email"] == "user@example.com"
+        factory = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
+        db = factory()
+        try:
+            assert db.query(User).filter(User.email == "user@example.com").count() == 1
+        finally:
+            db.close()
 
     def test_duplicate_email_is_conflict(self, db_engine: object) -> None:
         client = _make_client(db_engine, _build_settings())
         client.post(
-            "/auth/register", json={"email": "dupe@example.com", "password": "first-password-1"}
+            "/auth/register", json={"email": "dupe@example.com", "password": "Str0ngFirst!Pass#1"}
         )
         response = client.post(
-            "/auth/register", json={"email": "dupe@example.com", "password": "second-password-2"}
+            "/auth/register", json={"email": "dupe@example.com", "password": "Str0ngSecond!Pass#2"}
         )
         assert response.status_code == 409
 
     def test_invalid_email_format_is_rejected(self, db_engine: object) -> None:
         client = _make_client(db_engine, _build_settings())
         response = client.post(
-            "/auth/register", json={"email": "not-an-email", "password": "correct horse battery"}
+            "/auth/register", json={"email": "not-an-email", "password": "Str0ng!Passphrase#1"}
         )
         assert response.status_code == 422
 
@@ -204,15 +284,15 @@ class TestRegister:
         client = _make_client(db_engine, _build_settings())
         client.post(
             "/auth/register",
-            json={"email": "hashed@example.com", "password": "correct horse battery"},
+            json={"email": "hashed@example.com", "password": "Str0ng!Passphrase#1"},
         )
         factory = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
         db = factory()
         try:
             user = db.query(User).filter(User.email == "hashed@example.com").one()
             assert user.password_hash is not None
-            assert user.password_hash != "correct horse battery"
-            assert "correct horse battery" not in user.password_hash
+            assert user.password_hash != "Str0ng!Passphrase#1"
+            assert "Str0ng!Passphrase#1" not in user.password_hash
             assert user.password_hash.startswith("$argon2id$")
         finally:
             db.close()
@@ -221,17 +301,19 @@ class TestRegister:
         client = _make_client(db_engine, _build_settings())
         response = client.post(
             "/auth/register",
-            json={"email": "noleak@example.com", "password": "correct horse battery"},
+            json={"email": "noleak@example.com", "password": "Str0ng!Passphrase#1"},
         )
         assert "password_hash" not in response.text
-        assert "password" not in response.json()["user"]
+        # email_verification_required defaults True — no `user` object is
+        # returned by this response at all yet (see RegisterResponse).
+        assert response.json()["user"] is None
 
     def test_links_password_onto_existing_oauth_only_user(self, db_engine: object) -> None:
         user_id = _seed_oauth_user(db_engine, email="linkme@example.com")
         client = _make_client(db_engine, _build_settings())
         response = client.post(
             "/auth/register",
-            json={"email": "linkme@example.com", "password": "correct horse battery"},
+            json={"email": "linkme@example.com", "password": "Str0ng!Passphrase#1"},
         )
         assert response.status_code == 201
         assert response.json()["user"]["id"] == str(user_id)
@@ -246,7 +328,7 @@ class TestRegister:
     def test_disabled_returns_404(self, db_engine: object) -> None:
         client = _make_client(db_engine, _build_settings(auth_local_login_enabled=False))
         response = client.post(
-            "/auth/register", json={"email": "x@example.com", "password": "correct horse battery"}
+            "/auth/register", json={"email": "x@example.com", "password": "Str0ng!Passphrase#1"}
         )
         assert response.status_code == 404
 
@@ -254,11 +336,9 @@ class TestRegister:
 class TestLogin:
     def test_success(self, db_engine: object) -> None:
         client = _make_client(db_engine, _build_settings())
-        client.post(
-            "/auth/register", json={"email": "login@example.com", "password": "correct-password-1"}
-        )
+        _register_and_verify(client, email="login@example.com", password="Str0ng!Passw0rd#1")
         response = client.post(
-            "/auth/login", json={"email": "login@example.com", "password": "correct-password-1"}
+            "/auth/login", json={"email": "login@example.com", "password": "Str0ng!Passw0rd#1"}
         )
         assert response.status_code == 200
         body = response.json()
@@ -266,11 +346,55 @@ class TestLogin:
         assert body["refresh_token"]
         assert body["user"]["email"] == "login@example.com"
 
+    def test_blocked_before_verification(self, db_engine: object) -> None:
+        client = _make_client(db_engine, _build_settings())
+        client.post(
+            "/auth/register",
+            json={"email": "unverified@example.com", "password": "Str0ng!Passw0rd#1"},
+        )
+        response = client.post(
+            "/auth/login", json={"email": "unverified@example.com", "password": "Str0ng!Passw0rd#1"}
+        )
+        assert response.status_code == 403
+        assert response.json()["detail"] == "email_verification_required"
+
+    def test_succeeds_after_verification(self, db_engine: object) -> None:
+        client = _make_client(db_engine, _build_settings())
+        client.post(
+            "/auth/register",
+            json={"email": "willverify@example.com", "password": "Str0ng!Passw0rd#1"},
+        )
+        blocked = client.post(
+            "/auth/login", json={"email": "willverify@example.com", "password": "Str0ng!Passw0rd#1"}
+        )
+        assert blocked.status_code == 403
+
+        sent_emails: list[dict[str, str]] = client.sent_emails  # type: ignore[attr-defined]
+        token = _extract_verification_token(sent_emails[-1]["text_body"])
+        client.get("/auth/verify-email", params={"token": token}, follow_redirects=False)
+
+        allowed = client.post(
+            "/auth/login", json={"email": "willverify@example.com", "password": "Str0ng!Passw0rd#1"}
+        )
+        assert allowed.status_code == 200
+        assert allowed.json()["access_token"]
+
+    def test_verification_not_required_when_disabled(self, db_engine: object) -> None:
+        client = _make_client(db_engine, _build_settings(auth_email_verification_required=False))
+        client.post(
+            "/auth/register",
+            json={"email": "noverify@example.com", "password": "Str0ng!Passw0rd#1"},
+        )
+        response = client.post(
+            "/auth/login", json={"email": "noverify@example.com", "password": "Str0ng!Passw0rd#1"}
+        )
+        assert response.status_code == 200
+
     def test_wrong_password_is_generic_401(self, db_engine: object) -> None:
         client = _make_client(db_engine, _build_settings())
         client.post(
             "/auth/register",
-            json={"email": "wrongpw@example.com", "password": "correct-password-1"},
+            json={"email": "wrongpw@example.com", "password": "Str0ng!Passw0rd#1"},
         )
         response = client.post(
             "/auth/login", json={"email": "wrongpw@example.com", "password": "totally-wrong"}
@@ -308,13 +432,11 @@ class TestLogin:
 
     def test_response_never_includes_password_hash(self, db_engine: object) -> None:
         client = _make_client(db_engine, _build_settings())
-        client.post(
-            "/auth/register",
-            json={"email": "noleak2@example.com", "password": "correct-password-1"},
-        )
+        _register_and_verify(client, email="noleak2@example.com", password="Str0ng!Passw0rd#1")
         response = client.post(
-            "/auth/login", json={"email": "noleak2@example.com", "password": "correct-password-1"}
+            "/auth/login", json={"email": "noleak2@example.com", "password": "Str0ng!Passw0rd#1"}
         )
+        assert response.status_code == 200
         assert "password_hash" not in response.text
 
     def test_disabled_returns_404(self, db_engine: object) -> None:
@@ -326,11 +448,9 @@ class TestLogin:
 
     def test_refresh_rotation_works_for_a_local_login_session(self, db_engine: object) -> None:
         client = _make_client(db_engine, _build_settings())
-        client.post(
-            "/auth/register", json={"email": "rotate@example.com", "password": "correct-password-1"}
-        )
+        _register_and_verify(client, email="rotate@example.com", password="Str0ng!Passw0rd#1")
         login = client.post(
-            "/auth/login", json={"email": "rotate@example.com", "password": "correct-password-1"}
+            "/auth/login", json={"email": "rotate@example.com", "password": "Str0ng!Passw0rd#1"}
         )
         old_refresh = login.json()["refresh_token"]
 
@@ -343,11 +463,9 @@ class TestLogin:
 
     def test_logout_revokes_the_session(self, db_engine: object) -> None:
         client = _make_client(db_engine, _build_settings())
-        client.post(
-            "/auth/register", json={"email": "logout@example.com", "password": "correct-password-1"}
-        )
+        _register_and_verify(client, email="logout@example.com", password="Str0ng!Passw0rd#1")
         login = client.post(
-            "/auth/login", json={"email": "logout@example.com", "password": "correct-password-1"}
+            "/auth/login", json={"email": "logout@example.com", "password": "Str0ng!Passw0rd#1"}
         )
         refresh_token = login.json()["refresh_token"]
 
@@ -359,11 +477,9 @@ class TestLogin:
 
     def test_current_user_route_works_after_local_login(self, db_engine: object) -> None:
         client = _make_client(db_engine, _build_settings())
-        client.post(
-            "/auth/register", json={"email": "me@example.com", "password": "correct-password-1"}
-        )
+        _register_and_verify(client, email="me@example.com", password="Str0ng!Passw0rd#1")
         login = client.post(
-            "/auth/login", json={"email": "me@example.com", "password": "correct-password-1"}
+            "/auth/login", json={"email": "me@example.com", "password": "Str0ng!Passw0rd#1"}
         )
         access_token = login.json()["access_token"]
 
@@ -382,7 +498,7 @@ class TestAuthRateLimiting:
         client = _make_client(db_engine, settings)
         client.post(
             "/auth/register",
-            json={"email": "limited@example.com", "password": "correct-password-1"},
+            json={"email": "limited@example.com", "password": "Str0ng!Passw0rd#1"},
         )
 
         for _ in range(3):
@@ -405,7 +521,7 @@ class TestAuthRateLimiting:
         for i in range(2):
             response = client.post(
                 "/auth/register",
-                json={"email": f"reg{i}@example.com", "password": "correct-password-1"},
+                json={"email": f"reg{i}@example.com", "password": "Str0ng!Passw0rd#1"},
             )
             assert response.status_code == 201
 
@@ -413,7 +529,7 @@ class TestAuthRateLimiting:
         # per-IP bucket, independent of the (now-satisfied) per-email one.
         blocked = client.post(
             "/auth/register",
-            json={"email": "reg-third@example.com", "password": "correct-password-1"},
+            json={"email": "reg-third@example.com", "password": "Str0ng!Passw0rd#1"},
         )
         assert blocked.status_code == 429
 
@@ -424,7 +540,7 @@ class TestAuthRateLimiting:
         client = _make_client(db_engine, settings)
         client.post(
             "/auth/register",
-            json={"email": "expiring@example.com", "password": "correct-password-1"},
+            json={"email": "expiring@example.com", "password": "Str0ng!Passw0rd#1"},
         )
 
         first = client.post(
@@ -450,7 +566,7 @@ class TestAuthRateLimiting:
         )
         client_a = _make_client(db_engine, settings)
         client_a.post(
-            "/auth/register", json={"email": "real@example.com", "password": "correct-password-1"}
+            "/auth/register", json={"email": "real@example.com", "password": "Str0ng!Passw0rd#1"}
         )
         # Distinct clients so each gets its own default TestClient IP is
         # the same (testclient), so use distinct emails to isolate buckets
@@ -522,7 +638,7 @@ class TestProviderDiscovery:
 
         register_response = client.post(
             "/auth/register",
-            json={"email": "stillworks@example.com", "password": "correct-password-1"},
+            json={"email": "stillworks@example.com", "password": "Str0ng!Passw0rd#1"},
         )
         assert register_response.status_code == 201
 
@@ -684,11 +800,17 @@ class TestGoogleOAuthFlow:
         self, db_engine: object, monkeypatch: object
     ) -> None:
         client = _make_client(db_engine, _google_settings())
-        register = client.post(
+        client.post(
             "/auth/register",
-            json={"email": "linkgoogle@example.com", "password": "correct-password-1"},
+            json={"email": "linkgoogle@example.com", "password": "Str0ng!Passw0rd#1"},
         )
-        local_user_id = register.json()["user"]["id"]
+        factory = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
+        db = factory()
+        try:
+            local_user = db.query(User).filter(User.email == "linkgoogle@example.com").one()
+            local_user_id = str(local_user.id)
+        finally:
+            db.close()
 
         _seed_transaction(db_engine, key="state-link")
         monkeypatch.setattr(  # type: ignore[attr-defined]
@@ -717,7 +839,7 @@ class TestGoogleOAuthFlow:
         client = _make_client(db_engine, _google_settings())
         client.post(
             "/auth/register",
-            json={"email": "targetvictim@example.com", "password": "correct-password-1"},
+            json={"email": "targetvictim@example.com", "password": "Str0ng!Passw0rd#1"},
         )
 
         _seed_transaction(db_engine, key="state-unverified")
@@ -789,3 +911,225 @@ class TestGoogleOAuthFlow:
             assert db.query(User).filter(User.email == "samewrit@example.com").count() == 1
         finally:
             db.close()
+
+
+class TestEmailVerification:
+    def test_resend_generic_response_for_unknown_email(self, db_engine: object) -> None:
+        client = _make_client(db_engine, _build_settings())
+        response = client.post(
+            "/auth/resend-verification", json={"email": "nobody-resend@example.com"}
+        )
+        assert response.status_code == 200
+        assert "detail" in response.json()
+        sent_emails: list[dict[str, str]] = client.sent_emails  # type: ignore[attr-defined]
+        assert sent_emails == []
+
+    def test_resend_sends_a_new_email_for_an_existing_unverified_account(
+        self, db_engine: object
+    ) -> None:
+        settings = _build_settings(email_verification_resend_cooldown_seconds=1)
+        client = _make_client(db_engine, settings)
+        client.post(
+            "/auth/register",
+            json={"email": "resendme@example.com", "password": "Str0ng!Passw0rd#1"},
+        )
+        sent_emails: list[dict[str, str]] = client.sent_emails  # type: ignore[attr-defined]
+        assert len(sent_emails) == 1
+
+        time.sleep(1.1)  # past the (minimum-allowed) 1-second resend cooldown
+        response = client.post("/auth/resend-verification", json={"email": "resendme@example.com"})
+        assert response.status_code == 200
+        assert len(sent_emails) == 2
+
+    def test_resend_response_identical_for_unknown_and_already_verified_accounts(
+        self, db_engine: object
+    ) -> None:
+        client = _make_client(db_engine, _build_settings(auth_email_verification_required=False))
+        client.post(
+            "/auth/register",
+            json={"email": "alreadyverified@example.com", "password": "Str0ng!Passw0rd#1"},
+        )
+        verified_response = client.post(
+            "/auth/resend-verification", json={"email": "alreadyverified@example.com"}
+        )
+        unknown_response = client.post(
+            "/auth/resend-verification", json={"email": "totally-unknown@example.com"}
+        )
+        assert verified_response.status_code == unknown_response.status_code == 200
+        assert verified_response.json() == unknown_response.json()
+        # Neither actually triggers a send: the account is already
+        # verified, the other doesn't exist.
+        sent_emails: list[dict[str, str]] = client.sent_emails  # type: ignore[attr-defined]
+        assert sent_emails == []
+
+    def test_resend_cooldown_prevents_immediate_repeat_send(self, db_engine: object) -> None:
+        settings = _build_settings(email_verification_resend_cooldown_seconds=3600)
+        client = _make_client(db_engine, settings)
+        client.post(
+            "/auth/register",
+            json={"email": "cooldown@example.com", "password": "Str0ng!Passw0rd#1"},
+        )
+        sent_emails: list[dict[str, str]] = client.sent_emails  # type: ignore[attr-defined]
+        assert len(sent_emails) == 1
+
+        client.post("/auth/resend-verification", json={"email": "cooldown@example.com"})
+        # Cooldown blocks a second send within the same hour — the
+        # generic response is still returned either way.
+        assert len(sent_emails) == 1
+
+    def test_resend_rate_limit_returns_429(self, db_engine: object) -> None:
+        settings = _build_settings(
+            auth_resend_verification_rate_limit_max_attempts=2,
+            auth_resend_verification_rate_limit_window_seconds=60.0,
+        )
+        client = _make_client(db_engine, settings)
+        for _ in range(2):
+            response = client.post(
+                "/auth/resend-verification", json={"email": "ratelimited@example.com"}
+            )
+            assert response.status_code == 200
+        blocked = client.post(
+            "/auth/resend-verification", json={"email": "ratelimited@example.com"}
+        )
+        assert blocked.status_code == 429
+
+    def test_verify_invalid_token_redirects_with_invalid_status(self, db_engine: object) -> None:
+        settings = _build_settings(frontend_url="https://edum8.us")
+        client = _make_client(db_engine, settings)
+        response = client.get(
+            "/auth/verify-email", params={"token": "not-a-real-token"}, follow_redirects=False
+        )
+        assert response.status_code == 302
+        assert "status=invalid" in response.headers["location"]
+        assert response.headers["location"].startswith("https://edum8.us/verify-email")
+
+    def test_verify_expired_token_redirects_with_expired_status(self, db_engine: object) -> None:
+        settings = _build_settings(email_verification_token_ttl_minutes=1)
+        client = _make_client(db_engine, settings)
+        client.post(
+            "/auth/register",
+            json={"email": "expiredtoken@example.com", "password": "Str0ng!Passw0rd#1"},
+        )
+        sent_emails: list[dict[str, str]] = client.sent_emails  # type: ignore[attr-defined]
+        token = _extract_verification_token(sent_emails[-1]["text_body"])
+
+        factory = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
+        db = factory()
+        try:
+            from datetime import timedelta as _timedelta
+
+            from app.core.time_utils import utcnow as _utcnow
+            from app.db.models_auth import EmailVerificationToken
+
+            row = db.query(EmailVerificationToken).one()
+            row.expires_at = _utcnow() - _timedelta(minutes=1)
+            db.commit()
+        finally:
+            db.close()
+
+        response = client.get("/auth/verify-email", params={"token": token}, follow_redirects=False)
+        assert "status=expired" in response.headers["location"]
+
+    def test_verify_already_used_token_cannot_be_replayed(self, db_engine: object) -> None:
+        client = _make_client(db_engine, _build_settings())
+        client.post(
+            "/auth/register",
+            json={"email": "replay@example.com", "password": "Str0ng!Passw0rd#1"},
+        )
+        sent_emails: list[dict[str, str]] = client.sent_emails  # type: ignore[attr-defined]
+        token = _extract_verification_token(sent_emails[-1]["text_body"])
+
+        first = client.get("/auth/verify-email", params={"token": token}, follow_redirects=False)
+        assert "status=success" in first.headers["location"]
+
+        second = client.get("/auth/verify-email", params={"token": token}, follow_redirects=False)
+        assert "status=already_used" in second.headers["location"]
+
+    def test_verify_rate_limit_returns_429(self, db_engine: object) -> None:
+        settings = _build_settings(
+            auth_verify_rate_limit_max_attempts=2, auth_verify_rate_limit_window_seconds=60.0
+        )
+        client = _make_client(db_engine, settings)
+        for _ in range(2):
+            response = client.get(
+                "/auth/verify-email", params={"token": "bogus"}, follow_redirects=False
+            )
+            assert response.status_code == 302
+        blocked = client.get("/auth/verify-email", params={"token": "bogus"})
+        assert blocked.status_code == 429
+
+    def test_resending_issues_a_new_token_and_revokes_the_old_one(self, db_engine: object) -> None:
+        settings = _build_settings(email_verification_resend_cooldown_seconds=1)
+        client = _make_client(db_engine, settings)
+        client.post(
+            "/auth/register",
+            json={"email": "revoked@example.com", "password": "Str0ng!Passw0rd#1"},
+        )
+        sent_emails: list[dict[str, str]] = client.sent_emails  # type: ignore[attr-defined]
+        old_token = _extract_verification_token(sent_emails[-1]["text_body"])
+
+        time.sleep(1.1)  # past the (minimum-allowed) 1-second resend cooldown
+        client.post("/auth/resend-verification", json={"email": "revoked@example.com"})
+        new_token = _extract_verification_token(sent_emails[-1]["text_body"])
+        assert new_token != old_token
+
+        old_result = client.get(
+            "/auth/verify-email", params={"token": old_token}, follow_redirects=False
+        )
+        assert "status=already_used" in old_result.headers["location"]
+
+        new_result = client.get(
+            "/auth/verify-email", params={"token": new_token}, follow_redirects=False
+        )
+        assert "status=success" in new_result.headers["location"]
+
+
+class TestOAuthAccountLinkingMarksEmailVerified:
+    def test_linking_a_verified_google_identity_marks_a_previously_unverified_local_user_verified(
+        self, db_engine: object, monkeypatch: object
+    ) -> None:
+        client = _make_client(db_engine, _google_settings())
+        client.post(
+            "/auth/register",
+            json={"email": "linkverify@example.com", "password": "Str0ng!Passw0rd#1"},
+        )
+
+        factory = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
+        db = factory()
+        try:
+            user_before = db.query(User).filter(User.email == "linkverify@example.com").one()
+            assert user_before.email_verified is False
+            assert user_before.email_verified_at is None
+        finally:
+            db.close()
+
+        _seed_transaction(db_engine, key="state-linkverify")
+        monkeypatch.setattr(  # type: ignore[attr-defined]
+            "app.api.routes_auth.fetch_verified_identity",
+            _fake_identity(email="linkverify@example.com", provider_account_id="sub-linkverify"),
+        )
+        callback = client.get(
+            "/auth/google/callback",
+            params={"code": "x", "state": "state-linkverify"},
+            follow_redirects=False,
+        )
+        client.post(
+            "/auth/session/exchange",
+            json={"auth_code": _extract_auth_code(callback.headers["location"])},
+        )
+
+        db = factory()
+        try:
+            user_after = db.query(User).filter(User.email == "linkverify@example.com").one()
+            assert user_after.email_verified is True
+            assert user_after.email_verified_at is not None
+        finally:
+            db.close()
+
+        # Now able to log in locally too, without ever clicking the
+        # original verification email.
+        login = client.post(
+            "/auth/login",
+            json={"email": "linkverify@example.com", "password": "Str0ng!Passw0rd#1"},
+        )
+        assert login.status_code == 200

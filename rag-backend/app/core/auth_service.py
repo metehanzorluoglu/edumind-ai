@@ -106,6 +106,7 @@ def upsert_user_from_identity(db: DBSession, identity: VerifiedIdentity) -> User
         user = db.get(User, existing_account.user_id)
         assert user is not None  # FK guarantees a matching row exists
         _refresh_profile_fields(user, identity)
+        _mark_verified_from_provider(user, identity)
         db.flush()
         return user
 
@@ -123,13 +124,23 @@ def upsert_user_from_identity(db: DBSession, identity: VerifiedIdentity) -> User
         user = User(
             email=normalized_email,
             email_verified=identity.email_verified,
+            email_verified_at=utcnow() if identity.email_verified else None,
             display_name=identity.display_name,
             avatar_url=identity.avatar_url,
         )
         db.add(user)
         db.flush()
     else:
+        # Reached only via the verified-email lookup above (an unverified
+        # identity never reaches this branch — see UnverifiedEmailConflictError)
+        # — an existing user (OAuth-only or a previously-unverified local
+        # account) linked here by a *provider-confirmed* email is exactly
+        # Phase 7's "safe account-linking" case: the provider is vouching
+        # for this address, so it's safe to also mark the account verified
+        # if it wasn't already (e.g. a local account that never clicked its
+        # own verification email can still reach full access this way).
         _refresh_profile_fields(user, identity)
+        _mark_verified_from_provider(user, identity)
 
     db.add(
         OAuthAccount(
@@ -148,6 +159,19 @@ def _refresh_profile_fields(user: User, identity: VerifiedIdentity) -> None:
         user.display_name = identity.display_name
     if identity.avatar_url:
         user.avatar_url = identity.avatar_url
+
+
+def _mark_verified_from_provider(user: User, identity: VerifiedIdentity) -> None:
+    """Marks `user` verified when this provider identity confirms it and
+    the user wasn't already verified — never touches `email_verified_at`
+    once it's already set, so a returning user's original verification
+    moment is preserved rather than churned on every login. A provider
+    that does NOT assert email_verified never un-verifies or otherwise
+    changes an already-verified user here (this function only ever moves
+    False -> True, never the reverse)."""
+    if identity.email_verified and not user.email_verified:
+        user.email_verified = True
+        user.email_verified_at = utcnow()
 
 
 def upsert_dev_test_user(db: DBSession, *, email: str, display_name: str | None) -> User:

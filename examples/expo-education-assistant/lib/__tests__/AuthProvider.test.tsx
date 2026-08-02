@@ -521,6 +521,115 @@ describe('AuthProvider', () => {
     expect(box.current.status).toBe('unauthenticated');
     expect(box.current.error).toBe('An account with this email already exists.');
   });
+
+  it('register() with email_verification_required=true reports it and never establishes a session', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/auth/refresh')) return jsonResponse({ detail: 'none' }, 401);
+      if (url.includes('/auth/providers')) {
+        return jsonResponse({ providers: [], dev_login_enabled: false, local_auth_enabled: true });
+      }
+      if (url.includes('/auth/register')) {
+        return jsonResponse(
+          {
+            email_verification_required: true,
+            message: 'Account created. Check your email.',
+            access_token: null,
+            refresh_token: null,
+            token_type: 'bearer',
+            expires_in: null,
+            user: null,
+          },
+          201
+        );
+      }
+      throw new Error(`unexpected fetch to ${url}`);
+    }) as unknown as typeof fetch;
+
+    const box = await renderAuth();
+
+    let result!: { emailVerificationRequired: boolean };
+    await act(async () => {
+      result = await box.current.register('needsverify@example.com', 'correct-password-1');
+    });
+
+    expect(result.emailVerificationRequired).toBe(true);
+    expect(box.current.status).toBe('unauthenticated');
+    expect(box.current.accessToken).toBeNull();
+  });
+
+  it('login() with a 403 email_verification_required response sets unverifiedEmail, not the generic error', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/auth/refresh')) return jsonResponse({ detail: 'none' }, 401);
+      if (url.includes('/auth/providers')) {
+        return jsonResponse({ providers: [], dev_login_enabled: false, local_auth_enabled: true });
+      }
+      if (url.includes('/auth/login')) {
+        return jsonResponse({ detail: 'email_verification_required' }, 403);
+      }
+      throw new Error(`unexpected fetch to ${url}`);
+    }) as unknown as typeof fetch;
+
+    const box = await renderAuth();
+
+    await act(async () => {
+      await box.current.login('unverified@example.com', 'correct-password-1');
+    });
+
+    expect(box.current.status).toBe('unauthenticated');
+    expect(box.current.unverifiedEmail).toBe('unverified@example.com');
+    expect(box.current.error).toBeNull();
+  });
+
+  it('resendVerification() POSTs to /auth/resend-verification and never throws', async () => {
+    let resendCalled = false;
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/auth/refresh')) return jsonResponse({ detail: 'none' }, 401);
+      if (url.includes('/auth/providers')) {
+        return jsonResponse({ providers: [], dev_login_enabled: false, local_auth_enabled: true });
+      }
+      if (url.includes('/auth/resend-verification')) {
+        resendCalled = true;
+        return jsonResponse({ detail: 'generic response' });
+      }
+      throw new Error(`unexpected fetch to ${url}`);
+    }) as unknown as typeof fetch;
+
+    const box = await renderAuth();
+
+    await act(async () => {
+      await box.current.resendVerification('someone@example.com');
+    });
+
+    expect(resendCalled).toBe(true);
+  });
+
+  it('clearError() also clears unverifiedEmail', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/auth/refresh')) return jsonResponse({ detail: 'none' }, 401);
+      if (url.includes('/auth/providers')) {
+        return jsonResponse({ providers: [], dev_login_enabled: false, local_auth_enabled: true });
+      }
+      if (url.includes('/auth/login')) {
+        return jsonResponse({ detail: 'email_verification_required' }, 403);
+      }
+      throw new Error(`unexpected fetch to ${url}`);
+    }) as unknown as typeof fetch;
+
+    const box = await renderAuth();
+    await act(async () => {
+      await box.current.login('unverified@example.com', 'correct-password-1');
+    });
+    expect(box.current.unverifiedEmail).toBe('unverified@example.com');
+
+    act(() => {
+      box.current.clearError();
+    });
+    expect(box.current.unverifiedEmail).toBeNull();
+  });
 });
 
 describe('describeAuthError', () => {

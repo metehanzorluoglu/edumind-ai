@@ -1,4 +1,7 @@
-export { EducationAssistantClient, DEFAULT_IMAGE_GENERATION_TIMEOUT_MS } from './client/EducationAssistantClient';
+export {
+  EducationAssistantClient,
+  DEFAULT_IMAGE_GENERATION_TIMEOUT_MS,
+} from './client/EducationAssistantClient';
 export type {
   EducationAssistantClientOptions,
   RequestOptions,
@@ -66,7 +69,10 @@ export type {
   UseProjectsResult,
 } from './hooks/useProjects';
 
-export { useConversationMessages, thinkingContextForRequest } from './hooks/useConversationMessages';
+export {
+  useConversationMessages,
+  thinkingContextForRequest,
+} from './hooks/useConversationMessages';
 export type {
   ConversationLoadState,
   DisplayMessage,
@@ -118,8 +124,11 @@ export type {
   AuthProvidersResponse,
   AuthTokenResponse,
   AuthUser,
+  GenericMessageResult,
   LoginRequestBody,
   RegisterRequestBody,
+  RegisterResult,
+  ResendVerificationRequestBody,
 } from './types/auth';
 export {
   displaySourceFromMessageSource,

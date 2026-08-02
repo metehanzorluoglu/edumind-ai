@@ -1,9 +1,9 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.core.email_normalization import MAX_EMAIL_LENGTH, is_valid_email_format, normalize_email
-from app.core.password_hashing import MAX_PASSWORD_LENGTH, validate_password_policy
+from app.core.password_policy import MAX_PASSWORD_LENGTH, validate_password_policy
 
 
 class ProviderInfo(BaseModel):
@@ -84,14 +84,6 @@ class RegisterRequest(BaseModel):
             raise ValueError("Enter a valid email address.")
         return normalized
 
-    @field_validator("password")
-    @classmethod
-    def _validate_password_policy(cls, value: str) -> str:
-        error = validate_password_policy(value)
-        if error:
-            raise ValueError(error)
-        return value
-
     @field_validator("display_name")
     @classmethod
     def _blank_display_name_means_none(cls, value: str | None) -> str | None:
@@ -99,6 +91,21 @@ class RegisterRequest(BaseModel):
             return None
         stripped = value.strip()
         return stripped or None
+
+    @model_validator(mode="after")
+    def _validate_password_policy(self) -> "RegisterRequest":
+        # Cross-field (needs the already-normalized email + display_name),
+        # so this runs as a model validator, not a per-field one — see
+        # app/core/password_policy.py for the full rule set. Joins every
+        # violated rule into one message so a client that isn't running
+        # the mirrored live checklist still sees the complete picture in
+        # one 422, not just the first rule that happened to fail.
+        errors = validate_password_policy(
+            self.password, normalized_email=self.email, display_name=self.display_name
+        )
+        if errors:
+            raise ValueError(" ".join(error.message for error in errors))
+        return self
 
 
 class LoginRequest(BaseModel):
@@ -114,3 +121,48 @@ class LoginRequest(BaseModel):
         # credential (see POST /auth/login), never a distinguishable 422
         # that would leak "this address is at least well-formed."
         return normalize_email(value)
+
+
+class RegisterResponse(BaseModel):
+    """POST /auth/register's response — always this one shape (never a
+    plain TokenResponse), so the frontend/SDK never has to branch on which
+    shape it got. `email_verification_required` tells the caller which
+    half of this model is populated:
+    - True (the default — see Settings.auth_email_verification_required):
+      no tokens yet; `access_token`/`refresh_token`/`user` are all None.
+      The frontend sends the user to /check-email.
+    - False (an operator explicitly disabled verification): behaves like
+      every other login path — tokens and `user` are populated
+      immediately, exactly as POST /auth/register used to before this
+      feature existed.
+    """
+
+    email_verification_required: bool
+    message: str
+    access_token: str | None = None
+    refresh_token: str | None = None
+    token_type: Literal["bearer"] = "bearer"
+    expires_in: int | None = None
+    user: UserResponse | None = None
+
+
+class ResendVerificationRequest(BaseModel):
+    email: str = Field(min_length=1, max_length=MAX_EMAIL_LENGTH)
+
+    @field_validator("email")
+    @classmethod
+    def _normalize_email(cls, value: str) -> str:
+        # Same reasoning as LoginRequest — never format-validated, so a
+        # malformed address gets the exact same generic response as any
+        # other input (see POST /auth/resend-verification's "never reveal
+        # whether the address is registered" requirement).
+        return normalize_email(value)
+
+
+class GenericMessageResponse(BaseModel):
+    """A deliberately uninformative response shape — currently only
+    POST /auth/resend-verification, which must never let its response
+    shape/content vary with whether the account exists, is already
+    verified, or is OAuth-only."""
+
+    detail: str

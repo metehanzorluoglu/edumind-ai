@@ -25,6 +25,8 @@ from app.core.auth_service import (
     upsert_dev_test_user,
     upsert_user_from_identity,
 )
+from app.core.email_provider import EmailDeliveryError, EmailProvider
+from app.core.email_templates import build_verification_email
 from app.core.jwt import create_access_token
 from app.core.oauth_providers import (
     OAuthProviderError,
@@ -34,16 +36,24 @@ from app.core.oauth_providers import (
 )
 from app.core.security import CurrentUserDep
 from app.core.time_utils import ensure_utc, utcnow
+from app.core.verification_service import (
+    issue_verification_token,
+    redeem_verification_token,
+    seconds_since_last_token_issued,
+)
 from app.db.models_auth import OAuthAccount, OAuthTransaction, User
-from app.deps import DBSessionDep, SettingsDep
+from app.deps import DBSessionDep, EmailProviderDep, SettingsDep
 from app.schemas.auth import (
     DevLoginRequest,
+    GenericMessageResponse,
     LoginRequest,
     LogoutRequest,
     ProviderInfo,
     ProvidersResponse,
     RefreshRequest,
     RegisterRequest,
+    RegisterResponse,
+    ResendVerificationRequest,
     SessionExchangeRequest,
     TokenResponse,
     UserResponse,
@@ -67,14 +77,16 @@ def _enforce_rate_limit(
     *,
     route: str,
     request: Request,
-    email: str,
+    email: str | None,
     max_attempts: int,
     window_seconds: float,
 ) -> None:
-    """Shared by post_register/post_login — see
-    app/core/auth_rate_limiter.py for why this is DB-backed rather than
-    the in-memory app/core/rate_limiter.py (this deployment runs multiple
-    uvicorn workers). Raises the same 429 shape
+    """Shared by post_register/post_login/get_verify_email/
+    post_resend_verification — see app/core/auth_rate_limiter.py for why
+    this is DB-backed rather than the in-memory app/core/rate_limiter.py
+    (this deployment runs multiple uvicorn workers). `email=None` (used
+    by get_verify_email, which has no account until the token is looked
+    up) checks only the per-IP bucket. Raises the same 429 shape
     app/api/routes_conversations.py already uses for the chat rate limiter
     (a `Retry-After` header, seconds rounded up to at least 1) — never
     reveals whether the IP or the email bucket was the one that tripped."""
@@ -92,6 +104,44 @@ def _enforce_rate_limit(
             detail="Too many attempts. Please try again later.",
             headers={"Retry-After": str(max(1, round(result.retry_after_seconds)))},
         )
+
+
+_GENERIC_RESEND_RESPONSE = (
+    "If an account exists for this email and still needs verification, "
+    "a new verification email has been sent."
+)
+
+
+def _send_verification_email(
+    db: Session, settings: Settings, email_provider: EmailProvider, user: User
+) -> None:
+    """Issues a fresh token and emails it — shared by post_register and
+    post_resend_verification. A delivery failure is logged and swallowed,
+    never raised into the route: the account still exists and remains
+    resendable (see POST /auth/resend-verification), which is the
+    "no partially-created unusable accounts without a recoverable resend
+    flow" requirement — a transient SMTP outage must never look like a
+    500 to someone who just registered.
+    """
+    issued = issue_verification_token(
+        db, user_id=user.id, ttl_minutes=settings.email_verification_token_ttl_minutes
+    )
+    verification_url = (
+        f"{settings.backend_public_url.rstrip('/')}/auth/verify-email?token={issued.raw_token}"
+    )
+    content = build_verification_email(
+        verification_url=verification_url,
+        ttl_minutes=settings.email_verification_token_ttl_minutes,
+    )
+    try:
+        email_provider.send(
+            to=user.email,
+            subject=content.subject,
+            html_body=content.html_body,
+            text_body=content.text_body,
+        )
+    except EmailDeliveryError as exc:
+        logger.error("Verification email to user_id=%s could not be sent: %s", user.id, exc)
 
 
 def _linked_provider(db: Session, user_id: uuid.UUID) -> str | None:
@@ -190,23 +240,28 @@ def get_providers(settings: SettingsDep) -> ProvidersResponse:
     )
 
 
-@router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 def post_register(
     body: RegisterRequest,
     request: Request,
     response: Response,
     settings: SettingsDep,
     db: DBSessionDep,
-) -> TokenResponse:
-    """Creates a local (email/password) account and immediately signs the
-    caller in — this app has no email-delivery provider (see
-    deploy/oracle/README.md's "Email verification status"), so there is no
-    verification step; the new account's `email_verified` stays False,
-    same as it would for any address a provider itself hadn't confirmed.
+    email_provider: EmailProviderDep,
+) -> RegisterResponse:
+    """Creates a local (email/password) account. When
+    `settings.auth_email_verification_required` is True (the default —
+    see app/config.py), the account is created unverified, a
+    verification email is sent, and NO tokens are issued yet — the
+    caller only gets a generic success message and must confirm the
+    emailed link (GET /auth/verify-email) before POST /auth/login will
+    let them in (see that route). When verification is disabled by the
+    operator, this behaves exactly like every other login path and signs
+    the caller in immediately, same as before this feature existed.
+
     An existing OAuth-only user with the same normalized email gets this
     password attached to their existing account instead of a second user
-    being created — see register_local_user's docstring. Returns the same
-    TokenResponse shape as every other login path in this app.
+    being created — see register_local_user's docstring.
     """
     if not settings.auth_local_login_enabled:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
@@ -233,6 +288,27 @@ def post_register(
             detail="An account with this email already exists.",
         ) from exc
 
+    if settings.auth_email_verification_required and not user.email_verified:
+        _send_verification_email(db, settings, email_provider, user)
+        return RegisterResponse(
+            email_verification_required=True,
+            message=(
+                "Account created. Check your email for a link to verify your address "
+                "before signing in."
+            ),
+        )
+
+    if not user.email_verified:
+        # Verification is disabled by the operator (auth_email_verification_
+        # required=False) — mark this account verified immediately rather
+        # than leaving it permanently unverified. Otherwise, re-enabling
+        # verification later would silently lock out every account created
+        # while it was off, exactly the "unexpected lockout of existing
+        # legitimate accounts" this feature must avoid.
+        user.email_verified = True
+        user.email_verified_at = utcnow()
+        db.commit()
+
     tokens = issue_tokens_for_user(
         db,
         settings,
@@ -241,7 +317,9 @@ def post_register(
         ip_address=request.client.host if request.client else None,
     )
     _set_refresh_cookie(response, tokens.refresh_token, settings, request=request)
-    return TokenResponse(
+    return RegisterResponse(
+        email_verification_required=False,
+        message="Account created.",
         access_token=tokens.access_token,
         refresh_token=tokens.refresh_token,
         expires_in=tokens.expires_in_seconds,
@@ -282,6 +360,19 @@ def post_login(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password"
         )
 
+    if settings.auth_email_verification_required and not user.email_verified:
+        # A distinct status (403, not 401) and a short, stable,
+        # machine-readable `detail` string — never a full sentence — so
+        # the frontend can reliably distinguish "credentials were correct
+        # but this account isn't verified yet" from "wrong credentials"
+        # without any special response body shape. Same convention this
+        # codebase already uses for the OAuth callback's `auth_error`
+        # redirect codes (e.g. "email_required", "email_conflict"). No
+        # tokens are issued past this point.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="email_verification_required"
+        )
+
     tokens = issue_tokens_for_user(
         db,
         settings,
@@ -296,6 +387,75 @@ def post_login(
         expires_in=tokens.expires_in_seconds,
         user=_user_response(user, db),
     )
+
+
+@router.get("/verify-email")
+def get_verify_email(
+    token: str, request: Request, settings: SettingsDep, db: DBSessionDep
+) -> Response:
+    """The link a verification email sends the user to (see
+    _send_verification_email) — redeems the single-use token server-side,
+    then redirects the browser to the frontend's /verify-email page with
+    a `status` query param (`success` | `invalid` | `expired` |
+    `already_used`) it renders a safe outcome page from. This route
+    itself never returns tokens and never redirects with anything
+    sensitive in the query string — `status` is the only value appended;
+    the (now-consumed, one-time) verification token is not echoed back.
+
+    Rate-limited by IP only (no account is known until the token is
+    looked up) — protects against brute-forcing token values.
+    """
+    _enforce_rate_limit(
+        db,
+        route="verify-email",
+        request=request,
+        email=None,
+        max_attempts=settings.auth_verify_rate_limit_max_attempts,
+        window_seconds=settings.auth_verify_rate_limit_window_seconds,
+    )
+
+    result = redeem_verification_token(db, raw_token=token)
+    status_param = "success" if result.ok else (result.reason or "invalid")
+    frontend_verify_url = f"{settings.frontend_url.rstrip('/')}/verify-email"
+    return Response(
+        status_code=status.HTTP_302_FOUND,
+        headers={"Location": _append_query(frontend_verify_url, status=status_param)},
+    )
+
+
+@router.post("/resend-verification", response_model=GenericMessageResponse)
+def post_resend_verification(
+    body: ResendVerificationRequest,
+    request: Request,
+    settings: SettingsDep,
+    db: DBSessionDep,
+    email_provider: EmailProviderDep,
+) -> GenericMessageResponse:
+    """Always returns the exact same response regardless of whether the
+    address is registered, already verified, or OAuth-only — see
+    _GENERIC_RESEND_RESPONSE. A new email is only actually sent when the
+    account exists, is local (has a password), is still unverified, and
+    the per-account resend cooldown (settings.
+    email_verification_resend_cooldown_seconds) has elapsed since the
+    last one — independent of, and in addition to, the request-volume
+    rate limit enforced first below.
+    """
+    _enforce_rate_limit(
+        db,
+        route="resend-verification",
+        request=request,
+        email=body.email,
+        max_attempts=settings.auth_resend_verification_rate_limit_max_attempts,
+        window_seconds=settings.auth_resend_verification_rate_limit_window_seconds,
+    )
+
+    user = db.execute(select(User).where(User.email == body.email)).scalar_one_or_none()
+    if user is not None and user.password_hash is not None and not user.email_verified:
+        elapsed = seconds_since_last_token_issued(db, user_id=user.id)
+        if elapsed is None or elapsed >= settings.email_verification_resend_cooldown_seconds:
+            _send_verification_email(db, settings, email_provider, user)
+
+    return GenericMessageResponse(detail=_GENERIC_RESEND_RESPONSE)
 
 
 @router.get("/{provider}/authorize")
