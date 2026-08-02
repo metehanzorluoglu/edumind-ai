@@ -62,6 +62,7 @@ void withProvider; // reserved for a follow-up test that wants a static provider
 
 interface CapturedFlags {
   imageGenerator: boolean;
+  developerSettings: boolean;
   loaded: boolean;
   refresh: () => Promise<void>;
 }
@@ -241,5 +242,66 @@ describe('FeatureFlagsProvider', () => {
     expect(mockStatusCallCount).toBe(2);
 
     void renderer; // silence unused-var warning for the happy-path render only
+  });
+});
+
+// developerSettings is the one flag deliberately NOT server-derived: it is
+// client-build configuration (EXPO_PUBLIC_DEVELOPER_SETTINGS_ENABLED),
+// defaults to false, and survives /status refreshes unchanged — so a
+// production bundle that never sets the variable can never show developer
+// tooling, even transiently.
+describe('developerSettings flag', () => {
+  afterEach(() => {
+    delete process.env.EXPO_PUBLIC_DEVELOPER_SETTINGS_ENABLED;
+  });
+
+  it('defaults to false when the env variable is unset (production-safe)', async () => {
+    delete process.env.EXPO_PUBLIC_DEVELOPER_SETTINGS_ENABLED;
+    mockStatusResponses.push({ reject: false, payload: { image_generation_enabled: true } });
+    const { flags } = await renderAndCapture();
+    expect(flags.developerSettings).toBe(false);
+    expect(flags.loaded).toBe(true);
+  });
+
+  it('is enabled only by an explicit EXPO_PUBLIC_DEVELOPER_SETTINGS_ENABLED=true', async () => {
+    process.env.EXPO_PUBLIC_DEVELOPER_SETTINGS_ENABLED = 'true';
+    mockStatusResponses.push({ reject: false, payload: { image_generation_enabled: true } });
+    const { flags } = await renderAndCapture();
+    expect(flags.developerSettings).toBe(true);
+  });
+
+  it('treats unrecognized values as disabled (no accidental opt-in)', async () => {
+    process.env.EXPO_PUBLIC_DEVELOPER_SETTINGS_ENABLED = 'yes-please';
+    mockStatusResponses.push({ reject: false, payload: { image_generation_enabled: true } });
+    const { flags } = await renderAndCapture();
+    expect(flags.developerSettings).toBe(false);
+  });
+
+  it('is preserved across a /status refresh (never server-derived)', async () => {
+    process.env.EXPO_PUBLIC_DEVELOPER_SETTINGS_ENABLED = 'true';
+    mockStatusResponses.push({ reject: false, payload: { image_generation_enabled: true } });
+    mockStatusResponses.push({ reject: false, payload: { image_generation_enabled: false } });
+
+    let last: CapturedFlags | null = null;
+    await act(async () => {
+      create(
+        <FeatureFlagsProvider>
+          <Probe onRender={(f) => (last = f)} />
+        </FeatureFlagsProvider>
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(last!.developerSettings).toBe(true);
+
+    await act(async () => {
+      await last!.refresh();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // The refresh landed (imageGenerator followed the server)…
+    expect(last!.imageGenerator).toBe(false);
+    // …but developerSettings stayed exactly where the build put it.
+    expect(last!.developerSettings).toBe(true);
   });
 });

@@ -10,6 +10,7 @@ import { MarkdownAnswer } from '@/components/MarkdownAnswer';
 import { SourceCard, UnavailableSourceChip } from '@/components/SourceCard';
 import { ThinkingPlaceholder } from '@/components/ThinkingPlaceholder';
 import type { AttachmentChipInfo, PendingAttachment } from '@/lib/chatAttachments';
+import { usePreferences } from '@/lib/Preferences';
 
 /** How long the card keeps the thinking placeholder mounted after the turn
  * leaves the thinking state, so its ~180ms exit fade finishes before the
@@ -75,6 +76,13 @@ export function ConversationTurnCard({
     segments.flatMap((segment) => (segment.type === 'citation' ? [segment.match.sourceId] : []))
   );
   const citedSources = mapped.filter((source) => citedSourceIds.has(source.sourceId));
+
+  // The Settings screen's "Show citations" preference — 'shown' is the
+  // default, so a screen rendered without a PreferencesProvider (tests,
+  // previews) behaves exactly as it always did. Inline citation LINKS stay
+  // in the answer text either way; this only hides the source-card surface.
+  const { preferences } = usePreferences();
+  const citationsVisible = preferences.citationDisplay === 'shown';
 
   // A standalone image-generation turn (see chat/[id].tsx's pairMessages) —
   // no other code path ever puts attachments on an assistant message, so
@@ -193,7 +201,7 @@ export function ConversationTurnCard({
               </View>
             )}
 
-            {citedSources.length > 0 && (
+            {citationsVisible && citedSources.length > 0 && (
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Sources</Text>
                 {citedSources.map((m) => (
@@ -206,17 +214,18 @@ export function ConversationTurnCard({
               </View>
             )}
 
-            {segments.some((s) => s.type === 'citation' && s.match.citation === null) && (
-              <View style={styles.section}>
-                {segments
-                  .filter((s) => s.type === 'citation' && s.match.citation === null)
-                  .map((s, i) =>
-                    s.type === 'citation' ? (
-                      <UnavailableSourceChip key={i} sourceId={s.match.sourceId} />
-                    ) : null
-                  )}
-              </View>
-            )}
+            {citationsVisible &&
+              segments.some((s) => s.type === 'citation' && s.match.citation === null) && (
+                <View style={styles.section}>
+                  {segments
+                    .filter((s) => s.type === 'citation' && s.match.citation === null)
+                    .map((s, i) =>
+                      s.type === 'citation' ? (
+                        <UnavailableSourceChip key={i} sourceId={s.match.sourceId} />
+                      ) : null
+                    )}
+                </View>
+              )}
 
             {assistant && !assistant.streaming && assistant.citationWarnings.length > 0 && (
               <View style={styles.section}>

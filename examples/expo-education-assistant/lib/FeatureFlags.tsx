@@ -24,6 +24,16 @@ export interface FeatureSnapshot {
    * mounted on the backend, and existing generated images remain viewable
    * but cannot be regenerated. */
   imageGenerator: boolean;
+  /**
+   * Gates the Developer settings entry point + screen (backend URL, model
+   * names, latency, per-service readiness). A deliberate deviation from the
+   * "/status is the source of truth" rule above: this flag is client-build
+   * configuration only (EXPO_PUBLIC_DEVELOPER_SETTINGS_ENABLED), defaults
+   * to FALSE, and is never overridden by the server — a production bundle
+   * that doesn't set the variable can never show developer tooling, even
+   * transiently, and no backend field exists or should exist for it.
+   */
+  developerSettings: boolean;
   /** True once the first successful /status fetch has populated the snapshot. */
   loaded: boolean;
 }
@@ -59,6 +69,14 @@ function bootstrapImageGeneratorFlag(): boolean {
   return env ?? true;
 }
 
+function bootstrapDeveloperSettingsFlag(): boolean {
+  const env = readEnvBool('EXPO_PUBLIC_DEVELOPER_SETTINGS_ENABLED');
+  // Default to FALSE — the opposite of imageGenerator, on purpose: anything
+  // other than an explicit opt-in ("true", case-insensitive) keeps
+  // developer tooling hidden, so production builds never expose it.
+  return env ?? false;
+}
+
 /**
  * Returns the bootstrap snapshot for this Provider mount. Exported so the
  * test suite can read the default without re-implementing the env parser,
@@ -74,6 +92,7 @@ function bootstrapImageGeneratorFlag(): boolean {
 export function buildBootstrapSnapshot(): FeatureSnapshot {
   return {
     imageGenerator: bootstrapImageGeneratorFlag(),
+    developerSettings: bootstrapDeveloperSettingsFlag(),
     loaded: false,
   };
 }
@@ -88,10 +107,14 @@ export function FeatureFlagsProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async (): Promise<void> => {
     try {
       const status = await client.status();
-      setSnapshot({
+      // developerSettings is deliberately carried over from the bootstrap,
+      // not derived from /status — see FeatureSnapshot's doc for why this
+      // one flag is client-build configuration only.
+      setSnapshot((prev) => ({
         imageGenerator: status.image_generation_enabled,
+        developerSettings: prev.developerSettings,
         loaded: true,
-      });
+      }));
     } catch {
       // Transients — network blip, auth timeout, backend bouncing — must
       // not flicker the UI. Keep the last known / build-time-default value

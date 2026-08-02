@@ -3,6 +3,7 @@ import { act, create, type ReactTestInstance } from 'react-test-renderer';
 import { ActivityIndicator, Platform } from 'react-native';
 import { ConversationTurnCard } from '../ConversationTurnCard';
 import type { AttachmentChipInfo } from '@/lib/chatAttachments';
+import { PreferencesProvider } from '@/lib/Preferences';
 
 const mockGetAttachmentImageSource = jest.fn();
 const mockFetchAttachmentBlob = jest.fn();
@@ -786,6 +787,28 @@ describe('ConversationTurnCard cited-only sources', () => {
     for (const title of SOURCE_TITLES) {
       expect(queryByText(renderer.root, title)).toBeNull();
     }
+  });
+
+  it('hides the Sources section entirely when the "Show citations" preference is off', async () => {
+    let renderer!: ReturnType<typeof create>;
+    await act(async () => {
+      renderer = create(
+        <PreferencesProvider initialOverrides={{ citationDisplay: 'hidden' }}>
+          <ConversationTurnCard
+            userContent="What does the research say?"
+            assistant={answeredAssistant('One clear claim [S1].')}
+            onCitationPress={() => {}}
+          />
+        </PreferencesProvider>
+      );
+      await Promise.resolve();
+    });
+
+    // Cited or not — with the preference off, no source cards render.
+    expect(queryByText(renderer.root, 'Sources')).toBeNull();
+    expect(queryByText(renderer.root, 'Alpha source')).toBeNull();
+    // The inline citation link stays in the answer text itself.
+    expect(deepTextIncludes(renderer.root, 'One clear claim')).toBe(true);
   });
 
   it('citation numbering stays consistent after filtering (S3 stays [S3])', async () => {

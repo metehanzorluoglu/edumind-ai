@@ -1,7 +1,8 @@
 import type { AuthUser } from 'education-assistant-client';
-import { Image, Platform } from 'react-native';
+import { Image, Platform, Switch } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { ClientProvider } from '@/lib/ClientProvider';
+import { PreferencesProvider } from '@/lib/Preferences';
 import SettingsScreen from '../settings';
 
 jest.mock('expo-secure-store', () => ({
@@ -10,23 +11,39 @@ jest.mock('expo-secure-store', () => ({
   deleteItemAsync: jest.fn(),
 }));
 
-// useFocusEffect needs a real React Navigation tree to resolve focus state,
-// which isn't present when rendering this screen standalone in a test —
-// treat the screen as always-focused instead, matching how it behaves as
-// soon as it's the active tab in the real app. jest.mock() factories are
-// hoisted above imports, so React must be required lazily here rather than
-// imported at the top of the file.
+jest.mock('expo-linking', () => ({
+  openURL: jest.fn(async () => true),
+}));
+
+// useFocusEffect needs a real React Navigation tree; treat the screen as
+// always-focused, matching its real behavior as the active tab. The
+// redesigned screen also navigates (Manage documents, Developer settings),
+// so useRouter is mocked alongside it.
+const mockRouterPush = jest.fn();
 jest.mock('expo-router', () => ({
   useFocusEffect: (effect: () => void | (() => void)) => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     require('react').useEffect(effect, [effect]);
   },
+  useRouter: () => ({ push: mockRouterPush, back: jest.fn() }),
 }));
 
-const mockLogout = jest.fn();
+const mockLogout = jest.fn(async () => undefined);
 const mockUseAuth = jest.fn();
 jest.mock('@/lib/AuthProvider', () => ({
   useAuth: () => mockUseAuth(),
+}));
+
+// Feature flags are mocked so tests can flip developerSettings on/off
+// without a real /status round trip.
+const mockUseFeatureFlags = jest.fn();
+jest.mock('@/lib/FeatureFlags', () => ({
+  useFeatureFlags: () => mockUseFeatureFlags(),
+}));
+
+const mockRefreshSidebar = jest.fn();
+jest.mock('@/lib/ChatConversationsContext', () => ({
+  useRefreshConversations: () => mockRefreshSidebar,
 }));
 
 function mockUser(overrides: Partial<AuthUser> = {}): AuthUser {
@@ -52,10 +69,8 @@ function installWindow() {
   global.window = { localStorage };
 }
 
-/** A JSX expression like `Signed in with {label}` compiles to a Text node
- * with multiple string children (`["Signed in with ", "Google"]`), not one
- * joined string — join them before comparing so callers can match the text
- * as it actually renders on screen. */
+/** Joins a node's direct string children — JSX expressions compile to
+ * multiple children, so compare against the joined text as rendered. */
 function textContent(node: ReactTestInstance): string {
   return node.children.filter((child): child is string => typeof child === 'string').join('');
 }
@@ -79,68 +94,78 @@ function findPressableByText(root: ReactTestInstance, text: string): ReactTestIn
   );
 }
 
-const READY_RESPONSE = {
-  status: 'ready',
-  ollama_reachable: true,
-  qdrant_reachable: true,
-  models_available: { 'qwen3:8b': true, 'mxbai-embed-large': true },
-};
+function findTextInputByLabel(root: ReactTestInstance, label: string): ReactTestInstance {
+  return root.find(
+    (node) => String(node.type) === 'TextInput' && node.props.accessibilityLabel === label
+  );
+}
 
-const STATUS_RESPONSE = {
-  backend_reachable: true,
-  ollama_reachable: true,
-  qdrant_reachable: true,
-  generation_model: 'qwen3:8b',
-  embedding_model: 'mxbai-embed-large',
-  document_count: 999, // deliberately different from /documents' total, to prove Settings never reads this field
-  chunk_count: 40,
-  document_type_counts: {},
-  last_ingestion_at: null,
-  relevance_threshold_enabled: false,
-  vision_enabled: true,
-  vision_model: 'qwen2.5vl:7b',
-  vision_model_available: true,
-  text_model_available: true,
-  embedding_model_available: true,
-  ollama_latency_ms: 42.3,
-  qdrant_latency_ms: 7.8,
-};
+interface FetchCall {
+  url: string;
+  method: string;
+}
 
-function installFetchMock(
-  overrides: { documentsTotal?: number; conversationsTotal?: number } = {}
-) {
-  const documentsTotal = overrides.documentsTotal ?? 3;
-  const conversationsTotal = overrides.conversationsTotal ?? 5;
+const fetchCalls: FetchCall[] = [];
 
-  global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+function installFetchMock(options: { readyFails?: boolean } = {}) {
+  fetchCalls.length = 0;
+  global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
+    const method = init?.method ?? 'GET';
+    fetchCalls.push({ url, method });
+
     if (url.includes('/health/ready')) {
-      return new Response(JSON.stringify(READY_RESPONSE), { status: 200 });
+      if (options.readyFails) return new Response('boom', { status: 500 });
+      return new Response(
+        JSON.stringify({
+          status: 'ready',
+          ollama_reachable: true,
+          qdrant_reachable: true,
+          models_available: {},
+        }),
+        { status: 200 }
+      );
     }
-    if (url.includes('/status')) {
-      return new Response(JSON.stringify(STATUS_RESPONSE), { status: 200 });
+    if (method === 'DELETE' && url.includes('/documents/')) {
+      return new Response(null, { status: 204 });
+    }
+    if (method === 'DELETE' && url.includes('/conversations/')) {
+      return new Response(null, { status: 204 });
+    }
+    if (url.includes('/conversations/c1') || url.includes('/conversations/c2')) {
+      return new Response(JSON.stringify({ id: 'x', title: 'x', messages: [] }), { status: 200 });
     }
     if (url.includes('/documents')) {
-      return new Response(JSON.stringify({ documents: [], total: documentsTotal }), {
-        status: 200,
-      });
+      return new Response(
+        JSON.stringify({
+          documents: [
+            { document_id: 'doc-1', source_filename: 'a.pdf' },
+            { document_id: 'doc-2', source_filename: 'b.pdf' },
+          ],
+          total: 2,
+        }),
+        { status: 200 }
+      );
     }
     if (url.includes('/conversations')) {
-      return new Response(JSON.stringify({ conversations: [], total: conversationsTotal }), {
-        status: 200,
-      });
+      return new Response(
+        JSON.stringify({
+          conversations: [
+            { id: 'c1', title: 'First' },
+            { id: 'c2', title: 'Second' },
+          ],
+          total: 2,
+        }),
+        { status: 200 }
+      );
     }
     throw new Error(`Unexpected fetch call to ${url} in this test`);
   }) as unknown as typeof fetch;
 }
 
-// SettingsScreen keeps a live 30s readiness-polling interval, an AppState
-// subscription, and async-guarded document/conversation fetches running for
-// as long as it's mounted — never unmounting between tests would leave all
-// of that running in the background across the whole file, eventually
-// causing a state update (and a re-render, and a re-invocation of the
-// mocked useFocusEffect) after Jest has already torn the test environment
-// down. Track the current renderer and unmount it after every test instead.
+// The screen keeps a 30s readiness-poll interval and async-guarded fetches
+// alive while mounted — unmount after every test so nothing updates state
+// once Jest tears the environment down.
 let activeRenderer: ReactTestRenderer | null = null;
 
 async function renderSettings(): Promise<ReactTestRenderer> {
@@ -148,7 +173,9 @@ async function renderSettings(): Promise<ReactTestRenderer> {
   await act(async () => {
     renderer = create(
       <ClientProvider>
-        <SettingsScreen />
+        <PreferencesProvider initialOverrides={{}}>
+          <SettingsScreen />
+        </PreferencesProvider>
       </ClientProvider>
     );
     await Promise.resolve();
@@ -159,7 +186,7 @@ async function renderSettings(): Promise<ReactTestRenderer> {
   return renderer;
 }
 
-describe('SettingsScreen', () => {
+describe('SettingsScreen (consumer redesign)', () => {
   const originalOS = Platform.OS;
   const originalFetch = global.fetch;
 
@@ -170,6 +197,12 @@ describe('SettingsScreen', () => {
       accessToken: 'test-token',
       user: mockUser(),
       logout: mockLogout,
+    });
+    mockUseFeatureFlags.mockReturnValue({
+      imageGenerator: true,
+      developerSettings: false,
+      loaded: true,
+      refresh: jest.fn(),
     });
     installFetchMock();
   });
@@ -186,146 +219,305 @@ describe('SettingsScreen', () => {
     Platform.OS = originalOS;
     global.fetch = originalFetch;
     mockLogout.mockReset();
+    mockRouterPush.mockReset();
+    mockRefreshSidebar.mockReset();
   });
 
-  it('shows the profile section with name, email, and connected provider', async () => {
-    const renderer = await renderSettings();
+  describe('Account', () => {
+    it('shows the profile with name, email, provider, and an initials avatar', async () => {
+      const renderer = await renderSettings();
 
-    expect(findByText(renderer.root, 'Ada Lovelace')).toBeTruthy();
-    expect(findByText(renderer.root, 'ada@example.com')).toBeTruthy();
-    expect(findByText(renderer.root, 'Signed in with Google')).toBeTruthy();
-  });
-
-  it('falls back to initials when there is no avatar_url', async () => {
-    const renderer = await renderSettings();
-
-    expect(renderer.root.findAllByType(Image)).toHaveLength(0);
-    expect(findByText(renderer.root, 'A')).toBeTruthy();
-  });
-
-  it('shows a dev-login account distinctly from a real OAuth provider', async () => {
-    mockUseAuth.mockReturnValue({
-      accessToken: 'test-token',
-      user: mockUser({ provider: 'dev', is_dev_test_user: true }),
-      logout: mockLogout,
+      expect(findByText(renderer.root, 'Ada Lovelace')).toBeTruthy();
+      expect(findByText(renderer.root, 'ada@example.com')).toBeTruthy();
+      expect(findByText(renderer.root, 'Signed in with Google')).toBeTruthy();
+      // No avatar_url → initials fallback, no Image.
+      expect(renderer.root.findAllByType(Image)).toHaveLength(0);
+      expect(findByText(renderer.root, 'A')).toBeTruthy();
     });
 
-    const renderer = await renderSettings();
+    it('labels a dev-login account distinctly', async () => {
+      mockUseAuth.mockReturnValue({
+        accessToken: 'test-token',
+        user: mockUser({ provider: 'dev', is_dev_test_user: true }),
+        logout: mockLogout,
+      });
 
-    expect(findByText(renderer.root, 'Signed in with Developer test account')).toBeTruthy();
-  });
-
-  it('calls logout() when "Log out" is pressed', async () => {
-    const renderer = await renderSettings();
-
-    await act(async () => {
-      findPressableByText(renderer.root, 'Log out').props.onPress();
+      const renderer = await renderSettings();
+      expect(findByText(renderer.root, 'Signed in with Developer test account')).toBeTruthy();
     });
 
-    expect(mockLogout).toHaveBeenCalled();
+    it('logs out when "Log out" is pressed', async () => {
+      const renderer = await renderSettings();
+
+      await act(async () => {
+        findPressableByText(renderer.root, 'Log out').props.onPress();
+      });
+
+      expect(mockLogout).toHaveBeenCalled();
+    });
   });
 
-  it('shows readiness dots derived from GET /health/ready', async () => {
-    const renderer = await renderSettings();
+  describe('production hiding — no infrastructure detail for normal users', () => {
+    it('shows none of the backend/model/latency/service internals anywhere', async () => {
+      const renderer = await renderSettings();
 
-    expect(findByText(renderer.root, 'Backend')).toBeTruthy();
-    expect(findByText(renderer.root, 'Ollama')).toBeTruthy();
-    expect(findByText(renderer.root, 'Qdrant')).toBeTruthy();
-    // Three "all reachable" dots — matches READY_RESPONSE's all-true fields.
-    expect(
-      renderer.root.findAll((n) => String(n.type) === 'Text' && n.children.includes('🟢'))
-    ).toHaveLength(3);
-  });
-
-  it("shows documents-indexed and conversation counts from the same endpoints the Documents/Chat screens use — never GET /status's document_count", async () => {
-    installFetchMock({ documentsTotal: 3, conversationsTotal: 5 });
-    const renderer = await renderSettings();
-
-    expect(findByText(renderer.root, '3')).toBeTruthy();
-    expect(findByText(renderer.root, '5')).toBeTruthy();
-    // STATUS_RESPONSE.document_count is 999 — must never appear anywhere.
-    expect(queryByText(renderer.root, '999')).toBeNull();
-  });
-
-  it('shows generation/embedding model names from GET /status', async () => {
-    const renderer = await renderSettings();
-
-    expect(findByText(renderer.root, 'qwen3:8b')).toBeTruthy();
-    expect(findByText(renderer.root, 'mxbai-embed-large')).toBeTruthy();
-  });
-
-  it('keeps Developer Options collapsed by default, with no API token field anywhere', async () => {
-    const renderer = await renderSettings();
-
-    expect(queryByText(renderer.root, 'Active: http://127.0.0.1:8000')).toBeNull();
-    expect(queryByText(renderer.root, 'API token')).toBeNull();
-    expect(queryByText(renderer.root, 'Token stored')).toBeNull();
-    expect(
-      renderer.root.findAll((n) => String(n.type) === 'TextInput' && n.props.secureTextEntry)
-    ).toHaveLength(0);
-  });
-
-  it('reveals the backend base URL field once Developer Options is expanded', async () => {
-    const renderer = await renderSettings();
-
-    await act(async () => {
-      findPressableByText(renderer.root, 'Developer options').props.onPress();
+      // No model names, no per-service status, no latency, no URLs.
+      expect(queryByText(renderer.root, 'qwen3:8b')).toBeNull();
+      expect(queryByText(renderer.root, 'mxbai-embed-large')).toBeNull();
+      expect(queryByText(renderer.root, 'Ollama')).toBeNull();
+      expect(queryByText(renderer.root, 'Qdrant')).toBeNull();
+      expect(queryByText(renderer.root, 'Backend')).toBeNull();
+      expect(queryByText(renderer.root, '42 ms')).toBeNull();
+      expect(queryByText(renderer.root, 'http://127.0.0.1:8000')).toBeNull();
+      // No raw text inputs (the backend URL editor is gone from this page).
+      expect(renderer.root.findAll((n) => String(n.type) === 'TextInput')).toHaveLength(0);
     });
 
-    expect(findByText(renderer.root, 'Active: http://127.0.0.1:8000')).toBeTruthy();
-  });
+    it('hides the Developer settings entry when the flag is off', async () => {
+      const renderer = await renderSettings();
 
-  it('shows model names, availability, and latency from GET /status once expanded (milestone V4)', async () => {
-    const renderer = await renderSettings();
-
-    await act(async () => {
-      findPressableByText(renderer.root, 'Developer options').props.onPress();
+      expect(queryByText(renderer.root, 'Developer settings')).toBeNull();
+      expect(queryByText(renderer.root, 'DEVELOPER')).toBeNull();
     });
 
-    expect(findByText(renderer.root, 'qwen2.5vl:7b')).toBeTruthy();
-    expect(
-      renderer.root.findAll((n) => String(n.type) === 'Text' && textContent(n) === 'Available ✓')
-    ).toHaveLength(3); // text, vision, embedding models are all available in STATUS_RESPONSE
-    expect(findByText(renderer.root, '42 ms')).toBeTruthy();
-    expect(findByText(renderer.root, '8 ms')).toBeTruthy();
-  });
+    it('reveals the Developer settings entry (and only an entry) when the flag is on', async () => {
+      mockUseFeatureFlags.mockReturnValue({
+        imageGenerator: true,
+        developerSettings: true,
+        loaded: true,
+        refresh: jest.fn(),
+      });
 
-  it('shows an em dash for vision fields when vision is disabled', async () => {
-    installFetchMock();
-    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url.includes('/health/ready')) {
-        return new Response(JSON.stringify(READY_RESPONSE), { status: 200 });
-      }
-      if (url.includes('/status')) {
-        return new Response(
-          JSON.stringify({
-            ...STATUS_RESPONSE,
-            vision_enabled: false,
-            vision_model: null,
-            vision_model_available: null,
-          }),
-          { status: 200 }
-        );
-      }
-      if (url.includes('/documents')) {
-        return new Response(JSON.stringify({ documents: [], total: 3 }), { status: 200 });
-      }
-      if (url.includes('/conversations')) {
-        return new Response(JSON.stringify({ conversations: [], total: 5 }), { status: 200 });
-      }
-      throw new Error(`Unexpected fetch call to ${url} in this test`);
-    }) as unknown as typeof fetch;
+      const renderer = await renderSettings();
 
-    const renderer = await renderSettings();
+      const row = findPressableByText(renderer.root, 'Developer settings');
+      await act(async () => {
+        row.props.onPress();
+      });
+      expect(mockRouterPush).toHaveBeenCalledWith('/developer-settings');
 
-    await act(async () => {
-      findPressableByText(renderer.root, 'Developer options').props.onPress();
+      // The entry exists — but the internals still do not live on this page.
+      expect(queryByText(renderer.root, 'http://127.0.0.1:8000')).toBeNull();
+      expect(renderer.root.findAll((n) => String(n.type) === 'TextInput')).toHaveLength(0);
     });
 
-    expect(findByText(renderer.root, 'Vision model')).toBeTruthy();
-    expect(
-      renderer.root.findAll((n) => String(n.type) === 'Text' && textContent(n) === '—')
-    ).not.toHaveLength(0);
+    it('shows no status banner while all services are healthy', async () => {
+      const renderer = await renderSettings();
+
+      expect(
+        queryByText(
+          renderer.root,
+          'EduMind services are currently unreachable. Your data is safe — please try again in a moment.'
+        )
+      ).toBeNull();
+    });
+
+    it('shows one plain-language banner when the backend is unreachable', async () => {
+      installFetchMock({ readyFails: true });
+      const renderer = await renderSettings();
+
+      // A single user-facing warning — still no service names.
+      const banner = renderer.root.findAll(
+        (n) =>
+          String(n.type) === 'Text' &&
+          textContent(n).includes('EduMind services are currently unreachable')
+      );
+      expect(banner.length).toBe(1);
+      expect(queryByText(renderer.root, 'Ollama')).toBeNull();
+      expect(queryByText(renderer.root, 'Qdrant')).toBeNull();
+    });
+  });
+
+  describe('Appearance and chat preferences', () => {
+    it('changes the theme preference from the segmented control', async () => {
+      const renderer = await renderSettings();
+
+      const darkSegment = renderer.root.find((n) => n.props.accessibilityLabel === 'Theme: Dark');
+      expect(darkSegment.props.accessibilityState.selected).toBe(false);
+
+      await act(async () => {
+        darkSegment.props.onPress();
+      });
+
+      expect(
+        renderer.root.find((n) => n.props.accessibilityLabel === 'Theme: Dark').props
+          .accessibilityState.selected
+      ).toBe(true);
+    });
+
+    it('toggles Reduce motion', async () => {
+      const renderer = await renderSettings();
+
+      const toggle = renderer.root.find(
+        (n) => n.type === Switch && n.props.accessibilityLabel === 'Reduce motion'
+      );
+      expect(toggle.props.value).toBe(false);
+
+      await act(async () => {
+        toggle.props.onValueChange(true);
+      });
+
+      expect(
+        renderer.root.find(
+          (n) => n.type === Switch && n.props.accessibilityLabel === 'Reduce motion'
+        ).props.value
+      ).toBe(true);
+    });
+
+    it('navigates to the Documents tab from the Documents section', async () => {
+      const renderer = await renderSettings();
+
+      await act(async () => {
+        findPressableByText(renderer.root, 'Manage documents').props.onPress();
+      });
+
+      expect(mockRouterPush).toHaveBeenCalledWith('/documents');
+    });
+
+    it('shows the uploaded-documents count from GET /documents', async () => {
+      const renderer = await renderSettings();
+
+      // The "Uploaded documents" row shows the real total (2).
+      const row = findPressableByText(renderer.root, 'Uploaded documents');
+      expect(row.findAll((n) => String(n.type) === 'Text' && textContent(n) === '2').length).toBe(
+        1
+      );
+    });
+  });
+
+  describe('destructive actions require confirmation', () => {
+    it('clears conversation history only after confirming, deleting every conversation', async () => {
+      const renderer = await renderSettings();
+
+      await act(async () => {
+        findPressableByText(renderer.root, 'Clear conversation history').props.onPress();
+      });
+
+      // The confirmation dialog is up — nothing deleted yet.
+      expect(findByText(renderer.root, 'Clear conversation history?')).toBeTruthy();
+      expect(fetchCalls.filter((c) => c.method === 'DELETE')).toHaveLength(0);
+
+      await act(async () => {
+        findPressableByText(renderer.root, 'Clear history').props.onPress();
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const deletes = fetchCalls.filter((c) => c.method === 'DELETE');
+      expect(deletes.some((c) => c.url.includes('/conversations/c1'))).toBe(true);
+      expect(deletes.some((c) => c.url.includes('/conversations/c2'))).toBe(true);
+      // The dialog closed and the user got feedback.
+      expect(queryByText(renderer.root, 'Clear conversation history?')).toBeNull();
+      expect(
+        queryByText(renderer.root, 'Your conversation history has been cleared.')
+      ).toBeTruthy();
+      expect(mockRefreshSidebar).toHaveBeenCalled();
+    });
+
+    it('removes all documents only after typing DELETE, deleting every document', async () => {
+      const renderer = await renderSettings();
+
+      await act(async () => {
+        findPressableByText(renderer.root, 'Remove all documents').props.onPress();
+      });
+      expect(findByText(renderer.root, 'Remove all documents?')).toBeTruthy();
+
+      // The confirm button stays disabled until the strong word is typed
+      // (case-insensitive — "delete" satisfies "DELETE").
+      expect(findPressableByText(renderer.root, 'Remove all').props.disabled).toBe(true);
+
+      await act(async () => {
+        findTextInputByLabel(renderer.root, 'Type DELETE to confirm').props.onChangeText('delete');
+      });
+      expect(findPressableByText(renderer.root, 'Remove all').props.disabled).toBe(false);
+
+      await act(async () => {
+        findPressableByText(renderer.root, 'Remove all').props.onPress();
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const deletes = fetchCalls.filter((c) => c.method === 'DELETE');
+      expect(deletes.some((c) => c.url.includes('/documents/doc-1'))).toBe(true);
+      expect(deletes.some((c) => c.url.includes('/documents/doc-2'))).toBe(true);
+      expect(queryByText(renderer.root, 'All documents have been removed.')).toBeTruthy();
+    });
+
+    it('"Delete all my data" erases conversations AND documents, then signs out — and never claims the account itself is deleted', async () => {
+      const renderer = await renderSettings();
+
+      // Honest labeling: there is no backend account-deletion endpoint, so
+      // the UI must not say "Delete account".
+      expect(queryByText(renderer.root, 'Delete account')).toBeNull();
+
+      await act(async () => {
+        findPressableByText(renderer.root, 'Delete all my data').props.onPress();
+      });
+      expect(findByText(renderer.root, 'Delete your EduMind data?')).toBeTruthy();
+      // The dialog copy discloses that the account itself remains.
+      expect(
+        renderer.root.findAll(
+          (n) =>
+            String(n.type) === 'Text' &&
+            textContent(n).includes('Your EduMind account itself is not deleted')
+        ).length
+      ).toBeGreaterThan(0);
+
+      await act(async () => {
+        findTextInputByLabel(renderer.root, 'Type DELETE to confirm').props.onChangeText('DELETE');
+      });
+      await act(async () => {
+        findPressableByText(renderer.root, 'Delete everything').props.onPress();
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const deletes = fetchCalls.filter((c) => c.method === 'DELETE');
+      expect(deletes.some((c) => c.url.includes('/conversations/'))).toBe(true);
+      expect(deletes.some((c) => c.url.includes('/documents/'))).toBe(true);
+      expect(mockLogout).toHaveBeenCalled();
+    });
+
+    it('cancelling a confirmation deletes nothing', async () => {
+      const renderer = await renderSettings();
+
+      await act(async () => {
+        findPressableByText(renderer.root, 'Clear conversation history').props.onPress();
+      });
+      await act(async () => {
+        findPressableByText(renderer.root, 'Cancel').props.onPress();
+      });
+
+      expect(queryByText(renderer.root, 'Clear conversation history?')).toBeNull();
+      expect(fetchCalls.filter((c) => c.method === 'DELETE')).toHaveLength(0);
+    });
+  });
+
+  describe('About', () => {
+    it('shows the version and opens the privacy policy dialog', async () => {
+      const renderer = await renderSettings();
+
+      expect(findByText(renderer.root, 'Version')).toBeTruthy();
+
+      await act(async () => {
+        findPressableByText(renderer.root, 'Privacy policy').props.onPress();
+      });
+      // Row label + dialog title now both read "Privacy policy".
+      expect(
+        renderer.root.findAll(
+          (n) => String(n.type) === 'Text' && textContent(n) === 'Privacy policy'
+        ).length
+      ).toBe(2);
+      // Dialog body copy is honest about document handling.
+      expect(
+        renderer.root.findAll(
+          (n) => String(n.type) === 'Text' && textContent(n).includes('never used to train')
+        ).length
+      ).toBeGreaterThan(0);
+    });
   });
 });

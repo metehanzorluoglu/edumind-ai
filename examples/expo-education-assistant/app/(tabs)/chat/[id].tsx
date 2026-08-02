@@ -28,6 +28,7 @@ import {
 import { attachmentChipFromPersisted, toAttachmentUploads } from '@/lib/chatAttachments';
 import { useClient } from '@/lib/ClientProvider';
 import { useFeatureFlags } from '@/lib/FeatureFlags';
+import { usePreferences } from '@/lib/Preferences';
 import { useChatAttachments } from '@/lib/useChatAttachments';
 import { useRefreshConversations } from '@/lib/ChatConversationsContext';
 import { generateClientMessageId } from '@/lib/clientMessageId';
@@ -89,6 +90,7 @@ function pairMessages(messages: DisplayMessage[]): RenderTurn[] {
 function ChatConversationScreen({ conversationId }: { conversationId: string }) {
   const { client, baseUrl, hydrated } = useClient();
   const { imageGenerator: imageGeneratorEnabled } = useFeatureFlags();
+  const { preferences } = usePreferences();
   const refreshConversations = useRefreshConversations();
   const { conversation, loadState, messages, sendState, sendMessage, cancelSend, reload } =
     useConversationMessages(client, conversationId);
@@ -249,7 +251,10 @@ function ChatConversationScreen({ conversationId }: { conversationId: string }) 
   function handleContentSizeChange(_width: number, height: number): void {
     const grew = height > prevContentHeightRef.current;
     prevContentHeightRef.current = height;
-    if (isNearBottomRef.current) {
+    // The Settings screen's "Auto-scroll while streaming" preference —
+    // default true, i.e. the historical behavior; when off, growth only
+    // ever surfaces the "Jump to latest" chip, never a forced scroll.
+    if (isNearBottomRef.current && preferences.autoScrollDuringStreaming) {
       listRef.current?.scrollToEnd({ animated: true });
     } else if (grew) {
       setShowJumpToLatest(true);
