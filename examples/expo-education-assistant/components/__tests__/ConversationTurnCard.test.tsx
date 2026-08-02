@@ -1,4 +1,4 @@
-import type { DisplayMessage } from 'education-assistant-client';
+import type { Citation, DisplayMessage, DisplaySource } from 'education-assistant-client';
 import { act, create, type ReactTestInstance } from 'react-test-renderer';
 import { ActivityIndicator, Platform } from 'react-native';
 import { ConversationTurnCard } from '../ConversationTurnCard';
@@ -650,5 +650,153 @@ describe('ConversationTurnCard thinking placeholder', () => {
     // Everything the placeholder scheduled is gone — no leaked interval,
     // linger timer, or orphaned animation frame.
     expect(jest.getTimerCount()).toBe(baseline);
+  });
+});
+
+// Fixtures for the cited-only Sources section: four retrieved chunks that
+// the backend labels S1..S4 (build_citations labels EVERY retrieved chunk),
+// of which the answer text cites only a subset.
+function sourceFixture(n: number, title: string): DisplaySource {
+  return {
+    rank: n,
+    document_id: `doc-${n}`,
+    chunk_id: `chunk-${n}`,
+    chunk_index: 0,
+    page_number: n,
+    score: 0.9,
+    text: `${title} excerpt text`,
+    title,
+    authors: ['A. Researcher'],
+    publication_year: 2021,
+    source_venue: null,
+    document_type: 'journal_article',
+    journal_quartile: null,
+    doi: null,
+    source_url: null,
+    source_filename: `file-${n}.pdf`,
+    scope: 'general',
+  };
+}
+
+function citationFixture(n: number, title: string): Citation {
+  return {
+    source_id: `S${n}`,
+    document_id: `doc-${n}`,
+    chunk_id: `chunk-${n}`,
+    title,
+    authors: ['A. Researcher'],
+    publication_year: 2021,
+    source_venue: null,
+    document_type: 'journal_article',
+    journal_quartile: null,
+    page_start: n,
+    page_end: n,
+    doi: null,
+    source_url: null,
+    score: 0.9,
+  };
+}
+
+const SOURCE_TITLES = ['Alpha source', 'Beta source', 'Gamma source', 'Delta source'];
+
+function answeredAssistant(answer: string): DisplayMessage {
+  return streamingAssistant({
+    streaming: false,
+    thinking: null,
+    content: answer,
+    sources: SOURCE_TITLES.map((title, i) => sourceFixture(i + 1, title)),
+    citations: SOURCE_TITLES.map((title, i) => citationFixture(i + 1, title)),
+  });
+}
+
+// The Sources section renders one SourceCard per CITED source only —
+// retrieved-but-uncited documents are never shown, every displayed card has
+// at least one inline [S#] marker in the answer, numbering is the backend's
+// (never renumbered), and repeats collapse to a single card.
+describe('ConversationTurnCard cited-only sources', () => {
+  async function renderAnswer(answer: string): Promise<ReturnType<typeof create>> {
+    let renderer!: ReturnType<typeof create>;
+    await act(async () => {
+      renderer = create(
+        <ConversationTurnCard
+          userContent="What does the research say?"
+          assistant={answeredAssistant(answer)}
+          onCitationPress={() => {}}
+        />
+      );
+      await Promise.resolve();
+    });
+    return renderer;
+  }
+
+  const cardTitles = (root: ReactTestInstance, title: string): ReactTestInstance[] =>
+    root.findAll((node) => String(node.type) === 'Text' && node.children.includes(title));
+
+  // The card badge renders `[{sourceId}]` as three separate string children,
+  // so join before matching.
+  const badges = (root: ReactTestInstance, badge: string): ReactTestInstance[] =>
+    root.findAll((node) => String(node.type) === 'Text' && textContent(node).includes(badge));
+
+  it('one citation renders exactly one source card', async () => {
+    const renderer = await renderAnswer('One clear claim [S1].');
+
+    expect(cardTitles(renderer.root, 'Alpha source')).toHaveLength(1);
+    // The other three were retrieved but never cited — no cards for them.
+    expect(queryByText(renderer.root, 'Beta source')).toBeNull();
+    expect(queryByText(renderer.root, 'Gamma source')).toBeNull();
+    expect(queryByText(renderer.root, 'Delta source')).toBeNull();
+    expect(badges(renderer.root, '[S2]')).toHaveLength(0);
+    expect(badges(renderer.root, '[S3]')).toHaveLength(0);
+    expect(badges(renderer.root, '[S4]')).toHaveLength(0);
+  });
+
+  it('two citations render exactly two source cards, in S-number order', async () => {
+    const renderer = await renderAnswer('First point [S1] and third point [S3].');
+
+    expect(cardTitles(renderer.root, 'Alpha source')).toHaveLength(1);
+    expect(cardTitles(renderer.root, 'Gamma source')).toHaveLength(1);
+    expect(queryByText(renderer.root, 'Beta source')).toBeNull();
+    expect(queryByText(renderer.root, 'Delta source')).toBeNull();
+
+    // Card order follows the backend's S-numbering (S1 before S3).
+    const shown = renderer.root
+      .findAll(
+        (node) =>
+          String(node.type) === 'Text' &&
+          (node.children.includes('Alpha source') || node.children.includes('Gamma source'))
+      )
+      .map((node) => node.children.join(''));
+    expect(shown).toEqual(['Alpha source', 'Gamma source']);
+  });
+
+  it('repeated citations of the same source collapse to a single card', async () => {
+    const renderer = await renderAnswer('Made twice [S1] and again [S1].');
+
+    // Both inline markers are still in the answer text...
+    expect(deepTextIncludes(renderer.root, 'Made twice')).toBe(true);
+    // ...but there is exactly one Alpha card, not two.
+    expect(cardTitles(renderer.root, 'Alpha source')).toHaveLength(1);
+    expect(cardTitles(renderer.root, 'Beta source')).toHaveLength(0);
+  });
+
+  it('an answer with no citations shows no Sources section at all', async () => {
+    const renderer = await renderAnswer('A plain answer with no citation markers.');
+
+    expect(queryByText(renderer.root, 'Sources')).toBeNull();
+    for (const title of SOURCE_TITLES) {
+      expect(queryByText(renderer.root, title)).toBeNull();
+    }
+  });
+
+  it('citation numbering stays consistent after filtering (S3 stays [S3])', async () => {
+    const renderer = await renderAnswer('Only the third document supports this [S3].');
+
+    // The Gamma card keeps its backend-assigned [S3] identity (one badge on
+    // the card plus the inline marker in the answer) — it is NOT renumbered
+    // to [S1] just because it is the only card shown.
+    expect(cardTitles(renderer.root, 'Gamma source')).toHaveLength(1);
+    expect(badges(renderer.root, '[S3]').length).toBeGreaterThanOrEqual(1);
+    expect(badges(renderer.root, '[S1]')).toHaveLength(0);
+    expect(queryByText(renderer.root, 'Alpha source')).toBeNull();
   });
 });

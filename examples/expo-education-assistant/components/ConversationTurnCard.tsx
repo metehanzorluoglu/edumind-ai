@@ -60,6 +60,22 @@ export function ConversationTurnCard({
   const mapped = mapSourcesToCitations(chunks, citations);
   const segments = answer ? splitAnswerIntoSegments(answer, citations) : [];
 
+  // The backend's citations list labels EVERY retrieved chunk (S1..SN — see
+  // rag-backend's build_citations), not just the ones the model actually
+  // used, so `mapped` alone would show a card for every retrieved document
+  // even when the answer only cites a few. The inline [S#] markers parsed
+  // out of the answer text (same pattern the backend validates with) are
+  // the ground truth for "this source contributed to the response" — the
+  // Sources section renders exactly those cards, in the backend's own
+  // S-number order (mapSourcesToCitations already sorts by source_id), with
+  // numbering never renumbered. During streaming, cards appear as their
+  // citation lands in the partial answer; a source that is retrieved but
+  // never cited is simply never shown.
+  const citedSourceIds = new Set(
+    segments.flatMap((segment) => (segment.type === 'citation' ? [segment.match.sourceId] : []))
+  );
+  const citedSources = mapped.filter((source) => citedSourceIds.has(source.sourceId));
+
   // A standalone image-generation turn (see chat/[id].tsx's pairMessages) —
   // no other code path ever puts attachments on an assistant message, so
   // this is a reliable, sufficient signal rather than a dedicated flag.
@@ -177,10 +193,10 @@ export function ConversationTurnCard({
               </View>
             )}
 
-            {mapped.length > 0 && (
+            {citedSources.length > 0 && (
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Sources</Text>
-                {mapped.map((m) => (
+                {citedSources.map((m) => (
                   <SourceCard
                     key={m.sourceId}
                     source={m}
