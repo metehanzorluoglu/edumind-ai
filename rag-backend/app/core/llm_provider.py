@@ -10,7 +10,12 @@ from app.core.request_timing import RequestTimer
 
 class LLMProvider(Protocol):
     def stream_chat(
-        self, *, system_prompt: str, user_prompt: str, timer: RequestTimer | None = None
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        timer: RequestTimer | None = None,
+        options_override: Mapping[str, object] | None = None,
     ) -> Iterator[str]: ...
 
 
@@ -88,25 +93,39 @@ class OllamaLLMProvider:
         self._think = think
 
     def stream_chat(
-        self, *, system_prompt: str, user_prompt: str, timer: RequestTimer | None = None
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        timer: RequestTimer | None = None,
+        options_override: Mapping[str, object] | None = None,
     ) -> Iterator[str]:
         """`timer`, when given, receives Ollama's own reported performance
         fields (model load time, prompt evaluation time, completion token
         count, decode rate — see _record_ollama_metrics below) once the
         stream finishes. Optional and additive: omitting it (the default)
         changes nothing about token delivery, and a timer that's disabled
-        (see app/core/request_timing.py) makes every call below a no-op."""
+        (see app/core/request_timing.py) makes every call below a no-op.
+
+        `options_override`, when given, is merged over this instance's own
+        `options` for this call only (e.g. a higher `num_predict` for an
+        instructional-design request — see app/core/intent_detection.py
+        and Settings.ollama_num_predict_lesson_mode) — every other call
+        using this same provider instance is unaffected."""
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
+        effective_options = (
+            {**(self._options or {}), **options_override} if options_override else self._options
+        )
         last_chunk: _ChatChunkLike | None = None
         try:
             stream = self._client.chat(
                 model=self._model,
                 messages=messages,
                 stream=True,
-                options=self._options,
+                options=effective_options,
                 think=self._think,
             )
             for chunk in stream:

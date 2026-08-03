@@ -33,7 +33,7 @@ class _FakeRetriever:
 
 
 class _FakeLLMProvider:
-    def stream_chat(self, *, system_prompt, user_prompt, timer=None):
+    def stream_chat(self, *, system_prompt, user_prompt, timer=None, options_override=None):
         yield "unused"
 
 

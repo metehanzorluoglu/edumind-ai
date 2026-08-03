@@ -218,3 +218,49 @@ class TestCrossSourceCorroborationRules:
         system_prompt, user_prompt = build_chat_prompt("q", chunks)
         assert "reference or citation mentioned inside a retrieved passage" in system_prompt
         assert "SAME single document" in user_prompt  # only one real source here
+
+
+class TestInstructionalDesignAddendum:
+    """Covers the lesson-design mode addendum (QA follow-up: the previous
+    compact research-summary prompt produced an incomplete lesson outline
+    for an instructional-design request). General intent detection (see
+    app/core/intent_detection.py), not a lookup of any specific exact
+    prompt — these tests deliberately use several different phrasings."""
+
+    def test_addendum_appears_for_an_instructional_design_request_compact_variant(self) -> None:
+        system_prompt, _ = build_chat_prompt(
+            "Design a lesson flow about machine learning for 6th graders.",
+            [_chunk()],
+            prompt_variant="compact",
+        )
+        assert "Instructional-design mode:" in system_prompt
+        assert "engineering-design cycle" in system_prompt
+
+    def test_addendum_appears_for_an_instructional_design_request_current_variant(self) -> None:
+        system_prompt, _ = build_chat_prompt(
+            "Create a learning sequence where students investigate a real-world problem.",
+            [_chunk()],
+            prompt_variant="current",
+        )
+        assert "Instructional-design mode:" in system_prompt
+
+    def test_addendum_absent_for_an_ordinary_research_question(self) -> None:
+        system_prompt, _ = build_chat_prompt(
+            "What does the literature say about lesson study in Japan?",
+            [_chunk()],
+            prompt_variant="compact",
+        )
+        assert "Instructional-design mode:" not in system_prompt
+
+    def test_addendum_still_requires_citations_for_source_backed_claims(self) -> None:
+        """The addendum must never relax the base grounding/citation
+        rules — only add structure for the design-shaped parts of the
+        answer."""
+        system_prompt, _ = build_chat_prompt(
+            "Design a curriculum unit on AI ethics.", [_chunk()], prompt_variant="compact"
+        )
+        addendum_start = system_prompt.index("Instructional-design mode:")
+        addendum = system_prompt[addendum_start:]
+        assert "must never carry a citation" in addendum  # design choices: no citation
+        assert "still needs its [S#] citation" in addendum  # source claims: citation required
+        assert "Cite inline" in system_prompt[:addendum_start]  # base citation rule untouched

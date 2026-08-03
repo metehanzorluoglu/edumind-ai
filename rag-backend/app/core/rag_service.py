@@ -1,5 +1,5 @@
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -275,10 +275,17 @@ class RagService:
         )
 
     def stream_answer(
-        self, prepared: PreparedChat, *, timer: RequestTimer | None = None
+        self,
+        prepared: PreparedChat,
+        *,
+        timer: RequestTimer | None = None,
+        options_override: Mapping[str, object] | None = None,
     ) -> Iterator[str]:
         yield from self._llm_provider.stream_chat(
-            system_prompt=prepared.system_prompt, user_prompt=prepared.user_prompt, timer=timer
+            system_prompt=prepared.system_prompt,
+            user_prompt=prepared.user_prompt,
+            timer=timer,
+            options_override=options_override,
         )
 
     def run(

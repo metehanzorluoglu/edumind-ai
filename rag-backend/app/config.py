@@ -70,6 +70,22 @@ class Settings(BaseSettings):
     # only controls the app-wide default instance (app/deps.py::
     # get_llm_provider), not the class's own capability.
     ollama_num_predict: int = Field(default=512, ge=1)
+    # Response-mode-specific override of ollama_num_predict for an
+    # instructional-design request (see app/core/intent_detection.py and
+    # prompt_builder.py's _INSTRUCTIONAL_DESIGN_ADDENDUM) — a full lesson/
+    # unit/curriculum design covering objectives, research activities,
+    # ML methodology, the engineering-design cycle, and assessment
+    # genuinely needs more than an ordinary citation-grounded answer does.
+    # Only applied when that intent is actually detected; every other chat
+    # turn is unaffected. Raised from 512 specifically because testing
+    # this feature found the *previous* (undifferentiated) 512-token cap
+    # was not itself the reason lesson answers were thin — the model
+    # stopped well under it, choosing brevity per the base system prompt —
+    # but the new addendum explicitly asks for substantially more content
+    # than 512 tokens can hold, so this is a response-shape-driven
+    # increase, not a blind one. See the performance investigation for the
+    # measured generation-time impact of this larger cap.
+    ollama_num_predict_lesson_mode: int = Field(default=1536, ge=1)
 
     # Per-stage timing instrumentation (see app/core/request_timing.py) for
     # the upload and chat pipelines. Off by default: when false, every
