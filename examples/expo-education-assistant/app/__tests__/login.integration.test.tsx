@@ -281,4 +281,81 @@ describe('AuthProvider + LoginScreen, wired together end to end', () => {
     // unmounting from the tree is this test's observable proxy for that.
     expect(findInputByLabel(renderer.root, 'Email')).toBeNull();
   });
+
+  it(
+    'two rapid presses of Sign in before the first request resolves send only ' +
+      'one real POST /auth/login (regression: isSubmittingRef guard)',
+    async () => {
+      let loginCalls = 0;
+      let resolveLogin!: (value: Response) => void;
+      const loginResponsePromise = new Promise<Response>((resolve) => {
+        resolveLogin = resolve;
+      });
+
+      global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/auth/refresh')) return jsonResponse({ detail: 'none' }, 401);
+        if (url.includes('/auth/providers')) {
+          return jsonResponse({ providers: [], dev_login_enabled: false, local_auth_enabled: true });
+        }
+        if (url.includes('/auth/login')) {
+          loginCalls += 1;
+          return loginResponsePromise;
+        }
+        throw new Error(`unexpected fetch to ${url}`);
+      }) as unknown as typeof fetch;
+
+      let renderer!: ReturnType<typeof create>;
+      await act(async () => {
+        renderer = create(
+          <AuthProvider>
+            <LoginScreen />
+          </AuthProvider>
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      act(() => {
+        findInputByLabel(renderer.root, 'Email')!.props.onChangeText('user@example.com');
+      });
+      act(() => {
+        findInputByLabel(renderer.root, 'Password')!.props.onChangeText('correct-password-1');
+      });
+
+      // Both presses land before the in-flight request resolves, mirroring a
+      // fast double-click or Strict Mode double-invocation.
+      await act(async () => {
+        const signInButton = findPressableByLabel(renderer.root, 'Sign in')!;
+        signInButton.props.onPress();
+        signInButton.props.onPress();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(loginCalls).toBe(1);
+
+      await act(async () => {
+        resolveLogin(
+          jsonResponse({
+            access_token: 'access-1',
+            refresh_token: 'refresh-1',
+            token_type: 'bearer',
+            expires_in: 900,
+            user: {
+              id: 'u1',
+              email: 'user@example.com',
+              display_name: null,
+              avatar_url: null,
+              is_dev_test_user: false,
+              provider: null,
+            },
+          })
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    }
+  );
 });

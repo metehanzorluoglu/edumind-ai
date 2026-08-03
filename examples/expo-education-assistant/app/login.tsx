@@ -1,5 +1,5 @@
 import { Redirect, useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -113,6 +113,13 @@ export default function LoginScreen() {
   const [showForgotPasswordNotice, setShowForgotPasswordNotice] = useState(false);
   const [resending, setResending] = useState(false);
   const [resendSent, setResendSent] = useState(false);
+  // Synchronous double-submit guard, same reasoning as chat/new.tsx's
+  // isSubmittingRef: `submitting` state alone doesn't block a second onPress
+  // fired before React re-renders the disabled button (a fast double-click,
+  // or Strict Mode invoking a handler twice), since both calls read the same
+  // pre-update `submitting`. The ref is mutated synchronously, so the second
+  // call always sees the first's claim.
+  const isSubmittingRef = useRef(false);
 
   // A session restored (or just completed) elsewhere must never leave the
   // user stuck looking at the login form — bounce straight into the app.
@@ -153,6 +160,7 @@ export default function LoginScreen() {
   }
 
   async function handleSubmit(): Promise<void> {
+    if (isSubmittingRef.current) return;
     clearError();
     const nextFieldErrors: FieldErrors = {};
     const emailError = validateEmailField(email);
@@ -165,6 +173,7 @@ export default function LoginScreen() {
     setFieldErrors(nextFieldErrors);
     if (Object.keys(nextFieldErrors).length > 0) return;
 
+    isSubmittingRef.current = true;
     setSubmitting(true);
     try {
       if (mode === 'signin') {
@@ -177,6 +186,7 @@ export default function LoginScreen() {
         }
       }
     } finally {
+      isSubmittingRef.current = false;
       setSubmitting(false);
     }
   }

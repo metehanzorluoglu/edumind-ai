@@ -151,8 +151,16 @@ export function parseChatEvent(raw: ParsedSseEvent): ChatEvent | null {
   try {
     payload = JSON.parse(raw.data);
   } catch (cause) {
-    throw new MalformedStreamError(`SSE event data was not valid JSON: ${raw.data.slice(0, 200)}`, {
-      cause,
+    // The message is deliberately generic — this reaches end users
+    // verbatim via toAssistantError()/DisplayMessage.error (see
+    // useConversationMessages.ts), and the raw stream bytes are neither
+    // useful nor safe to show them (QA finding: a malformed chunk's raw
+    // content was previously echoed straight into the UI). The offending
+    // snippet is still available to developers via the JS `cause` chain
+    // (this SDK's own error classes always preserve `cause` — see
+    // EducationAssistantError), just never rendered.
+    throw new MalformedStreamError('The server sent a response that could not be understood.', {
+      cause: new Error(`SSE event data was not valid JSON: ${raw.data.slice(0, 200)}`, { cause }),
     });
   }
 

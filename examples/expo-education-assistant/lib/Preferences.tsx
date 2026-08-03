@@ -241,9 +241,27 @@ const TEXT_SIZE_FACTORS: Record<TextSize, number> = {
 export function useTheme(): Theme {
   const { preferences } = usePreferences();
   const systemScheme = useColorScheme();
+  // Hydration-mismatch fix (QA-reported "Minified React error #418"):
+  // Expo's static web export (app.json's web.output: "static") pre-renders
+  // this app's HTML in Node, where useColorScheme() has no real OS
+  // preference to read and falls back to a default; the real browser's very
+  // first client render, by contrast, can read the actual OS preference
+  // synchronously (no effect needed for react-native-web's implementation)
+  // — so a user whose OS is set to dark mode got a light-themed static
+  // markup reconciled against a dark-themed real DOM on the very first
+  // paint, a genuine server/client mismatch. `preferences` itself already
+  // avoids this (see usePreferences below: it always initializes to
+  // DEFAULT_PREFERENCES and only applies the real stored value from a
+  // post-mount effect) — `systemScheme` needs the identical treatment,
+  // deferred here rather than in usePreferences since 'system' theme mode
+  // is the only thing that ever reads it.
+  const [systemSchemeSettled, setSystemSchemeSettled] = useState(false);
+  useEffect(() => {
+    setSystemSchemeSettled(true);
+  }, []);
   const effective: 'light' | 'dark' =
     preferences.themeMode === 'system'
-      ? systemScheme === 'dark'
+      ? systemSchemeSettled && systemScheme === 'dark'
         ? 'dark'
         : 'light'
       : preferences.themeMode;
