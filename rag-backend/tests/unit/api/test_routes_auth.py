@@ -40,7 +40,7 @@ from app.core.time_utils import utcnow
 from app.db.base import Base
 from app.db.models_auth import OAuthTransaction, User
 from app.db.session import get_db
-from app.deps import get_email_provider
+from app.deps import get_email_provider, get_session_factory_dep
 
 _TEST_JWT_SECRET = "test-only-secret-not-a-real-credential-32chars"
 
@@ -109,6 +109,11 @@ def _make_client(db_engine: object, settings: Settings) -> TestClient:
     email_provider = _CapturingEmailProvider()
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_db] = override_get_db
+    # The verification-email background task (see routes_auth.py's
+    # _send_verification_email_task) opens its own session via this
+    # dependency rather than get_db — must point at the same test engine,
+    # or it would silently reach for the real, global DATABASE_URL.
+    app.dependency_overrides[get_session_factory_dep] = lambda: factory
     app.dependency_overrides[get_email_provider] = lambda: email_provider
     client = TestClient(app)
     client.sent_emails = email_provider.sent  # type: ignore[attr-defined]

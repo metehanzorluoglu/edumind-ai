@@ -4,11 +4,12 @@ import json
 import logging
 import secrets
 import uuid
+from collections.abc import Callable
 from datetime import timedelta
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -42,7 +43,7 @@ from app.core.verification_service import (
     seconds_since_last_token_issued,
 )
 from app.db.models_auth import OAuthAccount, OAuthTransaction, User
-from app.deps import DBSessionDep, EmailProviderDep, SettingsDep
+from app.deps import DBSessionDep, EmailProviderDep, SessionFactoryDep, SettingsDep
 from app.schemas.auth import (
     DevLoginRequest,
     GenericMessageResponse,
@@ -112,36 +113,55 @@ _GENERIC_RESEND_RESPONSE = (
 )
 
 
-def _send_verification_email(
-    db: Session, settings: Settings, email_provider: EmailProvider, user: User
+def _send_verification_email_task(
+    settings: Settings,
+    email_provider: EmailProvider,
+    user_id: uuid.UUID,
+    user_email: str,
+    session_factory: Callable[[], Session],
 ) -> None:
     """Issues a fresh token and emails it — shared by post_register and
-    post_resend_verification. A delivery failure is logged and swallowed,
-    never raised into the route: the account still exists and remains
-    resendable (see POST /auth/resend-verification), which is the
-    "no partially-created unusable accounts without a recoverable resend
-    flow" requirement — a transient SMTP outage must never look like a
-    500 to someone who just registered.
+    post_resend_verification, run via FastAPI BackgroundTasks (see both
+    call sites) rather than inline in the request, so a slow or hung SMTP
+    connection never delays the HTTP response the caller is waiting on
+    (QA finding: registration could take as long as the SMTP send itself,
+    up to SmtpEmailProvider's 10s connection timeout, for a step the
+    caller has no reason to wait on synchronously). Opens its own
+    database session rather than reusing the request's — a background
+    task can run after the request's own `Depends(get_db)` session has
+    already been closed (a documented FastAPI gotcha), same reasoning as
+    app/core/generation_manager.py's detached workers.
+
+    A delivery failure is logged and swallowed, never raised: the account
+    still exists and remains resendable (see POST /auth/resend-
+    verification), which is the "no partially-created unusable accounts
+    without a recoverable resend flow" requirement — a transient SMTP
+    outage must never look like a failure to someone who just registered,
+    doubly so now that it can't even reach them as an HTTP error at all.
     """
-    issued = issue_verification_token(
-        db, user_id=user.id, ttl_minutes=settings.email_verification_token_ttl_minutes
-    )
-    verification_url = (
-        f"{settings.backend_public_url.rstrip('/')}/auth/verify-email?token={issued.raw_token}"
-    )
-    content = build_verification_email(
-        verification_url=verification_url,
-        ttl_minutes=settings.email_verification_token_ttl_minutes,
-    )
+    db = session_factory()
     try:
-        email_provider.send(
-            to=user.email,
-            subject=content.subject,
-            html_body=content.html_body,
-            text_body=content.text_body,
+        issued = issue_verification_token(
+            db, user_id=user_id, ttl_minutes=settings.email_verification_token_ttl_minutes
         )
-    except EmailDeliveryError as exc:
-        logger.error("Verification email to user_id=%s could not be sent: %s", user.id, exc)
+        verification_url = (
+            f"{settings.backend_public_url.rstrip('/')}/auth/verify-email?token={issued.raw_token}"
+        )
+        content = build_verification_email(
+            verification_url=verification_url,
+            ttl_minutes=settings.email_verification_token_ttl_minutes,
+        )
+        try:
+            email_provider.send(
+                to=user_email,
+                subject=content.subject,
+                html_body=content.html_body,
+                text_body=content.text_body,
+            )
+        except EmailDeliveryError as exc:
+            logger.error("Verification email to user_id=%s could not be sent: %s", user_id, exc)
+    finally:
+        db.close()
 
 
 def _linked_provider(db: Session, user_id: uuid.UUID) -> str | None:
@@ -248,6 +268,8 @@ def post_register(
     settings: SettingsDep,
     db: DBSessionDep,
     email_provider: EmailProviderDep,
+    background_tasks: BackgroundTasks,
+    session_factory: SessionFactoryDep,
 ) -> RegisterResponse:
     """Creates a local (email/password) account. When
     `settings.auth_email_verification_required` is True (the default —
@@ -289,7 +311,14 @@ def post_register(
         ) from exc
 
     if settings.auth_email_verification_required and not user.email_verified:
-        _send_verification_email(db, settings, email_provider, user)
+        background_tasks.add_task(
+            _send_verification_email_task,
+            settings,
+            email_provider,
+            user.id,
+            user.email,
+            session_factory,
+        )
         return RegisterResponse(
             email_verification_required=True,
             message=(
@@ -430,6 +459,8 @@ def post_resend_verification(
     settings: SettingsDep,
     db: DBSessionDep,
     email_provider: EmailProviderDep,
+    background_tasks: BackgroundTasks,
+    session_factory: SessionFactoryDep,
 ) -> GenericMessageResponse:
     """Always returns the exact same response regardless of whether the
     address is registered, already verified, or OAuth-only — see
@@ -453,7 +484,14 @@ def post_resend_verification(
     if user is not None and user.password_hash is not None and not user.email_verified:
         elapsed = seconds_since_last_token_issued(db, user_id=user.id)
         if elapsed is None or elapsed >= settings.email_verification_resend_cooldown_seconds:
-            _send_verification_email(db, settings, email_provider, user)
+            background_tasks.add_task(
+                _send_verification_email_task,
+                settings,
+                email_provider,
+                user.id,
+                user.email,
+                session_factory,
+            )
 
     return GenericMessageResponse(detail=_GENERIC_RESEND_RESPONSE)
 
