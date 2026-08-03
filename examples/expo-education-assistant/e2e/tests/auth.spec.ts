@@ -53,6 +53,10 @@ test.describe('authentication', () => {
     async ({ page }) => {
       let interceptedLoginRequests = 0;
       await page.route('**/auth/login', async (route) => {
+        // Cross-origin (app.edum8.us -> api.edum8.us) POSTs trigger a CORS
+        // preflight OPTIONS request first — only the real POST is a login
+        // *attempt*; counting OPTIONS too would false-positive this test.
+        if (route.request().method() !== 'POST') return route.continue();
         interceptedLoginRequests++;
         await new Promise((r) => setTimeout(r, 500)); // hold the request open so a second click could race it
         await route.fulfill({
@@ -64,8 +68,17 @@ test.describe('authentication', () => {
       await page.goto('/login', { waitUntil: 'load' });
       await page.locator('[aria-label="Email"]').fill(TEST_EMAIL());
       await page.locator('[aria-label="Password"]').fill('mocked-does-not-matter-123');
-      const button = page.locator('[aria-label="Sign in"]');
-      await Promise.all([button.click(), button.click({ force: true }).catch(() => {})]);
+      // A genuine rapid double-click means two onPress invocations within
+      // the same synchronous tick, before React has re-rendered the
+      // now-disabled button — Playwright's own page.click() serializes
+      // repeated calls on the same page (each is its own hover/down/up
+      // round-trip), which doesn't reproduce that; two native DOM clicks
+      // dispatched back to back inside one page.evaluate() call does.
+      await page.evaluate(() => {
+        const el = document.querySelector('[aria-label="Sign in"]') as HTMLElement;
+        el.click();
+        el.click();
+      });
       await page.waitForTimeout(1000);
       expect(interceptedLoginRequests).toBe(1);
     }
