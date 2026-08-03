@@ -108,6 +108,18 @@ export function ConversationTurnCard({
   // never on screen at the same time. A retry that lands within the window
   // simply flips `visible` back on and the box fades straight back in.
   const thinkingActive = assistant?.thinking != null && answer.length === 0;
+  // A message loaded from GET /conversations/{id} whose backend worker is
+  // still running (QA finding BUG-1's recovery redesign — see
+  // rag-backend's app/core/generation_manager.py): distinct from
+  // `thinkingActive` above, which only ever describes a *local*,
+  // just-sent turn (`thinking` is always null for a loaded message — see
+  // useConversationMessages' toDisplayMessages). Shown as a full
+  // thinking-placeholder only while there's no partial content yet;
+  // once a periodic flush has landed some text, a smaller inline note
+  // sits below the real (partial) answer instead, so the two never
+  // visually compete for the same space the way the placeholder and a
+  // completed answer are kept from doing.
+  const isResumingGeneration = assistant?.persistedStatus === 'generating';
   const [thinkingLinger, setThinkingLinger] = useState(false);
   useEffect(() => {
     if (thinkingActive) {
@@ -170,10 +182,10 @@ export function ConversationTurnCard({
           </>
         ) : (
           <>
-            {(thinkingActive || thinkingLinger) && (
+            {(thinkingActive || thinkingLinger || (isResumingGeneration && answer.length === 0)) && (
               <ThinkingPlaceholder
                 context={assistant?.thinkingContext ?? null}
-                visible={thinkingActive}
+                visible={thinkingActive || (isResumingGeneration && answer.length === 0)}
               />
             )}
 
@@ -183,6 +195,28 @@ export function ConversationTurnCard({
                 citations={citations}
                 onCitationPress={onCitationPress}
               />
+            )}
+
+            {isResumingGeneration && answer.length > 0 && (
+              <Text style={styles.note}>Still generating…</Text>
+            )}
+
+            {assistant?.persistedStatus === 'cancelled' && (
+              <Text style={styles.note}>Generation was cancelled.</Text>
+            )}
+
+            {assistant?.persistedStatus === 'interrupted' && (
+              <Text style={styles.note}>
+                Generation was interrupted by a server restart before it finished. Press Retry to
+                try again.
+              </Text>
+            )}
+
+            {assistant?.persistedStatus === 'error' && assistant.persistedErrorMessage && (
+              <View style={styles.errorBox}>
+                <Text style={styles.errorTitle}>Error</Text>
+                <Text style={styles.errorText}>{assistant.persistedErrorMessage}</Text>
+              </View>
             )}
 
             {assistant?.insufficientEvidence && (

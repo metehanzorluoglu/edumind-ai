@@ -101,6 +101,30 @@ class Message(Base):
     # *when it was generated*, even if the conversation's scope toggles or
     # a project's approved summaries have changed since.
     transparency: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    # Stream-disconnect-recovery (QA finding BUG-1, see migration 0017):
+    # 'generating' | 'complete' | 'error' | 'cancelled' | 'interrupted'.
+    # A user message is always 'complete' the moment it's inserted (nothing
+    # generates it); only assistant messages meaningfully pass through
+    # 'generating'. Every row persisted before this column existed is
+    # 'complete' by construction of the old synchronous design.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="complete")
+    # Set only for status='error' — an LLM/provider failure message, never
+    # anything privacy-sensitive (never a raw exception/stack trace).
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Self-referential: on an assistant message, the user message that
+    # triggered it — how a retry/reconnect finds "does a reply already
+    # exist for this question" (see app/core/generation_manager.py) without
+    # a second lookup table. Always NULL on a user message.
+    parent_message_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("messages.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    # When the background worker began (or most recently resumed) this
+    # attempt — used only to detect a 'generating' row that has been stuck
+    # implausibly long (e.g. an unclean process restart that never reached
+    # the startup interrupted-sweep).
+    generation_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

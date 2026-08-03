@@ -1,3 +1,7 @@
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -14,7 +18,32 @@ from app.api.routes_projects import router as projects_router
 from app.api.routes_search import router as search_router
 from app.api.routes_status import router as status_router
 from app.config import get_settings, refuse_dev_email_backend_in_production
+from app.db.conversations_repository import sweep_stale_generating_messages
+from app.db.session import get_session_factory
 from app.logging_config import configure_logging
+
+logger = logging.getLogger("app.startup")
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Startup-only: a message can only genuinely be 'generating' while
+    the process that started its background worker (see
+    app/core/generation_manager.py) is still alive — that in-memory
+    registry never survives a restart. Any row still 'generating' when a
+    *new* process starts is therefore orphaned by a prior unclean
+    shutdown, not a live generation; sweeping it to 'interrupted' here
+    (once, before the app accepts any request) is what keeps a stale row
+    from showing an unresolvable spinner forever after a deploy/crash/
+    OOM-kill."""
+    session = get_session_factory()()
+    try:
+        swept = sweep_stale_generating_messages(session)
+        if swept:
+            logger.info("Swept %d stale 'generating' message(s) to 'interrupted' on startup", swept)
+    finally:
+        session.close()
+    yield
 
 
 def create_app() -> FastAPI:
@@ -25,6 +54,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Education Research RAG Assistant",
         version=__version__,
+        lifespan=_lifespan,
     )
 
     app.add_middleware(

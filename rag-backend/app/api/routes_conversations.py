@@ -1,7 +1,7 @@
 import json
 import time
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -10,10 +10,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
+from sqlalchemy.orm import Session
 from starlette.datastructures import UploadFile
 
 from app.config import Settings
 from app.core.answer_transparency import build_transparency_snapshot, transparency_to_dict
+from app.core.citation import Citation
 from app.core.citation_validation import validate_citations
 from app.core.conversation_title import generate_title, sanitize_title
 from app.core.document_scoping import (
@@ -21,12 +23,14 @@ from app.core.document_scoping import (
     remove_document_from_conversation,
 )
 from app.core.errors import AttachmentValidationError, LLMProviderError, VisionServiceError
+from app.core import generation_manager
+from app.core.intent_detection import is_instructional_design_request
 from app.core.model_routing import ModelRoute, choose_model
 from app.core.project_context import format_project_context
 from app.core.prompt_builder import NO_EVIDENCE_ANSWER
 from app.core.rag_service import CorpusEvidence, RagService, RetrieverLike, retrieve_and_cite
 from app.core.rate_limiter import RateLimiter
-from app.core.request_timing import RequestTimer
+from app.core.request_timing import RequestTimer, bind_timer, unbind_timer
 from app.core.retrieval_schemas import RetrievalFilters, RetrievedChunk
 from app.core.security import CurrentUserDep, get_current_user
 from app.core.vision_prompt_builder import build_vision_prompt
@@ -41,6 +45,7 @@ from app.db.conversations_repository import (
     NewAttachment,
 )
 from app.db.models_auth import User
+from app.db.models_conversations import Message
 from app.db.project_knowledge_repository import ProjectKnowledgeRecord, ProjectKnowledgeRepository
 from app.db.project_profile_repository import ProjectProfileRecord, ProjectProfileRepository
 from app.db.projects_repository import ProjectsRepository
@@ -57,6 +62,7 @@ from app.deps import (
     RequestTimerDep,
     RetrieverDep,
     ScopesRepositoryDep,
+    SessionFactoryDep,
     SettingsDep,
     VectorStoreDep,
     VisionServiceDep,
@@ -177,6 +183,8 @@ def _message_response(message: MessageRecord) -> MessageResponse:
             for a in message.attachments
         ],
         transparency=_transparency_response(message.transparency),
+        status=message.status,  # type: ignore[arg-type]
+        error_message=message.error_message,
     )
 
 
@@ -613,6 +621,100 @@ def _store_new_attachments(
         raise
 
 
+def _message_source_to_chunk(source: object) -> RetrievedChunk:
+    """MessageSourceRecord -> RetrievedChunk — the two shapes are
+    deliberately field-for-field mirrors (see MessageSource's own
+    docstring in app/db/models_conversations.py); used only when replaying
+    a previously-persisted answer's sources back out as a ChatSourcesEvent
+    (see _replay_finished_reply below), which only ever has the DB record
+    shape on hand, never the original RetrievedChunk."""
+    return RetrievedChunk(
+        score=source.score,
+        text=source.snippet_text,
+        document_id=source.document_id or "",
+        chunk_id=source.chunk_id,
+        document_type=source.document_type,  # type: ignore[arg-type]
+        journal_quartile=source.journal_quartile,  # type: ignore[arg-type]
+        title=source.title,
+        authors=source.authors,
+        publication_year=source.publication_year,
+        source_venue=source.source_venue,
+        doi=source.doi,
+        source_url=source.source_url,
+        source_filename=source.source_filename,
+        chunk_index=source.chunk_index,
+        page_number=source.page_number,
+        scope=source.scope,  # type: ignore[arg-type]
+    )
+
+
+def _final_reply_events(
+    repository: ConversationsRepository, assistant_message_id: uuid.UUID, timer: RequestTimer
+) -> Iterator[str]:
+    """Reads the authoritative, already-persisted final row for
+    `assistant_message_id` and yields the sources/done (or error) SSE
+    event(s) for it — the common tail shared by a live generation that
+    just finished, a reconnect that caught up to one already finished, and
+    a full replay of one that finished before this request even began
+    (see _replay_finished_reply)."""
+    final = repository.get_message(assistant_message_id)
+    if final is None:
+        yield _sse(ChatErrorEvent(message="This message could not be found."))
+        return
+    if final.status == "error":
+        yield _sse(ChatErrorEvent(message=final.error_message or "Generation failed."))
+        return
+    if final.status == "cancelled":
+        yield _sse(ChatErrorEvent(message="Message generation was cancelled."))
+        return
+    if final.status == "interrupted":
+        yield _sse(
+            ChatErrorEvent(
+                message=(
+                    "Generation was interrupted by a server restart before it finished. "
+                    "Press Retry to try again."
+                )
+            )
+        )
+        return
+    sources = [_message_source_to_chunk(s) for s in final.sources]
+    yield _sse(ChatSourcesEvent(sources=sources))
+    yield _sse(
+        ChatDoneEvent(
+            citations=[Citation.model_validate(c) for c in final.citations],
+            citation_warnings=final.citation_warnings,
+            insufficient_evidence=final.insufficient_evidence,
+            transparency=(
+                TransparencyResponse.model_validate(final.transparency)
+                if final.transparency
+                else None
+            ),
+            debug_timings=timer.as_dict() or None,
+        )
+    )
+
+
+def _replay_finished_reply(
+    repository: ConversationsRepository, assistant_message_id: uuid.UUID, timer: RequestTimer
+) -> StreamingResponse:
+    """A retry (or any resend of the same client_message_id) that finds an
+    already-'complete' assistant reply for its user message — this is what
+    keeps Retry from ever generating (or persisting) a duplicate answer
+    once BUG-1's recovery has done its job. Replays the full stored answer
+    as one token chunk (it already exists in full; there is nothing to
+    stream token-by-token) followed by the normal sources/done events, so
+    the frontend's existing event handling needs no special case at all."""
+
+    def event_stream() -> Iterator[str]:
+        yield _sse(ChatProgressEvent(stage="connected"))
+        final = repository.get_message(assistant_message_id)
+        if final is not None and final.content:
+            yield _sse(ChatTokenEvent(content=final.content))
+        yield from _final_reply_events(repository, assistant_message_id, timer)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
 def _stream_text_reply(
     conversation_id: uuid.UUID,
     parsed: ParsedMessageRequest,
@@ -625,70 +727,72 @@ def _stream_text_reply(
     approved_items: list[ProjectKnowledgeRecord],
     profiles: list[ProjectProfileRecord],
     timer: RequestTimer,
+    *,
+    settings: Settings,
+    assistant_message: Message,
+    attach_only: bool,
+    attachment_storage: AttachmentStorage,
+    session_factory: Callable[[], Session],
 ) -> StreamingResponse:
-    """Request cancellation (milestone V4): if the client disconnects
-    mid-stream, Starlette's StreamingResponse stops iterating
-    event_stream() below and the generator is torn down, throwing
-    GeneratorExit in at its current `yield` — a BaseException, not an
-    Exception, so it is never caught by the `except LLMProviderError`
-    around the token loop and always propagates straight out, skipping
-    the `repository.add_assistant_message(...)` call entirely. A
-    cancelled generation is therefore never persisted as if it had
-    finished — see
-    tests/unit/api/test_routes_conversations_cancellation.py, which
-    drives this exact mechanism directly rather than only asserting it in
-    a comment.
+    """Streams (or attaches to) one assistant reply. The actual LLM call
+    now runs on a detached background thread (see
+    app/core/generation_manager.py) rather than inline in this generator —
+    the fix for QA finding BUG-1 (a dropped browser connection, e.g.
+    `net::ERR_QUIC_PROTOCOL_ERROR` on a long-lived stream through
+    Cloudflare, must never discard an answer the backend actually finished
+    computing). This function's own generator is now just a *view* onto
+    that worker's state: it survives being torn down by a disconnect
+    exactly as harmlessly as closing a browser tab on a YouTube video
+    doesn't stop the video encoding server-side — because nothing about
+    the worker depends on this generator still running.
 
-    `timer` (see app/core/request_timing.py) is passed explicitly, not
-    read ambiently, because event_stream() below runs as a StreamingResponse
-    body — after FastAPI's dependency AsyncExitStack (and the ambient
-    "current timer" it binds) has already closed. rag_service.prepare()
-    just above still runs inside that window, so its own internal stages
-    (embedding/retrieval/reranking/prompt_construction — see
-    app/core/retriever.py and app/core/rag_service.py) already reached the
-    same `timer` instance via the ambient accessor by the time this
-    function receives it as a parameter; `timer` here is only needed for
-    what happens *after* that window closes."""
-    prepared = rag_service.prepare(
-        parsed.query,
-        user_id=str(user.id),
-        top_k=parsed.top_k,
-        filters=parsed.filters,
-        conversation_id=str(conversation_id),
-        project_ids=tuple(str(p) for p in project_ids),
-        project_context=project_context,
-        include_chat=scope_settings.chat_enabled,
-        include_project=scope_settings.project_enabled,
-        include_general=scope_settings.general_enabled,
-    )
+    `attach_only=True` means a live worker for `assistant_message` already
+    exists (a retry/reconnect found it 'generating') — this call polls it
+    without spawning a second one, which is what keeps a fast double-retry
+    from starting a duplicate generation for the same question.
 
-    def _transparency_dict(sources: list[RetrievedChunk]) -> dict[str, object]:
-        return transparency_to_dict(
-            build_transparency_snapshot(
-                chat_enabled=scope_settings.chat_enabled,
-                project_enabled=scope_settings.project_enabled,
-                general_enabled=scope_settings.general_enabled,
-                include_other_project_summaries=scope_settings.include_other_project_summaries,
-                sources=sources,
-                approved_items=approved_items,
-                profiles=profiles,
-            )
-        )
+    `timer` is passed explicitly (not read ambiently) because this
+    generator — and, further, the background worker it may spawn — both
+    run after FastAPI's dependency AsyncExitStack (and the ambient
+    "current timer" it binds) has already closed; retrieval/prompt
+    construction below rebind it explicitly (see bind_timer/unbind_timer)
+    for exactly the duration those specific calls need it."""
 
     def event_stream() -> Iterator[str]:
-        # Progress events (milestone: fix the indefinite "Connecting…" UI
-        # on a CPU-only Ollama host — a cold model load alone was measured
-        # at ~44s, and prompt evaluation past 2,560 tokens at 155s+, with
-        # nothing sent to the client in the meantime before this existed).
-        # All progress events are sent before the first ChatTokenEvent,
-        # never after — see ChatProgressEvent's docstring. A client that
-        # doesn't recognize `type: "progress"` skips it (parseChatEvent's
-        # existing forward-compatible unknown-type handling) and simply
-        # keeps whatever "connecting" state it already shows, so this is
-        # purely additive: no existing token/sources/done consumer changes
-        # behavior from these being present.
+        # Sent before any blocking work at all (milestone: fix both the
+        # indefinite "Connecting…" UI *and* the ~8s of retrieval/prompt-
+        # build latency this event used to be stuck behind — a live
+        # measurement on the Oracle CPU host found "time to first SSE
+        # byte" was actually 100% retrieval+prompt-construction time, none
+        # of it model load — see the performance investigation). A client
+        # that doesn't recognize `type: "progress"` skips it (see
+        # ChatProgressEvent's docstring).
         yield _sse(ChatProgressEvent(stage="connected"))
+
+        if attach_only:
+            yield _sse(ChatProgressEvent(stage="generating"))
+            for delta in generation_manager.poll_until_done(assistant_message.id):
+                yield _sse(ChatTokenEvent(content=delta))
+            yield from _final_reply_events(repository, assistant_message.id, timer)
+            return
+
         yield _sse(ChatProgressEvent(stage="retrieving"))
+        token = bind_timer(timer)
+        try:
+            prepared = rag_service.prepare(
+                parsed.query,
+                user_id=str(user.id),
+                top_k=parsed.top_k,
+                filters=parsed.filters,
+                conversation_id=str(conversation_id),
+                project_ids=tuple(str(p) for p in project_ids),
+                project_context=project_context,
+                include_chat=scope_settings.chat_enabled,
+                include_project=scope_settings.project_enabled,
+                include_general=scope_settings.general_enabled,
+            )
+        finally:
+            unbind_timer(token)
         yield _sse(ChatProgressEvent(stage="processing_context"))
 
         if timer.enabled:
@@ -696,101 +800,63 @@ def _stream_text_reply(
             timer.record_metric(
                 "context_characters", sum(len(c.text) for c in prepared.retrieved_sources)
             )
-            # chars/4 is a rough, well-known heuristic (not a real
-            # tokenizer call) — see actual_prompt_tokens in
-            # app/core/llm_provider.py's _record_ollama_metrics for
-            # Ollama's own, authoritative prompt_eval_count once the LLM
-            # call finishes; this estimate exists specifically to be
-            # available *before* that, when only prompt length is known.
             estimated_prompt_chars = len(prepared.system_prompt) + len(prepared.user_prompt)
             timer.record_metric("estimated_prompt_tokens", round(estimated_prompt_chars / 4))
 
-        if prepared.insufficient_evidence:
-            transparency = _transparency_dict(prepared.retrieved_sources)
-            yield _sse(ChatTokenEvent(content=NO_EVIDENCE_ANSWER))
-            yield _sse(ChatSourcesEvent(sources=prepared.retrieved_sources))
-            timer.log_summary(note="insufficient_evidence")
-            yield _sse(
-                ChatDoneEvent(
-                    citations=prepared.citations,
-                    insufficient_evidence=True,
-                    transparency=TransparencyResponse.model_validate(transparency),
-                    debug_timings=timer.as_dict() or None,
-                )
-            )
-            repository.add_assistant_message(
-                conversation_id,
-                content=NO_EVIDENCE_ANSWER,
-                citations=[],
-                citation_warnings=[],
-                insufficient_evidence=True,
-                sources=[],
-                transparency=transparency,
-            )
-            return
-
-        # Sent immediately, before the blocking Ollama call below — this is
-        # the pair of events that actually covers the long CPU-host wait
-        # (cold model load + prompt evaluation). Both fire back to back
-        # since the backend has no way to distinguish "still loading" from
-        # "now evaluating the prompt" from outside Ollama's own process;
-        # together they replace "Connecting…" with a status that stays
-        # visible for the whole wait instead of going stale.
-        yield _sse(ChatProgressEvent(stage="loading_model"))
-        yield _sse(ChatProgressEvent(stage="generating"))
-
-        answer_parts: list[str] = []
-        # _timed_token_stream adds per-token bookkeeping (see its
-        # docstring) — only worth paying for, and only constructed, when
-        # profiling is actually on; the disabled path iterates
-        # rag_service.stream_answer(prepared) exactly as before this
-        # instrumentation existed.
-        token_stream = (
-            _timed_token_stream(rag_service.stream_answer(prepared, timer=timer), timer)
-            if timer.enabled
-            else rag_service.stream_answer(prepared, timer=timer)
-        )
-        try:
-            for token in token_stream:
-                answer_parts.append(token)
-                yield _sse(ChatTokenEvent(content=token))
-        except LLMProviderError as exc:
-            timer.log_summary(note="llm_error")
-            yield _sse(ChatErrorEvent(message=str(exc)))
-            return
-
-        answer = "".join(answer_parts)
-        validation = validate_citations(answer, prepared.citations)
-        transparency = _transparency_dict(prepared.retrieved_sources)
-        yield _sse(ChatSourcesEvent(sources=prepared.retrieved_sources))
-        timer.log_summary()
-        yield _sse(
-            ChatDoneEvent(
-                citations=prepared.citations,
-                citation_warnings=validation.warnings,
-                transparency=TransparencyResponse.model_validate(transparency),
-                debug_timings=timer.as_dict() or None,
+        transparency = transparency_to_dict(
+            build_transparency_snapshot(
+                chat_enabled=scope_settings.chat_enabled,
+                project_enabled=scope_settings.project_enabled,
+                general_enabled=scope_settings.general_enabled,
+                include_other_project_summaries=scope_settings.include_other_project_summaries,
+                sources=prepared.retrieved_sources,
+                approved_items=approved_items,
+                profiles=profiles,
             )
         )
-        repository.add_assistant_message(
-            conversation_id,
-            content=answer,
+
+        # No model is ever called on the insufficient-evidence path (see
+        # generation_manager.run_text_generation's own early branch) — so,
+        # same as before this redesign, 'loading_model'/'generating' must
+        # never be claimed for it.
+        if not prepared.insufficient_evidence:
+            yield _sse(ChatProgressEvent(stage="loading_model"))
+            yield _sse(ChatProgressEvent(stage="generating"))
+
+        # Response-mode-specific token limit (see Settings.
+        # ollama_num_predict_lesson_mode's own docstring for why): applied
+        # only when this specific query is asking for instructional design,
+        # never as a blanket increase for every chat turn.
+        num_predict_override = (
+            {"num_predict": settings.ollama_num_predict_lesson_mode}
+            if is_instructional_design_request(parsed.query)
+            else None
+        )
+
+        def _stream_answer() -> Iterator[str]:
+            tokens = rag_service.stream_answer(
+                prepared, timer=timer, options_override=num_predict_override
+            )
+            return _timed_token_stream(tokens, timer) if timer.enabled else tokens
+
+        generation_manager.start_text_generation(
+            assistant_message_id=assistant_message.id,
+            stream_answer=_stream_answer,
+            insufficient_evidence=prepared.insufficient_evidence,
+            no_evidence_answer=NO_EVIDENCE_ANSWER,
+            retrieved_sources=prepared.retrieved_sources,
             citations=prepared.citations,
-            citation_warnings=validation.warnings,
-            insufficient_evidence=False,
-            sources=prepared.retrieved_sources,
             transparency=transparency,
+            attachment_storage=attachment_storage,
+            timer=timer,
+            session_factory=session_factory,
         )
 
-    # Server-Timing (https://www.w3.org/TR/server-timing/) can only carry
-    # stages recorded *before* headers are sent — auth through
-    # prompt_construction, everything rag_service.prepare() above already
-    # did. LLM generation/streaming/total complete only once event_stream()
-    # is exhausted, long after headers went out; those reach the caller via
-    # the trailing ChatDoneEvent.debug_timings field instead (JSON, see
-    # above) and via backend logs (RequestTimer.log_summary()).
-    headers = {"Server-Timing": timer.server_timing_header()} if timer.enabled else None
-    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
+        for delta in generation_manager.poll_until_done(assistant_message.id):
+            yield _sse(ChatTokenEvent(content=delta))
+        yield from _final_reply_events(repository, assistant_message.id, timer)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 def _stream_vision_reply(
@@ -809,33 +875,26 @@ def _stream_vision_reply(
     approved_items: list[ProjectKnowledgeRecord],
     profiles: list[ProjectProfileRecord],
     timer: RequestTimer,
+    *,
+    assistant_message: Message,
+    attach_only: bool,
+    attachment_storage: AttachmentStorage,
+    session_factory: Callable[[], Session],
 ) -> StreamingResponse:
-    """The vision-routed counterpart to _stream_text_reply (milestone V3)
-    — never short-circuits on "insufficient evidence" the way the text
-    path does: the attached image(s)/page(s) are themselves evidence the
-    model can reason about even when `route.use_retrieval` is False, or
-    True but retrieval happened to find nothing in the corpus for this
+    """The vision-routed counterpart to _stream_text_reply — see that
+    function's docstring for the shared recovery design (QA finding
+    BUG-1). Never short-circuits on "insufficient evidence" the way the
+    text path does: the attached image(s)/page(s) are themselves evidence
+    the model can reason about even when `route.use_retrieval` is False,
+    or True but retrieval happened to find nothing in the corpus for this
     query, so this always actually calls the vision model.
 
-    `event_stream` below is an *async* generator (unlike
-    _stream_text_reply's sync one) because VisionService.stream_chat is
-    async — see that module's docstring for why: real cancellation
-    propagation and a genuinely separate generation-stall timeout both
-    require it. Starlette's StreamingResponse natively accepts an async
-    generator as `content` (no `iterate_in_threadpool` wrapping — see
-    Starlette's own StreamingResponse.__init__), so a client disconnect
-    here correctly delivers asyncio.CancelledError at whatever `await`
-    this generator is currently suspended on, including mid-wait for the
-    vision model's first token — the exact case the old sync
-    thread-pooled generator could not be cancelled during (see this
-    task's investigation). A cancelled generation is never persisted as
-    if it had finished, same guarantee _stream_text_reply documents for
-    its own (differently-implemented) cancellation path.
-
-    `timer` (see app/core/request_timing.py) is passed explicitly for the
-    same reason _stream_text_reply's is: event_stream() below runs after
-    FastAPI's dependency AsyncExitStack (and the ambient "current timer"
-    it binds) has already closed."""
+    The background worker (see generation_manager.run_vision_generation)
+    drives VisionService.stream_chat's async generator on its own private
+    event loop — this function's own event_stream() stays a plain sync
+    generator (like the text path's), unlike the pre-recovery-redesign
+    version of this function, since polling a GenerationState needs
+    nothing async at all."""
     if route.use_retrieval:
         evidence = retrieve_and_cite(
             retriever,
@@ -873,13 +932,16 @@ def _stream_vision_reply(
             ),
         )
 
-    async def event_stream() -> AsyncIterator[str]:
-        # Same purpose as _stream_text_reply's progress events (see
-        # ChatProgressEvent's docstring) — a vision request's "loading_model"
-        # + "generating" wait was measured at 114-232+ seconds even fully
-        # warm during this task's investigation, with nothing sent to the
-        # client in the meantime before this existed.
+    def event_stream() -> Iterator[str]:
         yield _sse(ChatProgressEvent(stage="connected"))
+
+        if attach_only:
+            yield _sse(ChatProgressEvent(stage="generating"))
+            for delta in generation_manager.poll_until_done(assistant_message.id):
+                yield _sse(ChatTokenEvent(content=delta))
+            yield from _final_reply_events(repository, assistant_message.id, timer)
+            return
+
         if route.use_retrieval:
             yield _sse(ChatProgressEvent(stage="retrieving"))
         yield _sse(ChatProgressEvent(stage="processing_context"))
@@ -887,27 +949,6 @@ def _stream_vision_reply(
         if timer.enabled:
             timer.record_metric("estimated_prompt_tokens", round(prompt_chars / 4))
 
-        yield _sse(ChatProgressEvent(stage="loading_model"))
-        yield _sse(ChatProgressEvent(stage="generating"))
-
-        answer_parts: list[str] = []
-        raw_stream = vision_service.stream_chat(
-            system_prompt=system_prompt, prompt=user_prompt, images=images, timer=timer
-        )
-        token_stream = (
-            _timed_async_token_stream(raw_stream, timer) if timer.enabled else raw_stream
-        )
-        try:
-            async for token in token_stream:
-                answer_parts.append(token)
-                yield _sse(ChatTokenEvent(content=token))
-        except VisionServiceError as exc:
-            timer.log_summary(note=f"vision_error:{exc.category}")
-            yield _sse(ChatErrorEvent(message=str(exc), error_category=str(exc.category)))
-            return
-
-        answer = "".join(answer_parts)
-        validation = validate_citations(answer, evidence.citations)
         transparency = transparency_to_dict(
             build_transparency_snapshot(
                 chat_enabled=scope_settings.chat_enabled,
@@ -919,30 +960,54 @@ def _stream_vision_reply(
                 profiles=profiles,
             )
         )
-        yield _sse(ChatSourcesEvent(sources=evidence.sources))
-        if timer.enabled:
-            timer.record_metric("vision_total_ms", timer.total_ms())
-        timer.log_summary()
-        yield _sse(
-            ChatDoneEvent(
-                citations=evidence.citations,
-                citation_warnings=validation.warnings,
-                transparency=TransparencyResponse.model_validate(transparency),
-                debug_timings=timer.as_dict() or None,
+
+        yield _sse(ChatProgressEvent(stage="loading_model"))
+        yield _sse(ChatProgressEvent(stage="generating"))
+
+        def _stream_chat() -> AsyncIterator[str]:
+            raw = vision_service.stream_chat(
+                system_prompt=system_prompt, prompt=user_prompt, images=images, timer=timer
             )
-        )
-        repository.add_assistant_message(
-            conversation_id,
-            content=answer,
+            return _timed_async_token_stream(raw, timer) if timer.enabled else raw
+
+        generation_manager.start_vision_generation(
+            assistant_message_id=assistant_message.id,
+            stream_chat=_stream_chat,
+            retrieved_sources=evidence.sources,
             citations=evidence.citations,
-            citation_warnings=validation.warnings,
-            insufficient_evidence=False,
-            sources=evidence.sources,
             transparency=transparency,
+            attachment_storage=attachment_storage,
+            timer=timer,
+            session_factory=session_factory,
         )
 
-    headers = {"Server-Timing": timer.server_timing_header()} if timer.enabled else None
-    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
+        for delta in generation_manager.poll_until_done(assistant_message.id):
+            yield _sse(ChatTokenEvent(content=delta))
+
+        if timer.enabled:
+            timer.record_metric("vision_total_ms", timer.total_ms())
+
+        # A vision-specific error category (see GenerationState's own
+        # docstring for why this is read from the live in-memory state,
+        # not the database) is only available while this is still the
+        # same connection that was live when the worker failed — a later
+        # reconnect/replay falls through to _final_reply_events' generic
+        # (category-less) error event instead, which is the best either
+        # path can honestly offer at that point.
+        live_state = generation_manager.get(assistant_message.id)
+        if live_state is not None:
+            content, status = live_state.snapshot()
+            if status == "error":
+                yield _sse(
+                    ChatErrorEvent(
+                        message=live_state.error_message or "Generation failed.",
+                        error_category=live_state.error_category,
+                    )
+                )
+                return
+        yield from _final_reply_events(repository, assistant_message.id, timer)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 def _handle_conversation_message(
@@ -961,6 +1026,7 @@ def _handle_conversation_message(
     project_profile_repository: ProjectProfileRepository,
     conversation_scope_repository: ConversationScopeRepository,
     timer: RequestTimer,
+    session_factory: Callable[[], Session],
 ) -> StreamingResponse:
     # Checked before any DB/validation work (milestone V4 — see
     # app/core/rate_limiter.py): the cheapest possible rejection for a
@@ -1155,6 +1221,39 @@ def _handle_conversation_message(
             repository=repository,
         )
 
+    # Stream-disconnect recovery (QA finding BUG-1) + Retry idempotency:
+    # does an assistant reply already exist for *this* user message? A
+    # retry replays the same client_message_id, which resolves to the
+    # same `message` row above (see add_user_message) — so this lookup is
+    # what makes a retry either (a) a no-op replay of an already-complete
+    # answer, (b) an attach onto a still-running generation, or (c) a
+    # fresh attempt, and never a duplicate generation for the same
+    # question. See app/core/generation_manager.py for the worker side.
+    existing_reply = repository.get_assistant_reply_for_user_message(message.id)
+    attach_only = False
+    if existing_reply is not None and existing_reply.status == "complete":
+        return _replay_finished_reply(repository, existing_reply.id, timer)
+    if existing_reply is not None and existing_reply.status == "generating":
+        if generation_manager.get(existing_reply.id) is not None:
+            assistant_message = existing_reply
+            attach_only = True
+        else:
+            # No live worker for a 'generating' row in *this* process — an
+            # unlikely race (the sweep at startup normally already caught
+            # this case; see sweep_stale_generating_messages), but never
+            # silently hang: treat it as retry-eligible rather than
+            # attaching to nothing.
+            assistant_message = repository.reset_assistant_message_for_retry(existing_reply.id)
+    elif existing_reply is not None:
+        # status in error/cancelled/interrupted — re-arm the same row
+        # rather than creating a second assistant message for this
+        # question.
+        assistant_message = repository.reset_assistant_message_for_retry(existing_reply.id)
+    else:
+        assistant_message = repository.create_pending_assistant_message(
+            conversation_id, parent_message_id=message.id
+        )
+
     if route.is_vision:
         return _stream_vision_reply(
             conversation_id,
@@ -1172,6 +1271,10 @@ def _handle_conversation_message(
             approved_items,
             profiles,
             timer,
+            assistant_message=assistant_message,
+            attach_only=attach_only,
+            attachment_storage=attachment_storage,
+            session_factory=session_factory,
         )
     return _stream_text_reply(
         conversation_id,
@@ -1185,6 +1288,11 @@ def _handle_conversation_message(
         approved_items,
         profiles,
         timer,
+        settings=settings,
+        assistant_message=assistant_message,
+        attach_only=attach_only,
+        attachment_storage=attachment_storage,
+        session_factory=session_factory,
     )
 
 
@@ -1205,6 +1313,7 @@ async def post_conversation_message(
     project_profile_repository: ProjectProfileRepositoryDep,
     conversation_scope_repository: ConversationScopeRepositoryDep,
     request_timer: RequestTimerDep,
+    session_factory: SessionFactoryDep,
 ) -> StreamingResponse:
     """Accepts either `application/json` (the original, text-only shape —
     see PostConversationMessageRequest) or `multipart/form-data` (adds
@@ -1251,7 +1360,49 @@ async def post_conversation_message(
         project_profile_repository,
         conversation_scope_repository,
         request_timer,
+        session_factory,
     )
+
+
+@router.post(
+    "/{conversation_id}/messages/{message_id}/cancel", status_code=status.HTTP_202_ACCEPTED
+)
+def cancel_message_generation(
+    conversation_id: uuid.UUID,
+    message_id: uuid.UUID,
+    user: CurrentUserDep,
+    repository: ConversationsRepositoryDep,
+) -> Response:
+    """Explicit user cancellation (QA finding BUG-1's "distinguish
+    explicit cancellation from accidental disconnection" requirement) —
+    deliberately a real, separate action from a client simply
+    disappearing: this is the *only* thing that actually stops the
+    background worker (see generation_manager.request_cancel); a dropped
+    connection alone does nothing to it, by design.
+
+    Ownership is checked the same way every other message/attachment
+    route in this file does: the conversation must belong to `user`, and
+    the message must actually belong to *that* conversation — never
+    trusts `message_id` alone (a message ID for a different user's
+    conversation must 404, not be cancellable)."""
+    conversation = repository.get(user.id, conversation_id)
+    if conversation is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    message = repository.get_message(message_id)
+    if (
+        message is None
+        or message.conversation_id != conversation_id
+        or message.role != "assistant"
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Message not found")
+    if message.status != "generating":
+        # Nothing to cancel — already finished, failed, or already
+        # cancelled. Not an error: a Cancel button race (the generation
+        # finished a moment before the click landed) is a normal outcome,
+        # not a client mistake.
+        return Response(status_code=status.HTTP_202_ACCEPTED)
+    generation_manager.request_cancel(message_id)
+    return Response(status_code=status.HTTP_202_ACCEPTED)
 
 
 @router.get("/{conversation_id}/messages/{message_id}/attachments/{attachment_id}")

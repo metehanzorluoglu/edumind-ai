@@ -81,6 +81,13 @@ class MessageResponse(BaseModel):
     sources: list[MessageSourceResponse] = Field(default_factory=list)
     attachments: list[MessageAttachmentResponse] = Field(default_factory=list)
     transparency: TransparencyResponse | None = None
+    # Stream-disconnect recovery (see app/core/generation_manager.py):
+    # 'generating' while a background worker is still producing this
+    # reply, 'complete' once persisted, or 'error'/'cancelled'/
+    # 'interrupted' — always 'complete' for a user message and for every
+    # assistant message persisted before this field existed.
+    status: Literal["generating", "complete", "error", "cancelled", "interrupted"] = "complete"
+    error_message: str | None = None
 
 
 class ConversationDetailResponse(BaseModel):

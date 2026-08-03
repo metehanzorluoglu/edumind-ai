@@ -112,6 +112,7 @@ class NewAttachment:
 @dataclass
 class MessageRecord:
     id: uuid.UUID
+    conversation_id: uuid.UUID
     role: str
     content: str
     citations: list[object]
@@ -121,6 +122,8 @@ class MessageRecord:
     sources: list[MessageSourceRecord] = field(default_factory=list)
     attachments: list[MessageAttachmentRecord] = field(default_factory=list)
     transparency: dict[str, object] = field(default_factory=dict)
+    status: str = "complete"
+    error_message: str | None = None
 
 
 _PREVIEW_MAX_CHARS = 120
@@ -181,6 +184,7 @@ def _to_message_record(
 ) -> MessageRecord:
     return MessageRecord(
         id=row.id,
+        conversation_id=row.conversation_id,
         role=row.role,
         content=row.content,
         citations=list(row.citations),
@@ -193,6 +197,8 @@ def _to_message_record(
             for a in sorted(attachments, key=lambda a: a.created_at)
         ],
         transparency=dict(row.transparency),
+        status=row.status,
+        error_message=row.error_message,
     )
 
 
@@ -396,6 +402,38 @@ class ConversationsRepository:
             )
             for m in messages
         ]
+
+    def get_message(self, message_id: uuid.UUID) -> MessageRecord | None:
+        """Single-message counterpart to get_messages — used by the SSE
+        endpoint (see app/api/routes_conversations.py) to read the
+        authoritative final row for a generation, whether this request's
+        own background worker just finished or it's reading one an
+        earlier request/reconnect already completed. Deliberately takes no
+        `user_id` (unlike get_messages/get): ownership is always checked
+        by the caller via the conversation lookup that already happened
+        earlier in the same request — see _handle_conversation_message.
+
+        `populate_existing=True` is required, not cosmetic: this same
+        session's identity map may already hold *this exact row* from
+        earlier in the same request (e.g. create_pending_assistant_message
+        or reset_assistant_message_for_retry, both called before the
+        background worker — see generation_manager.py — writes the real
+        content via its own, separate session/connection). Without it,
+        SQLAlchemy's default identity-map behavior would silently hand
+        back the stale pre-generation copy (empty content, status
+        'generating') instead of re-reading what the worker actually
+        committed."""
+        message = self._db.get(Message, message_id, populate_existing=True)
+        if message is None:
+            return None
+        sources = list(
+            self._db.execute(
+                select(MessageSource).where(MessageSource.message_id == message_id)
+            )
+            .scalars()
+            .all()
+        )
+        return _to_message_record(message, sources, [])
 
     def get_attachment_content_info(
         self,
@@ -620,32 +658,11 @@ class ConversationsRepository:
         self._db.refresh(message)
         return message
 
-    def add_assistant_message(
-        self,
-        conversation_id: uuid.UUID,
-        *,
-        content: str,
-        citations: list[Citation],
-        citation_warnings: list[str],
-        insufficient_evidence: bool,
-        sources: list[RetrievedChunk],
-        transparency: dict[str, object] | None = None,
-    ) -> Message:
-        message = Message(
-            conversation_id=conversation_id,
-            role="assistant",
-            content=content,
-            citations=[c.model_dump(mode="json") for c in citations],
-            citation_warnings=citation_warnings,
-            insufficient_evidence=insufficient_evidence,
-            transparency=transparency or {},
-        )
-        self._db.add(message)
-        self._db.flush()  # assigns message.id, needed by the source rows below
+    def _write_sources(self, message_id: uuid.UUID, sources: list[RetrievedChunk]) -> None:
         for rank, chunk in enumerate(sources, start=1):
             self._db.add(
                 MessageSource(
-                    message_id=message.id,
+                    message_id=message_id,
                     rank=rank,
                     document_id=chunk.document_id,
                     chunk_id=chunk.chunk_id,
@@ -673,10 +690,139 @@ class ConversationsRepository:
                     scope=chunk.scope,
                 )
             )
+
+    def add_assistant_message(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        content: str,
+        citations: list[Citation],
+        citation_warnings: list[str],
+        insufficient_evidence: bool,
+        sources: list[RetrievedChunk],
+        transparency: dict[str, object] | None = None,
+    ) -> Message:
+        message = Message(
+            conversation_id=conversation_id,
+            role="assistant",
+            content=content,
+            citations=[c.model_dump(mode="json") for c in citations],
+            citation_warnings=citation_warnings,
+            insufficient_evidence=insufficient_evidence,
+            transparency=transparency or {},
+            status="complete",
+        )
+        self._db.add(message)
+        self._db.flush()  # assigns message.id, needed by the source rows below
+        self._write_sources(message.id, sources)
         self._touch(conversation_id)
         self._db.commit()
         self._db.refresh(message)
         return message
+
+    def create_pending_assistant_message(
+        self, conversation_id: uuid.UUID, *, parent_message_id: uuid.UUID
+    ) -> Message:
+        """Inserts an empty assistant row in status='generating' *before* any
+        token has been produced — see app/core/generation_manager.py. This is
+        what makes persistence independent of the client connection: the row
+        (and, as the background worker progresses, its content) exists in the
+        database regardless of whether any SSE client is still attached."""
+        message = Message(
+            conversation_id=conversation_id,
+            role="assistant",
+            content="",
+            status="generating",
+            parent_message_id=parent_message_id,
+            generation_started_at=utcnow(),
+        )
+        self._db.add(message)
+        self._touch(conversation_id)
+        self._db.commit()
+        self._db.refresh(message)
+        return message
+
+    def get_assistant_reply_for_user_message(self, user_message_id: uuid.UUID) -> Message | None:
+        """The assistant row already generating/generated for this user
+        message, if any — how a retry (same client_message_id) or a
+        reconnect after a dropped connection finds "is there already
+        something here" instead of starting a second, duplicate
+        generation. At most one such row should ever exist per user
+        message by construction (see _handle_conversation_message).
+
+        `populate_existing=True` for the same reason as get_message: this
+        session may already hold this exact row in its identity map from
+        earlier in the same request (e.g. it was the one that created the
+        pending row in the first place), and the status this call cares
+        about most (did it move past 'generating'?) is precisely the kind
+        of change only ever made by a *different* session — the
+        background worker's own (see app/core/generation_manager.py)."""
+        return (
+            self._db.execute(
+                select(Message)
+                .where(Message.parent_message_id == user_message_id, Message.role == "assistant")
+                .order_by(Message.created_at.desc())
+                .execution_options(populate_existing=True)
+            )
+            .scalars()
+            .first()
+        )
+
+    def reset_assistant_message_for_retry(self, message_id: uuid.UUID) -> Message:
+        """Re-arms an existing assistant row (status in error/cancelled/
+        interrupted) for a fresh generation attempt, in place — a retry
+        never creates a second assistant message for the same question
+        (see the module's "no duplicate messages" requirement)."""
+        message = self._db.get(Message, message_id)
+        assert message is not None
+        message.content = ""
+        message.status = "generating"
+        message.error_message = None
+        message.citations = []
+        message.citation_warnings = []
+        message.insufficient_evidence = False
+        message.transparency = {}
+        message.generation_started_at = utcnow()
+        self._db.execute(delete(MessageSource).where(MessageSource.message_id == message_id))
+        self._db.commit()
+        self._db.refresh(message)
+        return message
+
+    def update_assistant_message(
+        self,
+        message_id: uuid.UUID,
+        *,
+        content: str,
+        status: str,
+        citations: list[Citation] | None = None,
+        citation_warnings: list[str] | None = None,
+        insufficient_evidence: bool = False,
+        sources: list[RetrievedChunk] | None = None,
+        transparency: dict[str, object] | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        """Finalizes a pending assistant row from the background worker
+        thread (see app/core/generation_manager.py) — called with its own,
+        independent DB session, never the request-scoped one, since the
+        worker outlives the request that started it."""
+        message = self._db.get(Message, message_id)
+        if message is None:
+            return
+        message.content = content
+        message.status = status
+        message.error_message = error_message
+        if citations is not None:
+            message.citations = [c.model_dump(mode="json") for c in citations]
+        if citation_warnings is not None:
+            message.citation_warnings = citation_warnings
+        message.insufficient_evidence = insufficient_evidence
+        if transparency is not None:
+            message.transparency = transparency
+        if sources is not None:
+            self._db.execute(delete(MessageSource).where(MessageSource.message_id == message_id))
+            self._write_sources(message_id, sources)
+        self._touch(message.conversation_id)
+        self._db.commit()
 
     def maybe_set_auto_title(self, conversation_id: uuid.UUID, title: str) -> None:
         conversation = self._db.get(Conversation, conversation_id)
@@ -694,3 +840,21 @@ class ConversationsRepository:
         conversation = self._db.get(Conversation, conversation_id)
         if conversation is not None:
             conversation.updated_at = utcnow()
+
+
+def sweep_stale_generating_messages(db: Session) -> int:
+    """Run once at application startup (see app/main.py). A message can only
+    ever be genuinely 'generating' while the process that started its
+    background worker (see app/core/generation_manager.py) is still alive —
+    the in-memory registry backing that worker never survives a process
+    restart. Any row still marked 'generating' when a *new* process starts
+    is therefore unambiguously orphaned by a prior unclean shutdown (a
+    deploy, a crash, an OOM-kill), not a live generation — flipped to
+    'interrupted' so the UI shows a clear, honest status instead of a
+    spinner that can never resolve. Returns the number of rows swept, for
+    startup logging."""
+    result = db.execute(
+        update(Message).where(Message.status == "generating").values(status="interrupted")
+    )
+    db.commit()
+    return result.rowcount or 0

@@ -86,6 +86,24 @@ export function thinkingContextForRequest(
  * finalized in place once their SSE stream completes, never replaced by a
  * server round-trip, so scroll position is never disturbed by a refetch.
  */
+/**
+ * A persisted message's generation status (see rag-backend's
+ * app/core/generation_manager.py / migration 0017) — 'complete' for every
+ * message that finished normally (including all history predating this
+ * field) and for a purely local, not-yet-persisted turn (see DisplayMessage
+ * below). 'generating' is what a refresh/reopen can observe for a turn
+ * whose original browser connection dropped mid-stream (QA finding BUG-1)
+ * — the backend's worker keeps running regardless, so this is a real,
+ * temporary state, not a stuck one: useConversationMessages polls until it
+ * resolves (see the polling effect below).
+ */
+export type PersistedGenerationStatus =
+  | 'generating'
+  | 'complete'
+  | 'error'
+  | 'cancelled'
+  | 'interrupted';
+
 export interface DisplayMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -136,6 +154,18 @@ export interface DisplayMessage {
    * its real attachments.
    */
   attachments: ConversationMessageAttachment[];
+  /**
+   * The backend's persisted generation status for this turn — see
+   * PersistedGenerationStatus. Always 'complete' for a local, in-flight
+   * turn (that turn's own `streaming`/`thinking`/`error` fields already
+   * describe its live state in more detail); meaningful once a turn comes
+   * from GET /conversations/{id}, where 'generating' means "a background
+   * worker on the backend is still producing this — see
+   * generatingMessageIds / cancelPersistedGeneration on the hook result."
+   */
+  persistedStatus: PersistedGenerationStatus;
+  /** Set only when persistedStatus === 'error' — a backend-provided, user-safe message. */
+  persistedErrorMessage: string | null;
 }
 
 export type SendState =
@@ -151,6 +181,20 @@ export interface UseConversationMessagesResult {
   cancelSend: () => void;
   /** Re-fetches the conversation from the backend, discarding any local-only state. */
   reload: () => void;
+  /**
+   * True while any *persisted* message (loaded from the backend, not a
+   * local in-flight turn) has status 'generating' — a real backend
+   * worker (see rag-backend's app/core/generation_manager.py) is still
+   * producing it, most commonly because a previous browser session's
+   * connection to it was dropped (QA finding BUG-1) and this is a
+   * refresh/reopen/re-login catching up. While true, this hook silently
+   * re-fetches the conversation every couple of seconds until it
+   * resolves — no permanent spinner, no action needed from the caller
+   * beyond rendering `persistedStatus` (see DisplayMessage).
+   */
+  isResumingGeneration: boolean;
+  /** Explicit cancel for a persisted 'generating' message (see EducationAssistantClient.cancelMessage) — distinct from cancelSend(), which only ever aborts a local, still-connected send. */
+  cancelPersistedGeneration: (messageId: string) => void;
 }
 
 let placeholderIdCounter = 0;
@@ -181,6 +225,8 @@ function toDisplayMessages(conversation: ConversationDetail): DisplayMessage[] {
     thinking: null,
     thinkingContext: null,
     attachments: m.attachments ?? [],
+    persistedStatus: (m.status ?? 'complete') as PersistedGenerationStatus,
+    persistedErrorMessage: m.error_message ?? null,
   }));
 }
 
@@ -273,6 +319,8 @@ export function useConversationMessages(
         thinking: null,
         thinkingContext: null,
         attachments: [],
+        persistedStatus: 'complete',
+        persistedErrorMessage: null,
       };
       const assistantId = nextPlaceholderId('local-assistant');
       const assistantMessage: DisplayMessage = {
@@ -295,6 +343,8 @@ export function useConversationMessages(
         thinking: 'connecting',
         thinkingContext: thinkingContextForRequest(request),
         attachments: [],
+        persistedStatus: 'complete',
+        persistedErrorMessage: null,
       };
       // Drops the previously-failed local turn (if any) before appending
       // the new attempt (milestone V4 — supports a Retry button that just
@@ -434,6 +484,53 @@ export function useConversationMessages(
     [conversation, localMessages]
   );
 
+  const isResumingGeneration = useMemo(
+    () => messages.some((m) => m.persistedStatus === 'generating'),
+    [messages]
+  );
+
+  // Silent recovery poll (QA finding BUG-1): re-fetches the conversation
+  // every couple of seconds for as long as any persisted message is still
+  // 'generating', so a refresh/reopen/re-login that lands mid-generation
+  // eventually shows the finished answer without the caller doing
+  // anything — never touches `loadState`/`localMessages`, unlike load(),
+  // so it can never flash the screen back to a loading state or drop an
+  // in-flight local send.
+  useEffect(() => {
+    if (!isResumingGeneration) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (cancelled) return;
+      client
+        .getConversation(conversationId)
+        .then((detail) => {
+          if (!cancelled) setConversation(detail);
+        })
+        .catch(() => {
+          // Transient network hiccup while polling — the next tick (this
+          // effect re-runs whenever `isResumingGeneration` is still true
+          // after the state update above) tries again; never surfaces a
+          // poll failure as a user-facing error.
+        });
+    }, 2000);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [client, conversationId, isResumingGeneration, messages]);
+
+  const cancelPersistedGeneration = useCallback(
+    (messageId: string) => {
+      client.cancelMessage(conversationId, messageId).catch(() => {
+        // Best-effort — see EducationAssistantClient.cancelMessage's own
+        // docstring: a failure here just means the next poll still shows
+        // 'generating' until the worker finishes or is retried, not a
+        // silent data-loss risk.
+      });
+    },
+    [client, conversationId]
+  );
+
   return {
     conversation,
     loadState,
@@ -442,5 +539,7 @@ export function useConversationMessages(
     sendMessage,
     cancelSend,
     reload: load,
+    isResumingGeneration,
+    cancelPersistedGeneration,
   };
 }

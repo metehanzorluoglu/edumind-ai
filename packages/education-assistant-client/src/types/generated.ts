@@ -55,6 +55,120 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Register
+         * @description Creates a local (email/password) account. When
+         *     `settings.auth_email_verification_required` is True (the default —
+         *     see app/config.py), the account is created unverified, a
+         *     verification email is sent, and NO tokens are issued yet — the
+         *     caller only gets a generic success message and must confirm the
+         *     emailed link (GET /auth/verify-email) before POST /auth/login will
+         *     let them in (see that route). When verification is disabled by the
+         *     operator, this behaves exactly like every other login path and signs
+         *     the caller in immediately, same as before this feature existed.
+         *
+         *     An existing OAuth-only user with the same normalized email gets this
+         *     password attached to their existing account instead of a second user
+         *     being created — see register_local_user's docstring.
+         */
+        post: operations["post_register_auth_register_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Login
+         * @description Local email/password sign-in — reuses the exact same session/token
+         *     architecture as every OAuth login path (see issue_tokens_for_user).
+         *     Always returns the same generic 401 for an unknown email, an
+         *     OAuth-only account (no password set), an inactive account, and a
+         *     genuinely wrong password — never reveals which one actually happened
+         *     (see authenticate_local_user).
+         */
+        post: operations["post_login_auth_login_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/verify-email": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Verify Email
+         * @description The link a verification email sends the user to (see
+         *     _send_verification_email) — redeems the single-use token server-side,
+         *     then redirects the browser to the frontend's /verify-email page with
+         *     a `status` query param (`success` | `invalid` | `expired` |
+         *     `already_used`) it renders a safe outcome page from. This route
+         *     itself never returns tokens and never redirects with anything
+         *     sensitive in the query string — `status` is the only value appended;
+         *     the (now-consumed, one-time) verification token is not echoed back.
+         *
+         *     Rate-limited by IP only (no account is known until the token is
+         *     looked up) — protects against brute-forcing token values.
+         */
+        get: operations["get_verify_email_auth_verify_email_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/resend-verification": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Resend Verification
+         * @description Always returns the exact same response regardless of whether the
+         *     address is registered, already verified, or OAuth-only — see
+         *     _GENERIC_RESEND_RESPONSE. A new email is only actually sent when the
+         *     account exists, is local (has a password), is still unverified, and
+         *     the per-account resend cooldown (settings.
+         *     email_verification_resend_cooldown_seconds) has elapsed since the
+         *     last one — independent of, and in addition to, the request-volume
+         *     rate limit enforced first below.
+         */
+        post: operations["post_resend_verification_auth_resend_verification_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/{provider}/authorize": {
         parameters: {
             query?: never;
@@ -356,6 +470,37 @@ export interface paths {
          *     this app.
          */
         post: operations["post_conversation_message_conversations__conversation_id__messages_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/conversations/{conversation_id}/messages/{message_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Message Generation
+         * @description Explicit user cancellation (QA finding BUG-1's "distinguish
+         *     explicit cancellation from accidental disconnection" requirement) —
+         *     deliberately a real, separate action from a client simply
+         *     disappearing: this is the *only* thing that actually stops the
+         *     background worker (see generation_manager.request_cancel); a dropped
+         *     connection alone does nothing to it, by design.
+         *
+         *     Ownership is checked the same way every other message/attachment
+         *     route in this file does: the conversation must belong to `user`, and
+         *     the message must actually belong to *that* conversation — never
+         *     trusts `message_id` alone (a message ID for a different user's
+         *     conversation must 404, not be cancellable).
+         */
+        post: operations["cancel_message_generation_conversations__conversation_id__messages__message_id__cancel_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -814,6 +959,19 @@ export interface paths {
          *     take minutes on CPU-only hardware, and holding the HTTP request open for
          *     that is what caused the 30s client-side upload timeout this replaces.
          *     Poll GET /documents/jobs/{job_id} for progress and the eventual result.
+         *
+         *     Timing instrumentation (see app/core/request_timing.py, no-op unless
+         *     PERFORMANCE_PROFILING=true): `request_timer` covers file_save,
+         *     pdf_parsing and chunking below, is reflected in this response's
+         *     `Server-Timing` header and `timings` field, and is then handed to the
+         *     background task as a plain object reference so it can keep recording
+         *     embedding/qdrant_upload/database against the *same* timer once this
+         *     function has already returned — total_ms() therefore measures true
+         *     end-to-end "total upload" latency (file save through the background job
+         *     finishing), not just this request/response cycle. See
+         *     app/core/document_ingestion_jobs.py's module docstring for why that
+         *     reference (not the ambient get_current_timer() this module's deeper
+         *     dependencies use) is what makes that safe.
          */
         post: operations["post_document_documents_post"];
         delete?: never;
@@ -1303,6 +1461,10 @@ export interface components {
             document?: components["schemas"]["DocumentUploadResponse"] | null;
             /** Error */
             error?: string | null;
+            /** Timings */
+            timings?: {
+                [key: string]: number;
+            } | null;
         };
         /** DocumentListResponse */
         DocumentListResponse: {
@@ -1423,6 +1585,10 @@ export interface components {
             page_count: number;
             /** Total Chunks */
             total_chunks: number;
+            /** Timings */
+            timings?: {
+                [key: string]: number;
+            } | null;
         };
         /** DocumentUploadResponse */
         DocumentUploadResponse: {
@@ -1527,6 +1693,17 @@ export interface components {
             /** Reference Images */
             reference_images?: components["schemas"]["ReferenceImageInput"][] | null;
         };
+        /**
+         * GenericMessageResponse
+         * @description A deliberately uninformative response shape — currently only
+         *     POST /auth/resend-verification, which must never let its response
+         *     shape/content vary with whether the account exists, is already
+         *     verified, or is OAuth-only.
+         */
+        GenericMessageResponse: {
+            /** Detail */
+            detail: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -1540,6 +1717,13 @@ export interface components {
             app_env: string;
             /** Version */
             version: string;
+        };
+        /** LoginRequest */
+        LoginRequest: {
+            /** Email */
+            email: string;
+            /** Password */
+            password: string;
         };
         /** LogoutRequest */
         LogoutRequest: {
@@ -1624,6 +1808,14 @@ export interface components {
             /** Attachments */
             attachments?: components["schemas"]["MessageAttachmentResponse"][];
             transparency?: components["schemas"]["TransparencyResponse"] | null;
+            /**
+             * Status
+             * @default complete
+             * @enum {string}
+             */
+            status: "generating" | "complete" | "error" | "cancelled" | "interrupted";
+            /** Error Message */
+            error_message?: string | null;
         };
         /** MessageSourceResponse */
         MessageSourceResponse: {
@@ -1966,6 +2158,8 @@ export interface components {
             providers: components["schemas"]["ProviderInfo"][];
             /** Dev Login Enabled */
             dev_login_enabled: boolean;
+            /** Local Auth Enabled */
+            local_auth_enabled: boolean;
         };
         /** ReadinessResponse */
         ReadinessResponse: {
@@ -2021,6 +2215,48 @@ export interface components {
             /** Refresh Token */
             refresh_token?: string | null;
         };
+        /** RegisterRequest */
+        RegisterRequest: {
+            /** Email */
+            email: string;
+            /** Password */
+            password: string;
+            /** Display Name */
+            display_name?: string | null;
+        };
+        /**
+         * RegisterResponse
+         * @description POST /auth/register's response — always this one shape (never a
+         *     plain TokenResponse), so the frontend/SDK never has to branch on which
+         *     shape it got. `email_verification_required` tells the caller which
+         *     half of this model is populated:
+         *     - True (the default — see Settings.auth_email_verification_required):
+         *       no tokens yet; `access_token`/`refresh_token`/`user` are all None.
+         *       The frontend sends the user to /check-email.
+         *     - False (an operator explicitly disabled verification): behaves like
+         *       every other login path — tokens and `user` are populated
+         *       immediately, exactly as POST /auth/register used to before this
+         *       feature existed.
+         */
+        RegisterResponse: {
+            /** Email Verification Required */
+            email_verification_required: boolean;
+            /** Message */
+            message: string;
+            /** Access Token */
+            access_token?: string | null;
+            /** Refresh Token */
+            refresh_token?: string | null;
+            /**
+             * Token Type
+             * @default bearer
+             * @constant
+             */
+            token_type: "bearer";
+            /** Expires In */
+            expires_in?: number | null;
+            user?: components["schemas"]["UserResponse"] | null;
+        };
         /** RenameConversationRequest */
         RenameConversationRequest: {
             /** Title */
@@ -2059,6 +2295,11 @@ export interface components {
             updated_at: string;
             /** Resolved At */
             resolved_at: string | null;
+        };
+        /** ResendVerificationRequest */
+        ResendVerificationRequest: {
+            /** Email */
+            email: string;
         };
         /** RetrievalFilters */
         RetrievalFilters: {
@@ -2452,6 +2693,136 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProvidersResponse"];
+                };
+            };
+        };
+    };
+    post_register_auth_register_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegisterResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_login_auth_login_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_verify_email_auth_verify_email_get: {
+        parameters: {
+            query: {
+                token: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_resend_verification_auth_resend_verification_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResendVerificationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenericMessageResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -3039,6 +3410,40 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_message_generation_conversations__conversation_id__messages__message_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                conversation_id: string;
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };

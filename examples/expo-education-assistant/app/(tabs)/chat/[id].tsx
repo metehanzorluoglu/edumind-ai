@@ -92,8 +92,21 @@ function ChatConversationScreen({ conversationId }: { conversationId: string }) 
   const { imageGenerator: imageGeneratorEnabled } = useFeatureFlags();
   const { preferences } = usePreferences();
   const refreshConversations = useRefreshConversations();
-  const { conversation, loadState, messages, sendState, sendMessage, cancelSend, reload } =
-    useConversationMessages(client, conversationId);
+  const {
+    conversation,
+    loadState,
+    messages,
+    sendState,
+    sendMessage,
+    cancelSend,
+    reload,
+    isResumingGeneration,
+    cancelPersistedGeneration,
+  } = useConversationMessages(client, conversationId);
+  // The (at most one, by backend construction) message this screen is
+  // currently polling to completion — see isResumingGeneration's own docs.
+  // Only its id is needed here, to target the explicit Cancel action below.
+  const resumingMessageId = messages.find((m) => m.persistedStatus === 'generating')?.id ?? null;
   const [query, setQuery] = useState('');
   const [useCorpus, setUseCorpus] = useState(false);
   const [highlighted, setHighlighted] = useState<Highlighted | null>(null);
@@ -391,6 +404,20 @@ function ChatConversationScreen({ conversationId }: { conversationId: string }) 
         </View>
       )}
 
+      {isResumingGeneration && resumingMessageId && (
+        <View style={styles.resumingBanner}>
+          <Text style={styles.resumingBannerText}>
+            Picking up a response that was still being generated…
+          </Text>
+          <Pressable
+            style={styles.resumingCancelButton}
+            onPress={() => cancelPersistedGeneration(resumingMessageId)}
+          >
+            <Text style={styles.resumingCancelText}>Cancel</Text>
+          </Pressable>
+        </View>
+      )}
+
       <View style={styles.listWrap}>
         <FlatList
           ref={listRef}
@@ -447,6 +474,20 @@ const styles = StyleSheet.create({
   composerDragOver: { backgroundColor: '#EFF8FF' },
   banner: { backgroundColor: '#FEF3C7', padding: 8 },
   bannerText: { fontSize: 12, color: '#92400E', textAlign: 'center' },
+  resumingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#EFF6FF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#BFDBFE',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    gap: 8,
+  },
+  resumingBannerText: { fontSize: 12, color: '#1D4ED8', flexShrink: 1 },
+  resumingCancelButton: { paddingVertical: 4, paddingHorizontal: 10 },
+  resumingCancelText: { fontSize: 12, color: '#B91C1C', fontWeight: '600' },
   listWrap: { flex: 1 },
   list: { flex: 1 },
   listContent: { padding: 16, flexGrow: 1 },

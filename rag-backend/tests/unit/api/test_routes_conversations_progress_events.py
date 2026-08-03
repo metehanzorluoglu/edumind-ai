@@ -5,24 +5,39 @@ updates on a slow (CPU-only Ollama) backend: a cold model load alone was
 measured at ~44s, and prompt evaluation past 2,560 tokens at 155s+, with
 nothing sent to the client in the meantime before this existed.
 
-Drives _stream_text_reply directly with fakes for every dependency and
-consumes the real StreamingResponse it returns (not a hand-simulated event
-list), so this exercises the actual code path the frontend receives bytes
-from, including the async body-iterator wrapping Starlette applies to a
-sync generator (see StreamingResponse.__init__).
+Drives _stream_text_reply directly with a real (temp SQLite) database and
+a real ConversationsRepository, and consumes the real StreamingResponse it
+returns (not a hand-simulated event list) — so this exercises the actual
+code path the frontend receives bytes from, *and* the actual background
+worker (see app/core/generation_manager.py) that now does the real
+persistence, run on its own thread exactly as it is in production. Only
+the retriever and LLM provider are fakes; everything database-shaped is
+real, since the stream-disconnect-recovery redesign (QA finding BUG-1)
+means the streaming generator and the actual persistence are no longer
+the same code path — a fake repository can no longer stand in for the one
+the background thread's own independent session actually writes through.
 """
 
 import asyncio
 import json
+import os
+import tempfile
 import uuid
 from datetime import UTC, datetime
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
 from app.api.routes_conversations import ParsedMessageRequest, _stream_text_reply
+from app.config import Settings
 from app.core.rag_service import RagService
 from app.core.request_timing import RequestTimer
 from app.core.retrieval_schemas import RetrievedChunk
+from app.db.base import Base
 from app.db.conversation_scope_repository import ConversationScopeRecord
+from app.db.conversations_repository import ConversationsRepository
 from app.db.models_auth import User
+from app.services.attachment_storage import AttachmentStorage
 
 EXPECTED_PRE_TOKEN_STAGES = [
     "connected",
@@ -52,16 +67,8 @@ class _FakeLLMProvider:
     def __init__(self, tokens: list[str]) -> None:
         self._tokens = tokens
 
-    def stream_chat(self, *, system_prompt, user_prompt, timer=None):
+    def stream_chat(self, *, system_prompt, user_prompt, timer=None, options_override=None):
         yield from self._tokens
-
-
-class _FakeRepository:
-    def __init__(self) -> None:
-        self.added: list[dict[str, object]] = []
-
-    def add_assistant_message(self, conversation_id, **kwargs):
-        self.added.append(kwargs)
 
 
 def _make_chunk(text: str = "Some retrieved evidence.") -> RetrievedChunk:
@@ -92,7 +99,10 @@ def _drain_events(response) -> list[dict]:
     """Runs the real StreamingResponse body to completion (Starlette wraps
     a sync generator in an async iterator via iterate_in_threadpool — see
     StreamingResponse.__init__) and parses every SSE `data:` line back
-    into its JSON payload, in emission order."""
+    into its JSON payload, in emission order. The background worker (see
+    generation_manager.poll_until_done) is polled with a short sleep
+    inside the generator itself, so simply draining the body already
+    waits for it to finish — no separate synchronization needed."""
 
     async def _collect() -> list[str]:
         chunks = []
@@ -113,9 +123,31 @@ def _drain_events(response) -> list[dict]:
 
 def _call_stream_text_reply(
     *, tokens: list[str], chunks: list[RetrievedChunk], enabled_timer: bool = False
-) -> tuple[list[dict], _FakeRepository]:
-    conversation_id = uuid.uuid4()
+) -> tuple[list[dict], ConversationsRepository]:
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    def session_factory():
+        return factory()
+
+    tmp_attachments = tempfile.mkdtemp()
+    attachment_storage = AttachmentStorage(tmp_attachments)
+
+    db = factory()
+    repository = ConversationsRepository(db, attachment_storage)
     user = User(id=uuid.uuid4(), email="test@example.com")
+    db.add(user)
+    db.commit()
+    conversation = repository.create(user_id=user.id)
+    conversation_id = conversation.id
+    user_message = repository.add_user_message(conversation_id, "What does the document say?")
+    assistant_message = repository.create_pending_assistant_message(
+        conversation_id, parent_message_id=user_message.id
+    )
+
     parsed = ParsedMessageRequest(
         query="What does the document say?", top_k=8, filters=None, client_message_id=None
     )
@@ -124,7 +156,6 @@ def _call_stream_text_reply(
         llm_provider=_FakeLLMProvider(tokens),
         model_name="qwen3:8b",
     )
-    repository = _FakeRepository()
     scope_settings = _make_scope_settings(conversation_id)
     timer = RequestTimer(enabled=enabled_timer, label="test")
 
@@ -140,6 +171,11 @@ def _call_stream_text_reply(
         [],
         [],
         timer,
+        settings=Settings(jwt_secret="test-only-secret-not-a-real-credential-32chars"),
+        assistant_message=assistant_message,
+        attach_only=False,
+        attachment_storage=attachment_storage,
+        session_factory=session_factory,
     )
     return _drain_events(response), repository
 

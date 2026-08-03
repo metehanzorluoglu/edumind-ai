@@ -77,6 +77,8 @@ function pendingAssistantTurn(
       use_corpus: messageAttachments.length > 0 ? messageUseCorpus : undefined,
     }),
     attachments: [],
+    persistedStatus: 'complete',
+    persistedErrorMessage: null,
   };
 }
 
@@ -282,14 +284,14 @@ export default function NewChatScreen() {
           });
           succeed(conversationId);
         } catch (bufferedError) {
-          fail(
-            formatRequestError(
-              'POST',
-              baseUrl,
-              `/conversations/${conversationId}/messages`,
-              bufferedError
-            )
-          );
+          // Same reasoning as the outer catch below: a transport failure
+          // here doesn't mean generation stopped server-side, and an
+          // explicit cancel already updated the UI itself — see
+          // handleCancel — so neither case should show a dead-end error
+          // on this composer.
+          if (bufferedError instanceof RequestCancelledError) return;
+          refreshConversations();
+          router.replace(`/chat/${conversationId}`);
         }
         return;
       }
@@ -301,7 +303,17 @@ export default function NewChatScreen() {
       // screen unmounting mid-stream (the cleanup effect above also
       // aborts), where there is nothing left to update.
       if (error instanceof RequestCancelledError) return;
-      fail(formatRequestError('POST', baseUrl, `/conversations/${conversationId}/messages`, error));
+      // A transport-level failure here (e.g. a dropped connection — QA
+      // finding BUG-1, observed as net::ERR_QUIC_PROTOCOL_ERROR) does NOT
+      // mean generation stopped: the backend's worker keeps running and
+      // persists the answer regardless of this browser tab (see
+      // rag-backend's app/core/generation_manager.py). The conversation
+      // already exists, so land the user there instead of stranding them
+      // on this composer with a dead-end error box — chat/[id].tsx polls
+      // a still-'generating' reply to completion, or shows a clear status
+      // for one that ended in 'error'/'cancelled'/'interrupted'.
+      refreshConversations();
+      router.replace(`/chat/${conversationId}`);
     }
   }
 

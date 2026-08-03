@@ -660,6 +660,28 @@ export class EducationAssistantClient {
   }
 
   /**
+   * Explicit cancellation of a message still generating (status
+   * 'generating') — distinct from merely aborting the local fetch/SSE
+   * read: this actually stops the backend's detached background worker
+   * (see rag-backend's app/core/generation_manager.py), so the message
+   * is persisted as 'cancelled' rather than left running to completion
+   * unseen. A no-op (still returns normally) if the generation already
+   * finished by the time this reaches the backend — see that route's
+   * own docstring.
+   */
+  async cancelMessage(
+    conversationId: string,
+    messageId: string,
+    options: RequestOptions = {}
+  ): Promise<void> {
+    await requestJson<undefined>(this.context, {
+      method: 'POST',
+      path: `/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/cancel`,
+      signal: options.signal,
+    });
+  }
+
+  /**
    * Incremental SSE stream of one conversation turn's events (token/sources/
    * done/error) — same event shapes and ordering as streamChat(), except
    * the backend also persists the user's message immediately and the

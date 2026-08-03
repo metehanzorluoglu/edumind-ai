@@ -1,9 +1,9 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from functools import lru_cache
 from typing import Annotated
 
 from fastapi import Depends, Request
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings, get_settings
 from app.core.email_provider import ConsoleEmailProvider, EmailProvider, SmtpEmailProvider
@@ -27,13 +27,32 @@ from app.db.project_profile_repository import ProjectProfileRepository
 from app.db.projects_repository import ProjectsRepository
 from app.db.research_preference_repository import ResearchPreferenceRepository
 from app.db.scopes_repository import ScopesRepository
-from app.db.session import get_db
+from app.db.session import get_db, get_session_factory
 from app.services.attachment_storage import AttachmentStorage
 from app.services.vision_service import VisionService
 from app.vectorstore.qdrant_client import QdrantVectorStore
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 DBSessionDep = Annotated[Session, Depends(get_db)]
+
+
+def get_session_factory_dep() -> "sessionmaker[Session]":
+    """A real FastAPI dependency (unlike calling app.db.session.
+    get_session_factory() directly) wrapping the same session factory —
+    exists so code that must open its *own* database session independent
+    of the current request (app/core/generation_manager.py's detached
+    background workers, app/api/routes_auth.py's verification-email
+    background task) can still be pointed at a test's isolated engine via
+    `app.dependency_overrides[get_session_factory_dep]`, the same
+    mechanism every other DB-touching dependency in this file already
+    supports through `get_db`. Calling get_session_factory() directly
+    from those call sites would silently reach for the real, global
+    Settings().database_url even inside a test that overrides `get_db`
+    for every ordinary request-scoped repository."""
+    return get_session_factory()
+
+
+SessionFactoryDep = Annotated["sessionmaker[Session]", Depends(get_session_factory_dep)]
 
 
 async def get_request_timer(request: Request) -> AsyncIterator[RequestTimer]:
