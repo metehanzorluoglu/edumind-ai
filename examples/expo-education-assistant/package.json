@@ -59,6 +59,9 @@
   "private": true,
   "jest": {
     "preset": "jest-expo",
+    "testPathIgnorePatterns": ["/node_modules/", "<rootDir>/e2e/"],
+    "modulePathIgnorePatterns": ["<rootDir>/e2e/"],
+    "watchPathIgnorePatterns": ["<rootDir>/e2e/"],
     "moduleNameMapper": {
       "^react$": "<rootDir>/node_modules/react",
       "^react-dom$": "<rootDir>/node_modules/react-dom"

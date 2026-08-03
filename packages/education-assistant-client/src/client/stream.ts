@@ -160,7 +160,10 @@ export function parseChatEvent(raw: ParsedSseEvent): ChatEvent | null {
     // (this SDK's own error classes always preserve `cause` — see
     // EducationAssistantError), just never rendered.
     throw new MalformedStreamError('The server sent a response that could not be understood.', {
-      cause: new Error(`SSE event data was not valid JSON: ${raw.data.slice(0, 200)}`, { cause }),
+      cause: {
+        reason: `SSE event data was not valid JSON: ${raw.data.slice(0, 200)}`,
+        parseError: cause,
+      },
     });
   }
 
