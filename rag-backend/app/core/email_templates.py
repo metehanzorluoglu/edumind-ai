@@ -33,7 +33,7 @@ def build_verification_email(*, verification_url: str, ttl_minutes: int) -> Emai
     body_font = "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
     muted = "font-size:12px;color:#94A3B8;line-height:18px;"
     button_style = (
-        "display:inline-block;background-color:#208AEF;color:#FFFFFF;font-weight:600;"
+        "display:inline-block;background-color:#4F46E5;color:#FFFFFF;font-weight:600;"
         "font-size:15px;text-decoration:none;padding:12px 28px;border-radius:8px;"
     )
     html_body = f"""\
@@ -48,6 +48,15 @@ def build_verification_email(*, verification_url: str, ttl_minutes: int) -> Emai
                  style="max-width:420px;background-color:#FFFFFF;border-radius:12px;padding:32px;">
             <tr>
               <td align="center" style="padding-bottom:4px;">
+                <!-- Text wordmark, not an <img> of the E8 mark: most mail
+                     clients block remote images by default (a broken-image
+                     icon is worse than no logo at all), and inlining an SVG
+                     or base64 PNG here isn't reliably supported across
+                     clients either. #0F172A is this template's own
+                     near-black ink — matches brand/BRAND_GUIDELINES.md's
+                     text color closely enough without pulling in the app's
+                     token system, which doesn't exist in this email-only
+                     context. -->
                 <span style="font-size:26px;font-weight:800;color:#0F172A;letter-spacing:-0.5px;">
                   EduM8
                 </span>
@@ -71,7 +80,7 @@ def build_verification_email(*, verification_url: str, ttl_minutes: int) -> Emai
             <tr>
               <td style="{muted}padding-bottom:16px;word-break:break-all;">
                 Or paste this link into your browser:<br />
-                <a href="{verification_url}" style="color:#208AEF;">{verification_url}</a>
+                <a href="{verification_url}" style="color:#4F46E5;">{verification_url}</a>
               </td>
             </tr>
             <tr>

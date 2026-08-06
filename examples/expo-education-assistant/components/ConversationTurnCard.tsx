@@ -10,7 +10,7 @@ import { MarkdownAnswer } from '@/components/MarkdownAnswer';
 import { SourceCard, UnavailableSourceChip } from '@/components/SourceCard';
 import { ThinkingPlaceholder } from '@/components/ThinkingPlaceholder';
 import type { AttachmentChipInfo, PendingAttachment } from '@/lib/chatAttachments';
-import { usePreferences } from '@/lib/Preferences';
+import { usePreferences, useTheme } from '@/lib/Preferences';
 
 /** How long the card keeps the thinking placeholder mounted after the turn
  * leaves the thinking state, so its ~180ms exit fade finishes before the
@@ -53,6 +53,7 @@ export function ConversationTurnCard({
   onUseImageAsAttachment,
   onRegenerateImage,
 }: ConversationTurnCardProps) {
+  const theme = useTheme();
   const answer = assistant?.content ?? '';
   const sources = assistant?.sources ?? [];
   const citations = assistant?.citations ?? [];
@@ -138,8 +139,29 @@ export function ConversationTurnCard({
   return (
     <View style={styles.turn}>
       {userContent.length > 0 && (
-        <View style={styles.userBubble}>
-          <Text style={styles.userBubbleText}>{userContent}</Text>
+        // Deliberately not a messaging-app bubble (brief: "avoid large
+        // colored message bubbles; prioritize readability") — a quiet,
+        // full-measure accentSoft block reads as "the question this
+        // section answers," closer to a research notebook's own prompt
+        // marginalia than a chat client's outgoing message.
+        <View
+          style={[
+            styles.userBlock,
+            { backgroundColor: theme.accentSoft, borderRadius: theme.radius.md },
+          ]}
+        >
+          <Text
+            style={[
+              styles.userBlockText,
+              {
+                color: theme.text,
+                fontFamily: theme.fonts.bodyMedium,
+                fontSize: theme.scale(15),
+              },
+            ]}
+          >
+            {userContent}
+          </Text>
         </View>
       )}
 
@@ -170,7 +192,16 @@ export function ConversationTurnCard({
       <View style={styles.assistantBlock}>
         {isImageGenerationTurn && conversationId && assistant ? (
           <>
-            {answer.length > 0 && <Text style={styles.imagePromptCaption}>{`“${answer}”`}</Text>}
+            {answer.length > 0 && (
+              <Text
+                style={[
+                  styles.imagePromptCaption,
+                  { color: theme.subtext, fontFamily: theme.fonts.body },
+                ]}
+              >
+                {`“${answer}”`}
+              </Text>
+            )}
             <GeneratedImageGallery
               conversationId={conversationId}
               messageId={assistant.id}
@@ -182,7 +213,9 @@ export function ConversationTurnCard({
           </>
         ) : (
           <>
-            {(thinkingActive || thinkingLinger || (isResumingGeneration && answer.length === 0)) && (
+            {(thinkingActive ||
+              thinkingLinger ||
+              (isResumingGeneration && answer.length === 0)) && (
               <ThinkingPlaceholder
                 context={assistant?.thinkingContext ?? null}
                 visible={thinkingActive || (isResumingGeneration && answer.length === 0)}
@@ -198,29 +231,49 @@ export function ConversationTurnCard({
             )}
 
             {isResumingGeneration && answer.length > 0 && (
-              <Text style={styles.note}>Still generating…</Text>
+              <Text style={[styles.note, { color: theme.subtext, fontFamily: theme.fonts.body }]}>
+                Still generating…
+              </Text>
             )}
 
             {assistant?.persistedStatus === 'cancelled' && (
-              <Text style={styles.note}>Generation was cancelled.</Text>
+              <Text style={[styles.note, { color: theme.subtext, fontFamily: theme.fonts.body }]}>
+                Generation was cancelled.
+              </Text>
             )}
 
             {assistant?.persistedStatus === 'interrupted' && (
-              <Text style={styles.note}>
+              <Text style={[styles.note, { color: theme.subtext, fontFamily: theme.fonts.body }]}>
                 Generation was interrupted by a server restart before it finished. Press Retry to
                 try again.
               </Text>
             )}
 
             {assistant?.persistedStatus === 'error' && assistant.persistedErrorMessage && (
-              <View style={styles.errorBox}>
-                <Text style={styles.errorTitle}>Error</Text>
-                <Text style={styles.errorText}>{assistant.persistedErrorMessage}</Text>
+              <View
+                style={[
+                  styles.errorBox,
+                  { backgroundColor: theme.dangerSoft, borderRadius: theme.radius.md },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.errorTitle,
+                    { color: theme.danger, fontFamily: theme.fonts.bodyBold },
+                  ]}
+                >
+                  Error
+                </Text>
+                <Text
+                  style={[styles.errorText, { color: theme.danger, fontFamily: theme.fonts.body }]}
+                >
+                  {assistant.persistedErrorMessage}
+                </Text>
               </View>
             )}
 
             {assistant?.insufficientEvidence && (
-              <Text style={styles.note}>
+              <Text style={[styles.note, { color: theme.subtext, fontFamily: theme.fonts.body }]}>
                 No sources survived retrieval for this query — the LLM was never called. The text
                 above is the backend&apos;s fixed explanation, not a generated answer, and this does
                 not mean nothing relevant exists anywhere, only that retrieval returned nothing
@@ -229,15 +282,38 @@ export function ConversationTurnCard({
             )}
 
             {assistant?.error && (
-              <View style={styles.errorBox}>
-                <Text style={styles.errorTitle}>Error</Text>
-                <Text style={styles.errorText}>{assistant.error}</Text>
+              <View
+                style={[
+                  styles.errorBox,
+                  { backgroundColor: theme.dangerSoft, borderRadius: theme.radius.md },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.errorTitle,
+                    { color: theme.danger, fontFamily: theme.fonts.bodyBold },
+                  ]}
+                >
+                  Error
+                </Text>
+                <Text
+                  style={[styles.errorText, { color: theme.danger, fontFamily: theme.fonts.body }]}
+                >
+                  {assistant.error}
+                </Text>
               </View>
             )}
 
             {citationsVisible && citedSources.length > 0 && (
               <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Sources</Text>
+                <Text
+                  style={[
+                    styles.sectionTitle,
+                    { color: theme.text, fontFamily: theme.fonts.bodyBold },
+                  ]}
+                >
+                  Sources
+                </Text>
                 {citedSources.map((m) => (
                   <SourceCard
                     key={m.sourceId}
@@ -263,13 +339,28 @@ export function ConversationTurnCard({
 
             {assistant && !assistant.streaming && assistant.citationWarnings.length > 0 && (
               <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Backend citation warnings</Text>
-                <Text style={styles.warningHint}>
+                <Text
+                  style={[
+                    styles.sectionTitle,
+                    { color: theme.text, fontFamily: theme.fonts.bodyBold },
+                  ]}
+                >
+                  Backend citation warnings
+                </Text>
+                <Text
+                  style={[styles.warningHint, { color: theme.faint, fontFamily: theme.fonts.body }]}
+                >
                   These are the backend&apos;s own citation-format checks — they do not block or
                   rewrite the answer above.
                 </Text>
                 {assistant.citationWarnings.map((warning, i) => (
-                  <Text key={i} style={styles.warningText}>
+                  <Text
+                    key={i}
+                    style={[
+                      styles.warningText,
+                      { color: theme.warning, fontFamily: theme.fonts.body },
+                    ]}
+                  >
                     • {warning}
                   </Text>
                 ))}
@@ -283,17 +374,13 @@ export function ConversationTurnCard({
 }
 
 const styles = StyleSheet.create({
-  turn: { marginBottom: 20 },
-  userBubble: {
-    alignSelf: 'flex-end',
-    backgroundColor: '#2F5FE0',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginBottom: 8,
-    maxWidth: '85%',
+  turn: { marginBottom: 28 },
+  userBlock: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginBottom: 12,
   },
-  userBubbleText: { color: '#FFFFFF', fontSize: 15 },
+  userBlockText: { fontSize: 15, lineHeight: 22 },
   userAttachmentsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -302,13 +389,13 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   assistantBlock: {},
-  imagePromptCaption: { fontSize: 13, color: '#475569', fontStyle: 'italic', marginBottom: 8 },
-  note: { fontSize: 12, color: '#475569', marginTop: 12, fontStyle: 'italic' },
-  errorBox: { backgroundColor: '#FEF2F2', borderRadius: 8, padding: 12 },
-  errorTitle: { fontWeight: '700', color: '#B91C1C' },
-  errorText: { color: '#7F1D1D', marginTop: 4 },
+  imagePromptCaption: { fontSize: 13, fontStyle: 'italic', marginBottom: 8 },
+  note: { fontSize: 12, marginTop: 12, fontStyle: 'italic' },
+  errorBox: { padding: 12 },
+  errorTitle: {},
+  errorText: { marginTop: 4 },
   section: { marginTop: 20 },
-  sectionTitle: { fontWeight: '700', fontSize: 14, marginBottom: 8 },
-  warningHint: { fontSize: 11, color: '#94A3B8', marginBottom: 6 },
-  warningText: { fontSize: 12, color: '#B45309', marginBottom: 2 },
+  sectionTitle: { fontSize: 14, marginBottom: 8 },
+  warningHint: { fontSize: 11, marginBottom: 6 },
+  warningText: { fontSize: 12, marginBottom: 2 },
 });

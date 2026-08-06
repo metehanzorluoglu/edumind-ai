@@ -36,7 +36,7 @@ jest.mock('@/lib/ClientProvider', () => ({
 // guard refuses out-of-scope references in `jest.mock()` factories unless
 // the identifier starts with `mock` (case insensitive in newer jest, but
 // staying safe with the explicit prefix).
-var mockImageGeneratorEnabled = true;
+let mockImageGeneratorEnabled = true;
 jest.mock('@/lib/FeatureFlags', () => ({
   useFeatureFlags: () => ({
     imageGenerator: mockImageGeneratorEnabled,

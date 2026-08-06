@@ -1,6 +1,7 @@
 import type { ThinkingContext } from 'education-assistant-client';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
+import { useTheme } from '@/lib/Preferences';
 
 /** How long each in-box status stays on screen before rotating. */
 const STATUS_ROTATE_MS = 2000;
@@ -141,6 +142,7 @@ export const ThinkingPlaceholder = memo(function ThinkingPlaceholder({
   context,
   visible,
 }: ThinkingPlaceholderProps) {
+  const theme = useTheme();
   // Keyed on primitives (not the context object's identity, which changes
   // on every DisplayMessage patch while streaming) so this can never
   // re-derive a different sequence mid-rotation from an unrelated
@@ -191,11 +193,11 @@ export const ThinkingPlaceholder = memo(function ThinkingPlaceholder({
       accessibilityRole="text"
       accessibilityLabel={`${TITLE} ${status}...`}
     >
-      <Text style={styles.title}>{TITLE}</Text>
-      <View style={styles.box} testID="thinking-shadow-box">
+      <Text style={[styles.title, { fontFamily: theme.fonts.body }]}>{TITLE}</Text>
+      <View style={[styles.box, { borderRadius: theme.radius.md }]} testID="thinking-shadow-box">
         <View style={styles.boxRow}>
           <AnimatedDots />
-          <Text style={styles.boxText}>{`${status}...`}</Text>
+          <Text style={[styles.boxText, { fontFamily: theme.fonts.body }]}>{`${status}...`}</Text>
         </View>
       </View>
     </Animated.View>

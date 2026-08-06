@@ -2,6 +2,7 @@ import type { MappedSource } from 'education-assistant-client';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Clipboard, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { formatAuthorsCompact, parseJournalCitation, safeText } from '@/lib/format';
+import { useTheme } from '@/lib/Preferences';
 import { isSampleSource } from '@/lib/sampleDocument';
 
 const DOI_PATTERN = /^10\.\d{4,9}\/\S+$/;
@@ -80,6 +81,7 @@ export interface SourceCardProps {
 }
 
 export function SourceCard({ source, highlighted = false }: SourceCardProps) {
+  const theme = useTheme();
   const { citation, chunk } = source;
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -151,28 +153,66 @@ export function SourceCard({ source, highlighted = false }: SourceCardProps) {
   const isSample = isSampleSource(chunk.source_filename);
 
   return (
-    <View style={[styles.card, highlighted && styles.cardHighlighted]}>
+    <View
+      style={[
+        styles.card,
+        {
+          backgroundColor: theme.card,
+          borderColor: theme.border,
+          borderRadius: theme.radius.md,
+        },
+        highlighted && { borderColor: theme.citation, backgroundColor: theme.citationSoft },
+      ]}
+    >
       <View style={styles.headerRow}>
-        <Text style={styles.sourceId}>[{source.sourceId}]</Text>
+        <Text
+          style={[styles.sourceId, { color: theme.citation, fontFamily: theme.fonts.bodyBold }]}
+        >
+          [{source.sourceId}]
+        </Text>
         {isSample && (
-          <View style={styles.sampleBadge}>
-            <Text style={styles.sampleBadgeText}>Sample content — not real evidence</Text>
+          <View
+            style={[
+              styles.sampleBadge,
+              { backgroundColor: theme.warningSoft, borderRadius: theme.radius.sm },
+            ]}
+          >
+            <Text
+              style={[
+                styles.sampleBadgeText,
+                { color: theme.warning, fontFamily: theme.fonts.bodyBold },
+              ]}
+            >
+              Sample content — not real evidence
+            </Text>
           </View>
         )}
       </View>
-      <Text style={styles.title}>{safeText(citation.title, 'Untitled source')}</Text>
-      <Text style={styles.meta}>
+      <Text style={[styles.title, { color: theme.text, fontFamily: theme.fonts.bodySemibold }]}>
+        {safeText(citation.title, 'Untitled source')}
+      </Text>
+      <Text style={[styles.meta, { color: theme.subtext, fontFamily: theme.fonts.body }]}>
         {formatAuthorsCompact(citation.authors)}
         {citation.publication_year ? ` · ${citation.publication_year}` : ''}
       </Text>
       {citation.source_venue ? (
-        <Text style={styles.meta}>{parsedVenue?.journalTitle ?? citation.source_venue}</Text>
+        <Text style={[styles.meta, { color: theme.subtext, fontFamily: theme.fonts.body }]}>
+          {parsedVenue?.journalTitle ?? citation.source_venue}
+        </Text>
       ) : null}
-      {pageLabel ? <Text style={styles.meta}>{pageLabel}</Text> : null}
-      {citation.doi ? <Text style={styles.meta}>DOI: {citation.doi}</Text> : null}
+      {pageLabel ? (
+        <Text style={[styles.meta, { color: theme.subtext, fontFamily: theme.fonts.body }]}>
+          {pageLabel}
+        </Text>
+      ) : null}
+      {citation.doi ? (
+        <Text style={[styles.meta, { color: theme.subtext, fontFamily: theme.fonts.mono }]}>
+          DOI: {citation.doi}
+        </Text>
+      ) : null}
 
       <Text
-        style={styles.excerpt}
+        style={[styles.excerpt, { color: theme.text, fontFamily: theme.fonts.body }]}
         numberOfLines={expanded || !isTruncatable ? undefined : COLLAPSED_NUMBER_OF_LINES}
         selectable
       >
@@ -186,7 +226,11 @@ export function SourceCard({ source, highlighted = false }: SourceCardProps) {
           accessibilityState={{ expanded }}
           hitSlop={8}
         >
-          <Text style={styles.toggleText}>{expanded ? 'Show less' : 'Show more'}</Text>
+          <Text
+            style={[styles.toggleText, { color: theme.accent, fontFamily: theme.fonts.bodyBold }]}
+          >
+            {expanded ? 'Show less' : 'Show more'}
+          </Text>
         </Pressable>
       )}
 
@@ -198,10 +242,19 @@ export function SourceCard({ source, highlighted = false }: SourceCardProps) {
             accessibilityRole="button"
             hitSlop={8}
           >
-            <Text style={styles.linkText}>{link.label}</Text>
+            <Text
+              style={[
+                styles.linkText,
+                { color: theme.accent, fontFamily: theme.fonts.bodySemibold },
+              ]}
+            >
+              {link.label}
+            </Text>
           </Pressable>
         ) : (
-          <Text style={styles.noLink}>No link available</Text>
+          <Text style={[styles.noLink, { color: theme.faint, fontFamily: theme.fonts.body }]}>
+            No link available
+          </Text>
         )}
         <Pressable
           onPress={handleCopyExcerpt}
@@ -209,7 +262,11 @@ export function SourceCard({ source, highlighted = false }: SourceCardProps) {
           accessibilityRole="button"
           hitSlop={8}
         >
-          <Text style={styles.linkText}>{copied ? 'Copied!' : 'Copy excerpt'}</Text>
+          <Text
+            style={[styles.linkText, { color: theme.accent, fontFamily: theme.fonts.bodySemibold }]}
+          >
+            {copied ? 'Copied!' : 'Copy excerpt'}
+          </Text>
         </Pressable>
       </View>
     </View>
@@ -218,53 +275,46 @@ export function SourceCard({ source, highlighted = false }: SourceCardProps) {
 
 /** Rendered for a [S<n>] marker whose id has no matching backend citation — never invents a source. */
 export function UnavailableSourceChip({ sourceId }: { sourceId: string }) {
+  const theme = useTheme();
   return (
-    <View style={styles.unavailableChip}>
-      <Text style={styles.unavailableText}>[{sourceId}] — source unavailable</Text>
+    <View
+      style={[
+        styles.unavailableChip,
+        { backgroundColor: theme.dangerSoft, borderRadius: theme.radius.sm },
+      ]}
+    >
+      <Text style={[styles.unavailableText, { color: theme.danger, fontFamily: theme.fonts.body }]}>
+        [{sourceId}] — source unavailable
+      </Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   card: {
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
     padding: 12,
     marginBottom: 8,
-    backgroundColor: '#FFFFFF',
-  },
-  cardHighlighted: {
-    // Ochre, not blue — matches the citation-marker convention (see
-    // brand/BRAND_GUIDELINES.md §3): orange is reserved for citations and
-    // source-grounding UI specifically, distinct from the blue used for
-    // ordinary interactive elements.
-    borderColor: '#B0641F',
-    backgroundColor: '#FBF3EA',
   },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2 },
-  sourceId: { fontWeight: '700', color: '#B0641F' },
+  sourceId: {},
   sampleBadge: {
-    backgroundColor: '#FEF3C7',
-    borderRadius: 6,
     paddingHorizontal: 6,
     paddingVertical: 2,
   },
-  sampleBadgeText: { fontSize: 10, fontWeight: '700', color: '#92400E' },
-  title: { fontWeight: '600', fontSize: 15, marginBottom: 2 },
-  meta: { fontSize: 12, color: '#475569' },
-  excerpt: { fontSize: 13, color: '#334155', marginTop: 6, marginBottom: 4 },
+  sampleBadgeText: { fontSize: 10 },
+  title: { fontSize: 15, marginBottom: 2 },
+  meta: { fontSize: 12 },
+  excerpt: { fontSize: 13, marginTop: 6, marginBottom: 4, lineHeight: 19 },
   toggleButton: { alignSelf: 'flex-start', marginBottom: 6, paddingVertical: 2 },
-  toggleText: { color: '#2F5FE0', fontSize: 12, fontWeight: '700' },
+  toggleText: { fontSize: 12 },
   actionsRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
   linkButton: { alignSelf: 'flex-start' },
-  linkText: { color: '#2F5FE0', fontSize: 13, fontWeight: '600' },
-  noLink: { fontSize: 12, color: '#94A3B8', fontStyle: 'italic' },
+  linkText: { fontSize: 13 },
+  noLink: { fontSize: 12, fontStyle: 'italic' },
   unavailableChip: {
-    backgroundColor: '#FEF2F2',
-    borderRadius: 6,
     paddingHorizontal: 6,
     paddingVertical: 2,
   },
-  unavailableText: { color: '#B91C1C', fontSize: 12 },
+  unavailableText: { fontSize: 12 },
 });

@@ -2,6 +2,7 @@ import { Link, Redirect, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { describeAuthError, useAuth } from '@/lib/AuthProvider';
+import { useTheme } from '@/lib/Preferences';
 
 /**
  * Web landing route for GET /auth/{provider}/callback's final redirect
@@ -14,6 +15,7 @@ import { describeAuthError, useAuth } from '@/lib/AuthProvider';
  * robustness / manual testing.
  */
 export default function AuthCallbackScreen() {
+  const theme = useTheme();
   const { exchangeCode, status, error } = useAuth();
   const params = useLocalSearchParams<{ auth_code?: string; auth_error?: string }>();
   const [localError, setLocalError] = useState<string | null>(null);
@@ -49,11 +51,19 @@ export default function AuthCallbackScreen() {
 
   if (displayError) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.errorTitle}>Sign-in failed</Text>
-        <Text style={styles.errorText}>{displayError}</Text>
+      <View style={[styles.container, { backgroundColor: theme.background }]}>
+        <Text style={[styles.errorTitle, { color: theme.danger, fontFamily: theme.fonts.display }]}>
+          Sign-in failed
+        </Text>
+        <Text style={[styles.errorText, { color: theme.danger, fontFamily: theme.fonts.body }]}>
+          {displayError}
+        </Text>
         <Link href="/login" style={styles.link}>
-          <Text style={styles.linkText}>Back to sign in</Text>
+          <Text
+            style={[styles.linkText, { color: theme.accent, fontFamily: theme.fonts.bodySemibold }]}
+          >
+            Back to sign in
+          </Text>
         </Link>
       </View>
     );
@@ -64,9 +74,11 @@ export default function AuthCallbackScreen() {
   }
 
   return (
-    <View style={styles.container}>
-      <ActivityIndicator />
-      <Text style={styles.hint}>Completing sign-in…</Text>
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
+      <ActivityIndicator color={theme.accent} />
+      <Text style={[styles.hint, { color: theme.subtext, fontFamily: theme.fonts.body }]}>
+        Completing sign-in…
+      </Text>
     </View>
   );
 }
@@ -74,15 +86,14 @@ export default function AuthCallbackScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F6F7FA',
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
     gap: 12,
   },
-  hint: { color: '#64748B' },
-  errorTitle: { fontWeight: '700', fontSize: 16, color: '#B91C1C' },
-  errorText: { color: '#7F1D1D', textAlign: 'center', fontSize: 14 },
+  hint: {},
+  errorTitle: { fontSize: 16 },
+  errorText: { textAlign: 'center', fontSize: 14 },
   link: { marginTop: 8, paddingVertical: 8, paddingHorizontal: 12 },
-  linkText: { color: '#2F5FE0', fontWeight: '600' },
+  linkText: {},
 });

@@ -61,21 +61,47 @@ export function ConfirmDialog({
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
       <View style={[styles.backdrop, { backgroundColor: theme.overlay }]}>
         <View
-          style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}
+          style={[
+            styles.card,
+            {
+              backgroundColor: theme.card,
+              borderColor: theme.border,
+              borderRadius: theme.radius.lg,
+            },
+          ]}
           accessibilityRole="alert"
         >
           <ScrollView contentContainerStyle={styles.cardContent}>
-            <Text style={[styles.title, { color: theme.danger, fontSize: theme.scale(16) }]}>
+            <Text
+              style={[
+                styles.title,
+                { color: theme.danger, fontSize: theme.scale(16), fontFamily: theme.fonts.display },
+              ]}
+            >
               {title}
             </Text>
-            <Text style={[styles.body, { color: theme.subtext, fontSize: theme.scale(14) }]}>
+            <Text
+              style={[
+                styles.body,
+                { color: theme.subtext, fontSize: theme.scale(14), fontFamily: theme.fonts.body },
+              ]}
+            >
               {body}
             </Text>
 
             {strongWord ? (
               <View style={styles.strongBlock}>
-                <Text style={[styles.strongHint, { color: theme.text, fontSize: theme.scale(13) }]}>
-                  Type <Text style={styles.strongWord}>{strongWord}</Text> to confirm.
+                <Text
+                  style={[
+                    styles.strongHint,
+                    { color: theme.text, fontSize: theme.scale(13), fontFamily: theme.fonts.body },
+                  ]}
+                >
+                  Type{' '}
+                  <Text style={[styles.strongWord, { fontFamily: theme.fonts.mono }]}>
+                    {strongWord}
+                  </Text>{' '}
+                  to confirm.
                 </Text>
                 <TextInput
                   style={[
@@ -84,6 +110,8 @@ export function ConfirmDialog({
                       color: theme.text,
                       borderColor: theme.border,
                       backgroundColor: theme.background,
+                      borderRadius: theme.radius.sm,
+                      fontFamily: theme.fonts.mono,
                     },
                   ]}
                   value={typed}
@@ -111,7 +139,14 @@ export function ConfirmDialog({
                 accessibilityRole="button"
                 accessibilityLabel="Cancel"
               >
-                <Text style={[styles.cancelText, { color: theme.text }]}>Cancel</Text>
+                <Text
+                  style={[
+                    styles.cancelText,
+                    { color: theme.text, fontFamily: theme.fonts.bodySemibold },
+                  ]}
+                >
+                  Cancel
+                </Text>
               </Pressable>
               <Pressable
                 style={({ pressed }) => [
@@ -119,6 +154,7 @@ export function ConfirmDialog({
                   styles.confirmButton,
                   {
                     backgroundColor: theme.danger,
+                    borderRadius: theme.radius.md,
                     opacity: !strongSatisfied || busy ? 0.45 : pressed ? 0.85 : 1,
                   },
                 ]}
@@ -130,7 +166,9 @@ export function ConfirmDialog({
                 {busy ? (
                   <ActivityIndicator color="#FFFFFF" />
                 ) : (
-                  <Text style={styles.confirmText}>{confirmLabel}</Text>
+                  <Text style={[styles.confirmText, { fontFamily: theme.fonts.bodyBold }]}>
+                    {confirmLabel}
+                  </Text>
                 )}
               </Pressable>
             </View>

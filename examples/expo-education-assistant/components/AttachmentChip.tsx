@@ -1,6 +1,7 @@
 import { AuthenticatedAttachmentImage } from '@/components/AuthenticatedAttachmentImage';
 import type { AttachmentChipInfo } from '@/lib/chatAttachments';
 import { formatFileSize } from '@/lib/documentUpload';
+import { useTheme } from '@/lib/Preferences';
 import { pdfPageLimitNotice } from '@/lib/visionLimits';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
@@ -31,24 +32,48 @@ export function AttachmentChip({
   error,
   onPress,
 }: AttachmentChipProps) {
+  const theme = useTheme();
   const pageLimitNotice = pdfPageLimitNotice(info.pageCount);
   const thumbnail = thumbnailUri ? (
-    <Image source={{ uri: thumbnailUri }} style={styles.thumbnail} resizeMode="cover" />
+    <Image
+      source={{ uri: thumbnailUri }}
+      style={[styles.thumbnail, { borderRadius: theme.radius.sm }]}
+      resizeMode="cover"
+    />
   ) : info.remote && info.mimeType?.startsWith('image/') ? (
     <AuthenticatedAttachmentImage
       conversationId={info.remote.conversationId}
       messageId={info.remote.messageId}
       attachmentId={info.key}
-      style={styles.thumbnail}
+      style={[styles.thumbnail, { borderRadius: theme.radius.sm }]}
     />
   ) : (
-    <View style={[styles.thumbnail, styles.thumbnailPlaceholder]}>
-      <Text style={styles.thumbnailPlaceholderText}>{fileKindLabel(info.mimeType)}</Text>
+    <View
+      style={[
+        styles.thumbnail,
+        styles.thumbnailPlaceholder,
+        { backgroundColor: theme.accentSoft, borderRadius: theme.radius.sm },
+      ]}
+    >
+      <Text
+        style={[
+          styles.thumbnailPlaceholderText,
+          { color: theme.accent, fontFamily: theme.fonts.bodyBold },
+        ]}
+      >
+        {fileKindLabel(info.mimeType)}
+      </Text>
     </View>
   );
 
   return (
-    <View style={[styles.chip, error && styles.chipError]}>
+    <View
+      style={[
+        styles.chip,
+        { borderColor: theme.border, backgroundColor: theme.card, borderRadius: theme.radius.md },
+        error && { borderColor: theme.danger, backgroundColor: theme.dangerSoft },
+      ]}
+    >
       {onPress ? (
         <Pressable
           onPress={onPress}
@@ -61,10 +86,16 @@ export function AttachmentChip({
         thumbnail
       )}
       <View style={styles.info}>
-        <Text style={styles.filename} numberOfLines={1}>
+        <Text
+          style={[styles.filename, { color: theme.text, fontFamily: theme.fonts.bodySemibold }]}
+          numberOfLines={1}
+        >
           {info.filename}
         </Text>
-        <Text style={styles.meta} numberOfLines={1}>
+        <Text
+          style={[styles.meta, { color: theme.subtext, fontFamily: theme.fonts.body }]}
+          numberOfLines={1}
+        >
           {info.sizeBytes !== null ? formatFileSize(info.sizeBytes) : 'Unknown size'}
           {info.pageCount !== null
             ? ` · ${info.pageCount} page${info.pageCount === 1 ? '' : 's'}`
@@ -74,12 +105,18 @@ export function AttachmentChip({
             : ''}
         </Text>
         {pageLimitNotice && (
-          <Text style={styles.pageLimitNotice} numberOfLines={2}>
+          <Text
+            style={[styles.pageLimitNotice, { color: theme.warning, fontFamily: theme.fonts.body }]}
+            numberOfLines={2}
+          >
             {pageLimitNotice}
           </Text>
         )}
         {error && (
-          <Text style={styles.errorText} numberOfLines={2}>
+          <Text
+            style={[styles.errorText, { color: theme.danger, fontFamily: theme.fonts.body }]}
+            numberOfLines={2}
+          >
             {error}
           </Text>
         )}
@@ -87,11 +124,18 @@ export function AttachmentChip({
       {onRemove && (
         <Pressable
           onPress={onRemove}
-          style={styles.removeButton}
+          style={[styles.removeButton, { backgroundColor: theme.cardPressed }]}
           accessibilityRole="button"
           accessibilityLabel={`Remove ${info.filename}`}
         >
-          <Text style={styles.removeButtonText}>✕</Text>
+          <Text
+            style={[
+              styles.removeButtonText,
+              { color: theme.subtext, fontFamily: theme.fonts.bodyBold },
+            ]}
+          >
+            ✕
+          </Text>
         </Pressable>
       )}
     </View>
@@ -102,34 +146,28 @@ const styles = StyleSheet.create({
   chip: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
     padding: 6,
-    backgroundColor: '#FFFFFF',
     gap: 8,
     maxWidth: 220,
   },
-  chipError: { borderColor: '#FCA5A5', backgroundColor: '#FEF2F2' },
-  thumbnail: { width: 36, height: 36, borderRadius: 6 },
+  thumbnail: { width: 36, height: 36 },
   thumbnailPlaceholder: {
-    backgroundColor: '#EFF6FF',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  thumbnailPlaceholderText: { fontSize: 9, fontWeight: '700', color: '#2F5FE0' },
+  thumbnailPlaceholderText: { fontSize: 9 },
   info: { flex: 1, minWidth: 0 },
-  filename: { fontSize: 12, fontWeight: '600', color: '#14161F' },
-  meta: { fontSize: 10, color: '#64748B', marginTop: 1 },
-  errorText: { fontSize: 10, color: '#B91C1C', marginTop: 2 },
-  pageLimitNotice: { fontSize: 10, color: '#A3620C', marginTop: 2 },
+  filename: { fontSize: 12 },
+  meta: { fontSize: 10, marginTop: 1 },
+  errorText: { fontSize: 10, marginTop: 2 },
+  pageLimitNotice: { fontSize: 10, marginTop: 2 },
   removeButton: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#F1F5F9',
   },
-  removeButtonText: { fontSize: 11, color: '#475569', fontWeight: '700' },
+  removeButtonText: { fontSize: 11 },
 });

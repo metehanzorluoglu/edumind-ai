@@ -1,5 +1,5 @@
 import type { ProjectSummary, UseProjectsResult } from 'education-assistant-client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -13,10 +13,15 @@ import {
 import { ConversationRow } from '@/components/ConversationRow';
 import { safeText } from '@/lib/format';
 import { measureWindowRect } from '@/lib/measureWindowRect';
+import { DARK_PALETTE, useTheme, type Theme } from '@/lib/Preferences';
 import {
   useSidebarContextMenu,
   type SidebarContextMenuAction,
 } from '@/lib/SidebarContextMenuContext';
+
+// Always-dark — ProjectRow only ever renders inside the sidebar (see
+// ConversationSidebar's docs).
+const dark = DARK_PALETTE;
 
 const MAX_PROJECT_NAME_LENGTH = 80;
 
@@ -70,6 +75,8 @@ export function ProjectRow({
   onDeleteConversation,
   deletingConversationIds,
 }: ProjectRowProps) {
+  const theme = useTheme();
+  const styles = useMemo(() => buildStyles(theme), [theme]);
   const [editMode, setEditMode] = useState<EditMode>('none');
   const [nameInput, setNameInput] = useState(project.name);
   const [descriptionInput, setDescriptionInput] = useState(project.description ?? '');
@@ -206,7 +213,7 @@ export function ProjectRow({
           <Text style={styles.conversationCount}>{project.conversation_count}</Text>
         </Pressable>
         {deleting ? (
-          <ActivityIndicator size="small" style={styles.menuButton} />
+          <ActivityIndicator size="small" style={styles.menuButton} color={dark.accent} />
         ) : (
           <View ref={triggerRef} style={styles.menuButton}>
             <Pressable
@@ -232,7 +239,7 @@ export function ProjectRow({
             value={descriptionInput}
             onChangeText={setDescriptionInput}
             placeholder="Description (optional)"
-            placeholderTextColor="#64748B"
+            placeholderTextColor={dark.faint}
             multiline
             autoFocus
             onBlur={commitDescription}
@@ -246,7 +253,7 @@ export function ProjectRow({
       {expanded && (
         <View style={styles.conversationList}>
           {conversationsState?.status === 'loading' && (
-            <ActivityIndicator size="small" style={styles.spinner} />
+            <ActivityIndicator size="small" style={styles.spinner} color={dark.accent} />
           )}
           {conversationsState?.status === 'error' && (
             <Text style={styles.errorText}>{conversationsState.error.message}</Text>
@@ -281,68 +288,89 @@ export function ProjectRow({
   );
 }
 
-const styles = StyleSheet.create({
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginHorizontal: 8,
-    borderRadius: 6,
-    position: 'relative',
-    minHeight: 36,
-  },
-  expandButton: {
-    width: 28,
-    minHeight: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  expandIcon: { color: '#94A3B8', fontSize: 12 },
-  headerMain: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 8,
-    gap: 6,
-  },
-  projectName: { color: '#E2E8F0', fontSize: 13, fontWeight: '600', flexShrink: 1 },
-  conversationCount: { color: '#64748B', fontSize: 11 },
-  menuButton: {
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    minWidth: 36,
-    minHeight: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  menuButtonPressable: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  menuButtonText: { color: '#94A3B8', fontSize: 16 },
-  renameInput: {
-    flex: 1,
-    color: '#FFFFFF',
-    fontSize: 13,
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    marginHorizontal: 4,
-    backgroundColor: '#1E293B',
-    borderRadius: 6,
-    minHeight: 36,
-  },
-  descriptionEditBox: { marginHorizontal: 8, marginBottom: 4 },
-  descriptionInput: {
-    color: '#E2E8F0',
-    fontSize: 12,
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    backgroundColor: '#1E293B',
-    borderRadius: 6,
-    minHeight: 48,
-    textAlignVertical: 'top',
-  },
-  errorText: { color: '#FCA5A5', fontSize: 11, marginHorizontal: 12, marginBottom: 4 },
-  emptyText: { color: '#64748B', fontSize: 11, marginHorizontal: 12, marginBottom: 4 },
-  spinner: { marginVertical: 8 },
-  conversationList: { marginLeft: 20 },
-});
+function buildStyles(theme: Theme) {
+  return StyleSheet.create({
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginHorizontal: 8,
+      borderRadius: theme.radius.sm,
+      position: 'relative',
+      minHeight: 36,
+    },
+    expandButton: {
+      width: 28,
+      minHeight: 36,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    expandIcon: { color: dark.faint, fontSize: 12 },
+    headerMain: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingVertical: 8,
+      gap: 6,
+    },
+    projectName: {
+      color: dark.text,
+      fontSize: 13,
+      flexShrink: 1,
+      fontFamily: theme.fonts.bodySemibold,
+    },
+    conversationCount: { color: dark.faint, fontSize: 11, fontFamily: theme.fonts.body },
+    menuButton: {
+      paddingHorizontal: 8,
+      paddingVertical: 8,
+      minWidth: 36,
+      minHeight: 36,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    menuButtonPressable: {
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    menuButtonText: { color: dark.faint, fontSize: 16 },
+    renameInput: {
+      flex: 1,
+      color: dark.text,
+      fontSize: 13,
+      paddingVertical: 6,
+      paddingHorizontal: 8,
+      marginHorizontal: 4,
+      backgroundColor: dark.cardPressed,
+      borderRadius: theme.radius.sm,
+      minHeight: 36,
+      fontFamily: theme.fonts.body,
+    },
+    descriptionEditBox: { marginHorizontal: 8, marginBottom: 4 },
+    descriptionInput: {
+      color: dark.text,
+      fontSize: 12,
+      paddingVertical: 6,
+      paddingHorizontal: 8,
+      backgroundColor: dark.cardPressed,
+      borderRadius: theme.radius.sm,
+      minHeight: 48,
+      textAlignVertical: 'top',
+      fontFamily: theme.fonts.body,
+    },
+    errorText: {
+      color: dark.danger,
+      fontSize: 11,
+      marginHorizontal: 12,
+      marginBottom: 4,
+      fontFamily: theme.fonts.body,
+    },
+    emptyText: {
+      color: dark.faint,
+      fontSize: 11,
+      marginHorizontal: 12,
+      marginBottom: 4,
+      fontFamily: theme.fonts.body,
+    },
+    spinner: { marginVertical: 8 },
+    conversationList: { marginLeft: 20 },
+  });
+}

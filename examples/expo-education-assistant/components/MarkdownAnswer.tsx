@@ -6,15 +6,10 @@ import type { TextStyle, ViewStyle } from 'react-native';
 import { Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { MarkedStyles } from 'react-native-marked';
 import { Renderer, useMarkdown } from 'react-native-marked';
+import { useTheme, type Theme } from '@/lib/Preferences';
 
 const CITATION_LINK_SCHEME = 'citation:';
 const FENCED_CODE_BLOCK_PATTERN = /```[\s\S]*?```/g;
-
-// Ochre, not the general link blue — [S<n>] markers are citation/evidence
-// UI specifically, and brand/BRAND_GUIDELINES.md §3 reserves orange for
-// exactly that (citation markers, AI-grounding badges), distinct from blue
-// for ordinary links.
-const CITATION_MARKER_STYLE: TextStyle = { color: '#B0641F', fontWeight: '700' };
 
 /**
  * Rewrites resolvable [S<n>] citation markers (see splitAnswerIntoSegments)
@@ -54,7 +49,13 @@ function preserveLineBreaks(markdown: string): string {
 }
 
 class CitationAwareRenderer extends Renderer {
-  constructor(private readonly onCitationPress: (sourceId: string) => void) {
+  constructor(
+    private readonly onCitationPress: (sourceId: string) => void,
+    // Ochre (light) / amber (dark) — [S<n>] markers are citation/evidence
+    // UI specifically, and brand/BRAND_GUIDELINES.md §3 reserves orange
+    // for exactly that, distinct from blue for ordinary links.
+    private readonly citationStyle: TextStyle
+  ) {
     super();
   }
 
@@ -69,7 +70,7 @@ class CitationAwareRenderer extends Renderer {
       return (
         <Text
           key={this.getKey()}
-          style={[styles, CITATION_MARKER_STYLE]}
+          style={[styles, this.citationStyle]}
           onPress={() => this.onCitationPress(sourceId)}
         >
           {children}
@@ -86,6 +87,7 @@ class CitationAwareRenderer extends Renderer {
   // fenced blocks their own monospace font, background, and horizontal
   // scroll for long lines.
   override code(text: string, _language?: string, containerStyle?: ViewStyle): ReactNode {
+    const codeBlockStyles = buildCodeBlockStyles(this.theme);
     return (
       <ScrollView
         key={this.getKey()}
@@ -99,6 +101,11 @@ class CitationAwareRenderer extends Renderer {
       </ScrollView>
     );
   }
+
+  // Set right after construction (see MarkdownAnswer below) — code() is
+  // the only renderer method needing the full theme rather than one
+  // pre-resolved style, since it builds a multi-part style set.
+  theme!: Theme;
 }
 
 export interface MarkdownAnswerProps {
@@ -109,66 +116,80 @@ export interface MarkdownAnswerProps {
 
 /** Renders assistant answer text as Markdown (headings, emphasis, lists, code, blockquotes, tables, links) while keeping [S<n>] citation markers tappable, exactly as the plain-text renderer it replaces did. Never used for user messages — those stay plain blue bubbles. */
 export function MarkdownAnswer({ answer, citations, onCitationPress }: MarkdownAnswerProps) {
-  const renderer = useMemo(() => new CitationAwareRenderer(onCitationPress), [onCitationPress]);
+  const theme = useTheme();
+  const renderer = useMemo(() => {
+    const r = new CitationAwareRenderer(onCitationPress, {
+      color: theme.citation,
+      fontFamily: theme.fonts.bodyBold,
+    });
+    r.theme = theme;
+    return r;
+  }, [onCitationPress, theme]);
   const value = useMemo(
     () => preserveLineBreaks(withCitationLinks(answer, citations)),
     [answer, citations]
   );
+  const markdownStyles = useMemo(() => buildMarkdownStyles(theme), [theme]);
   const blocks = useMarkdown(value, { renderer, styles: markdownStyles });
 
   return <View>{blocks}</View>;
 }
 
-const codeBlockStyles = StyleSheet.create({
-  scroll: {
-    backgroundColor: '#14161F',
-    borderRadius: 8,
-    marginVertical: 8,
-  },
-  content: {
-    padding: 12,
-  },
-  text: {
-    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-    fontSize: 13,
-    lineHeight: 18,
-    color: '#E2E8F0',
-  },
-});
-
 const monospaceFont = Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' });
 
-const markdownStyles: MarkedStyles = {
-  text: { fontSize: 16, lineHeight: 24, color: '#14161F' },
-  paragraph: { marginBottom: 8 },
-  strong: { fontWeight: '700' },
-  em: { fontStyle: 'italic' },
-  strikethrough: { textDecorationLine: 'line-through' },
-  link: { color: '#2F5FE0', fontWeight: '600' },
-  h1: { fontSize: 24, fontWeight: '700', color: '#14161F', marginTop: 12, marginBottom: 8 },
-  h2: { fontSize: 20, fontWeight: '700', color: '#14161F', marginTop: 10, marginBottom: 6 },
-  h3: { fontSize: 17, fontWeight: '700', color: '#14161F', marginTop: 8, marginBottom: 4 },
-  h4: { fontSize: 16, fontWeight: '700', color: '#14161F', marginTop: 6, marginBottom: 4 },
-  h5: { fontSize: 15, fontWeight: '700', color: '#14161F', marginTop: 6, marginBottom: 4 },
-  h6: { fontSize: 14, fontWeight: '700', color: '#14161F', marginTop: 6, marginBottom: 4 },
-  blockquote: {
-    borderLeftWidth: 3,
-    borderLeftColor: '#CBD5E1',
-    paddingLeft: 12,
-    marginVertical: 8,
-  },
-  codespan: {
-    fontFamily: monospaceFont,
-    fontSize: 14,
-    backgroundColor: '#E2E8F0',
-    color: '#14161F',
-    borderRadius: 4,
-    paddingHorizontal: 4,
-  },
-  hr: { borderBottomWidth: 1, borderBottomColor: '#E2E8F0', marginVertical: 12 },
-  list: { marginVertical: 4 },
-  li: { fontSize: 16, lineHeight: 24, color: '#14161F' },
-  table: { borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 6, marginVertical: 8 },
-  tableRow: { borderBottomWidth: 1, borderBottomColor: '#E2E8F0' },
-  tableCell: { padding: 6 },
-};
+function buildCodeBlockStyles(theme: Theme) {
+  return StyleSheet.create({
+    scroll: {
+      backgroundColor: theme.effective === 'dark' ? theme.background : '#14161F',
+      borderRadius: theme.radius.md,
+      marginVertical: 8,
+    },
+    content: {
+      padding: 12,
+    },
+    text: {
+      fontFamily: theme.fonts.mono !== 'monospace' ? theme.fonts.mono : monospaceFont,
+      fontSize: 13,
+      lineHeight: 18,
+      color: '#E2E8F0',
+    },
+  });
+}
+
+function buildMarkdownStyles(theme: Theme): MarkedStyles {
+  const heading: TextStyle = { fontFamily: theme.fonts.display, color: theme.text };
+  return {
+    text: { fontSize: 16, lineHeight: 24, color: theme.text, fontFamily: theme.fonts.body },
+    paragraph: { marginBottom: 8 },
+    strong: { fontWeight: '700', fontFamily: theme.fonts.bodyBold },
+    em: { fontStyle: 'italic' },
+    strikethrough: { textDecorationLine: 'line-through' },
+    link: { color: theme.accent, fontFamily: theme.fonts.bodySemibold },
+    h1: { ...heading, fontSize: 24, marginTop: 12, marginBottom: 8 },
+    h2: { ...heading, fontSize: 20, marginTop: 10, marginBottom: 6 },
+    h3: { ...heading, fontSize: 17, marginTop: 8, marginBottom: 4 },
+    h4: { ...heading, fontSize: 16, marginTop: 6, marginBottom: 4 },
+    h5: { ...heading, fontSize: 15, marginTop: 6, marginBottom: 4 },
+    h6: { ...heading, fontSize: 14, marginTop: 6, marginBottom: 4 },
+    blockquote: {
+      borderLeftWidth: 3,
+      borderLeftColor: theme.border,
+      paddingLeft: 12,
+      marginVertical: 8,
+    },
+    codespan: {
+      fontFamily: theme.fonts.mono !== 'monospace' ? theme.fonts.mono : monospaceFont,
+      fontSize: 14,
+      backgroundColor: theme.cardPressed,
+      color: theme.text,
+      borderRadius: 4,
+      paddingHorizontal: 4,
+    },
+    hr: { borderBottomWidth: 1, borderBottomColor: theme.border, marginVertical: 12 },
+    list: { marginVertical: 4 },
+    li: { fontSize: 16, lineHeight: 24, color: theme.text, fontFamily: theme.fonts.body },
+    table: { borderWidth: 1, borderColor: theme.border, borderRadius: 6, marginVertical: 8 },
+    tableRow: { borderBottomWidth: 1, borderBottomColor: theme.border },
+    tableCell: { padding: 6 },
+  };
+}

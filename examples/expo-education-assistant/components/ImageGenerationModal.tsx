@@ -15,6 +15,7 @@ import {
 import * as ImagePicker from 'expo-image-picker';
 import { AttachmentChip } from '@/components/AttachmentChip';
 import { useClient } from '@/lib/ClientProvider';
+import { DARK_PALETTE, useTheme, type Theme } from '@/lib/Preferences';
 import {
   isReferenceMimeType,
   MAX_REFERENCE_IMAGES,
@@ -24,6 +25,10 @@ import {
   type ReferenceImageMimeType,
   type ReferenceImageRef,
 } from '@/lib/referenceImages';
+
+// Always-dark, matching every other overlay dialog in the app (see
+// AttachmentLightbox/AddToProjectPicker's docs on this convention).
+const dark = DARK_PALETTE;
 
 export interface AspectRatioOption {
   key: string;
@@ -162,12 +167,37 @@ const IndeterminateProgressBar = memo(function IndeterminateProgressBar() {
   }, [position]);
 
   return (
-    <View style={styles.progressTrack}>
+    <View style={indeterminateBarStyles.progressTrack}>
       <Animated.View
-        style={[styles.progressIndeterminateSegment, { transform: [{ translateX }] }]}
+        style={[
+          indeterminateBarStyles.progressIndeterminateSegment,
+          { transform: [{ translateX }] },
+        ]}
       />
     </View>
   );
+});
+
+// Isolated from buildStyles(theme) below on purpose: this is a memoized,
+// module-scope component (see its own docs on why re-renders must never
+// rebuild its animated node graph) — it can't reach into
+// ImageGenerationModal's per-instance, theme-derived `styles`. Colors
+// still come from the shared always-dark palette; there's no text/font
+// here to theme.
+const indeterminateBarStyles = StyleSheet.create({
+  progressTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: dark.border,
+    overflow: 'hidden',
+  },
+  progressIndeterminateSegment: {
+    position: 'absolute',
+    width: 90,
+    height: '100%',
+    borderRadius: 3,
+    backgroundColor: dark.accent,
+  },
 });
 
 /**
@@ -193,6 +223,8 @@ export function ImageGenerationModal({
   onGenerate,
   initialValues,
 }: ImageGenerationModalProps) {
+  const theme = useTheme();
+  const styles = useMemo(() => buildStyles(theme), [theme]);
   const [prompt, setPrompt] = useState(initialValues?.prompt ?? '');
   const [negativePrompt, setNegativePrompt] = useState(initialValues?.negativePrompt ?? '');
   const [aspectRatioKey, setAspectRatioKey] = useState(
@@ -460,7 +492,7 @@ export function ImageGenerationModal({
               value={prompt}
               onChangeText={setPrompt}
               placeholder="Describe the image you want…"
-              placeholderTextColor="#94A3B8"
+              placeholderTextColor={dark.faint}
               multiline
               editable={!busy}
               accessibilityLabel="Image prompt"
@@ -472,7 +504,7 @@ export function ImageGenerationModal({
               value={negativePrompt}
               onChangeText={setNegativePrompt}
               placeholder="Things to avoid…"
-              placeholderTextColor="#94A3B8"
+              placeholderTextColor={dark.faint}
               multiline
               editable={!busy}
               accessibilityLabel="Negative prompt"
@@ -504,7 +536,7 @@ export function ImageGenerationModal({
                     />
                     {ref.loading && (
                       <View style={styles.referenceLoading} pointerEvents="none">
-                        <ActivityIndicator size="small" color="#2F5FE0" />
+                        <ActivityIndicator size="small" color={dark.accent} />
                       </View>
                     )}
                   </View>
@@ -619,7 +651,7 @@ export function ImageGenerationModal({
                 accessibilityLabel="Generate"
               >
                 {busy ? (
-                  <ActivityIndicator color="#FFFFFF" size="small" />
+                  <ActivityIndicator color={dark.accentContrast} size="small" />
                 ) : (
                   <Text style={styles.generateButtonText}>Generate</Text>
                 )}
@@ -632,117 +664,151 @@ export function ImageGenerationModal({
   );
 }
 
-const styles = StyleSheet.create({
-  overlay: {
-    ...StyleSheet.absoluteFillObject,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 30,
-    elevation: 30,
-  },
-  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(15, 23, 42, 0.5)' },
-  panel: {
-    width: 360,
-    maxHeight: '85%',
-    backgroundColor: '#1E293B',
-    borderRadius: 12,
-    padding: 16,
-  },
-  title: { color: '#F6F7FA', fontSize: 16, fontWeight: '700', marginBottom: 12 },
-  label: { color: '#94A3B8', fontSize: 12, fontWeight: '600', marginBottom: 6, marginTop: 12 },
-  textArea: {
-    color: '#F6F7FA',
-    fontSize: 14,
-    minHeight: 60,
-    backgroundColor: '#14161F',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    textAlignVertical: 'top',
-  },
-  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  chip: {
-    borderWidth: 1,
-    borderColor: '#334155',
-    borderRadius: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
-  chipSelected: { backgroundColor: '#2F5FE0', borderColor: '#2F5FE0' },
-  chipText: { color: '#CBD5E1', fontSize: 12 },
-  chipTextSelected: { color: '#FFFFFF', fontWeight: '600' },
-  stepperRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
-  stepperButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#334155',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  stepperButtonText: { color: '#F6F7FA', fontSize: 18, fontWeight: '700' },
-  stepperValue: {
-    color: '#F6F7FA',
-    fontSize: 14,
-    fontWeight: '600',
-    minWidth: 20,
-    textAlign: 'center',
-  },
-  progressSection: { marginTop: 16, gap: 8 },
-  progressLabel: { color: '#CBD5E1', fontSize: 13, textAlign: 'center' },
-  progressTrack: {
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#334155',
-    overflow: 'hidden',
-  },
-  progressFill: { height: '100%', backgroundColor: '#2F5FE0', borderRadius: 3 },
-  progressIndeterminateSegment: {
-    position: 'absolute',
-    width: 90,
-    height: '100%',
-    borderRadius: 3,
-    backgroundColor: '#2F5FE0',
-  },
-  errorBox: { backgroundColor: '#450A0A', borderRadius: 8, padding: 10, marginTop: 12 },
-  errorText: { color: '#FCA5A5', fontSize: 12 },
-  actionsRow: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    alignItems: 'center',
-    gap: 16,
-    marginTop: 16,
-  },
-  cancelText: { color: '#94A3B8', fontSize: 13, paddingVertical: 8, paddingHorizontal: 4 },
-  generateButton: {
-    backgroundColor: '#2F5FE0',
-    borderRadius: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    minWidth: 100,
-    alignItems: 'center',
-  },
-  generateButtonDisabled: { opacity: 0.5 },
-  generateButtonText: { color: '#FFFFFF', fontWeight: '600', fontSize: 13 },
-  referenceHint: { color: '#64748B', fontSize: 11, lineHeight: 15 },
-  referenceList: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
-  referenceItem: { position: 'relative' },
-  referenceLoading: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.7)',
-    borderRadius: 8,
-  },
-  addReferenceButton: {
-    alignSelf: 'flex-start',
-    borderWidth: 1,
-    borderColor: '#334155',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginTop: 8,
-  },
-  addReferenceText: { color: '#CBD5E1', fontSize: 12, fontWeight: '600' },
-});
+function buildStyles(theme: Theme) {
+  return StyleSheet.create({
+    overlay: {
+      ...StyleSheet.absoluteFillObject,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: 30,
+      elevation: 30,
+    },
+    backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(20, 22, 31, 0.6)' },
+    panel: {
+      width: 360,
+      maxHeight: '85%',
+      backgroundColor: dark.card,
+      borderRadius: theme.radius.lg,
+      padding: 16,
+    },
+    title: { color: dark.text, fontSize: 16, marginBottom: 12, fontFamily: theme.fonts.display },
+    label: {
+      color: dark.faint,
+      fontSize: 12,
+      marginBottom: 6,
+      marginTop: 12,
+      fontFamily: theme.fonts.bodySemibold,
+    },
+    textArea: {
+      color: dark.text,
+      fontSize: 14,
+      minHeight: 60,
+      backgroundColor: dark.background,
+      borderRadius: theme.radius.md,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      textAlignVertical: 'top',
+      fontFamily: theme.fonts.body,
+    },
+    chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+    chip: {
+      borderWidth: StyleSheet.hairlineWidth * 2,
+      borderColor: dark.border,
+      borderRadius: theme.radius.pill,
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+    },
+    chipSelected: { backgroundColor: dark.accent, borderColor: dark.accent },
+    chipText: { color: dark.subtext, fontSize: 12, fontFamily: theme.fonts.body },
+    chipTextSelected: { color: dark.accentContrast, fontFamily: theme.fonts.bodySemibold },
+    stepperRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+    stepperButton: {
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      backgroundColor: dark.border,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    stepperButtonText: { color: dark.text, fontSize: 18, fontFamily: theme.fonts.bodyBold },
+    stepperValue: {
+      color: dark.text,
+      fontSize: 14,
+      minWidth: 20,
+      textAlign: 'center',
+      fontFamily: theme.fonts.bodySemibold,
+    },
+    progressSection: { marginTop: 16, gap: 8 },
+    progressLabel: {
+      color: dark.subtext,
+      fontSize: 13,
+      textAlign: 'center',
+      fontFamily: theme.fonts.body,
+    },
+    progressTrack: {
+      height: 6,
+      borderRadius: 3,
+      backgroundColor: dark.border,
+      overflow: 'hidden',
+    },
+    progressFill: { height: '100%', backgroundColor: dark.accent, borderRadius: 3 },
+    progressIndeterminateSegment: {
+      position: 'absolute',
+      width: 90,
+      height: '100%',
+      borderRadius: 3,
+      backgroundColor: dark.accent,
+    },
+    errorBox: {
+      backgroundColor: dark.dangerSoft,
+      borderRadius: theme.radius.md,
+      padding: 10,
+      marginTop: 12,
+    },
+    errorText: { color: dark.danger, fontSize: 12, fontFamily: theme.fonts.body },
+    actionsRow: {
+      flexDirection: 'row',
+      justifyContent: 'flex-end',
+      alignItems: 'center',
+      gap: 16,
+      marginTop: 16,
+    },
+    cancelText: {
+      color: dark.faint,
+      fontSize: 13,
+      paddingVertical: 8,
+      paddingHorizontal: 4,
+      fontFamily: theme.fonts.body,
+    },
+    generateButton: {
+      backgroundColor: dark.accent,
+      borderRadius: theme.radius.md,
+      paddingVertical: 10,
+      paddingHorizontal: 16,
+      minWidth: 100,
+      alignItems: 'center',
+    },
+    generateButtonDisabled: { opacity: 0.5 },
+    generateButtonText: {
+      color: dark.accentContrast,
+      fontFamily: theme.fonts.bodySemibold,
+      fontSize: 13,
+    },
+    referenceHint: {
+      color: dark.faint,
+      fontSize: 11,
+      lineHeight: 15,
+      fontFamily: theme.fonts.body,
+    },
+    referenceList: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
+    referenceItem: { position: 'relative' },
+    referenceLoading: {
+      ...StyleSheet.absoluteFillObject,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: 'rgba(255, 255, 255, 0.7)',
+      borderRadius: theme.radius.md,
+    },
+    addReferenceButton: {
+      alignSelf: 'flex-start',
+      borderWidth: StyleSheet.hairlineWidth * 2,
+      borderColor: dark.border,
+      borderRadius: theme.radius.md,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      marginTop: 8,
+    },
+    addReferenceText: { color: dark.subtext, fontSize: 12, fontFamily: theme.fonts.bodySemibold },
+  });
+}

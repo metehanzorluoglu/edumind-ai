@@ -11,9 +11,17 @@ import { ConversationRow, type ConversationRowItem } from '@/components/Conversa
 import { ProjectsSection } from '@/components/ProjectsSection';
 import { useAuth } from '@/lib/AuthProvider';
 import { useClient } from '@/lib/ClientProvider';
+import { DARK_PALETTE, useTheme } from '@/lib/Preferences';
 import { SidebarContextMenuProvider } from '@/lib/SidebarContextMenuContext';
 import { describeApiError } from '@/lib/errorDisplay';
 import { safeText } from '@/lib/format';
+
+// This rail is deliberately always-dark (ChatGPT-style persistent
+// sidebar), independent of the user's light/dark theme preference — so
+// it draws colors from DARK_PALETTE directly rather than useTheme(),
+// which would follow the ambient mode. Fonts have no light/dark variant,
+// so those still come from useTheme().fonts.
+const dark = DARK_PALETTE;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -107,6 +115,7 @@ export function ConversationSidebar({
     conversations;
   const { user, logout, status: authStatus, accessToken } = useAuth();
   const { baseUrl } = useClient();
+  const theme = useTheme();
   const [addToProjectTarget, setAddToProjectTarget] = useState<{
     id: string;
     title: string;
@@ -172,10 +181,14 @@ export function ConversationSidebar({
   const items = listState.status === 'success' ? groupConversations(listState.conversations) : [];
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: dark.background }]}>
       <View style={styles.brandHeader}>
         <EduM8Symbol size={20} />
-        <Text style={styles.brandHeaderText}>EduM8</Text>
+        <Text
+          style={[styles.brandHeaderText, { color: dark.text, fontFamily: theme.fonts.display }]}
+        >
+          EduM8
+        </Text>
       </View>
 
       {/* SidebarContextMenuProvider wraps the FlatList (and everything it
@@ -196,7 +209,14 @@ export function ConversationSidebar({
               scrollEventThrottle={16}
               renderItem={({ item }) =>
                 item.type === 'header' ? (
-                  <Text style={styles.groupHeader}>{item.group}</Text>
+                  <Text
+                    style={[
+                      styles.groupHeader,
+                      { color: dark.faint, fontFamily: theme.fonts.bodyBold },
+                    ]}
+                  >
+                    {item.group}
+                  </Text>
                 ) : (
                   <ConversationRow
                     item={toRowItem(item.conversation!)}
@@ -211,9 +231,7 @@ export function ConversationSidebar({
               }
               ListHeaderComponent={
                 <>
-                  <Pressable style={styles.newChatButton} onPress={handleNewChat}>
-                    <Text style={styles.newChatButtonText}>+ New chat</Text>
-                  </Pressable>
+                  <NewChatButton onPress={handleNewChat} />
 
                   <ProjectsSection
                     projects={projects}
@@ -227,23 +245,47 @@ export function ConversationSidebar({
 
                   {listState.status === 'loading' && (
                     <View style={styles.centered}>
-                      <ActivityIndicator />
+                      <ActivityIndicator color={dark.faint} />
                     </View>
                   )}
 
                   {listState.status === 'error' && (
                     <View style={styles.centered}>
-                      <Text style={styles.errorText}>
+                      <Text
+                        style={[
+                          styles.errorText,
+                          { color: dark.danger, fontFamily: theme.fonts.body },
+                        ]}
+                      >
                         {describeApiError('GET', baseUrl, '/conversations', listState.error)}
                       </Text>
-                      <Pressable style={styles.retryButton} onPress={() => refresh()}>
-                        <Text style={styles.retryButtonText}>Retry</Text>
+                      <Pressable
+                        style={styles.retryButton}
+                        onPress={() => refresh()}
+                        accessibilityRole="button"
+                        accessibilityLabel="Retry loading conversations"
+                      >
+                        <Text
+                          style={[
+                            styles.retryButtonText,
+                            { color: dark.accent, fontFamily: theme.fonts.bodySemibold },
+                          ]}
+                        >
+                          Retry
+                        </Text>
                       </Pressable>
                     </View>
                   )}
 
                   {listState.status === 'success' && items.length === 0 && (
-                    <Text style={styles.emptyText}>No conversations yet — start one above.</Text>
+                    <Text
+                      style={[
+                        styles.emptyText,
+                        { color: dark.faint, fontFamily: theme.fonts.body },
+                      ]}
+                    >
+                      No conversations yet — start one above.
+                    </Text>
                   )}
                 </>
               }
@@ -261,20 +303,73 @@ export function ConversationSidebar({
         )}
       </SidebarContextMenuProvider>
 
-      <View style={styles.footer}>
-        <Text numberOfLines={1} style={styles.footerName}>
+      <View style={[styles.footer, { borderTopColor: dark.divider }]}>
+        <Text
+          numberOfLines={1}
+          style={[styles.footerName, { color: dark.subtext, fontFamily: theme.fonts.body }]}
+        >
           {safeText(user?.display_name ?? user?.email ?? null, 'Signed in')}
         </Text>
-        <Pressable style={styles.logoutButton} onPress={() => logout()}>
-          <Text style={styles.logoutButtonText}>Log out</Text>
+        <Pressable
+          style={styles.logoutButton}
+          onPress={() => logout()}
+          accessibilityRole="button"
+          accessibilityLabel="Log out"
+        >
+          <Text
+            style={[
+              styles.logoutButtonText,
+              { color: dark.accent, fontFamily: theme.fonts.bodySemibold },
+            ]}
+          >
+            Log out
+          </Text>
         </Pressable>
       </View>
     </View>
   );
 }
 
+/** Local, not the shared Button component — this rail is deliberately
+ * always-dark (see `dark` above), independent of the ambient theme
+ * Button.tsx reads via useTheme(). Same hover/focus pattern as Button. */
+function NewChatButton({ onPress }: { onPress: () => void }) {
+  const theme = useTheme();
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  return (
+    <Pressable
+      onPress={onPress}
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      accessibilityRole="button"
+      accessibilityLabel="New chat"
+      style={[
+        styles.newChatButton,
+        {
+          borderColor: focused ? dark.focusRing : dark.borderStrong,
+          borderWidth: focused ? 2 : StyleSheet.hairlineWidth * 2,
+          backgroundColor: hovered ? dark.cardPressed : 'transparent',
+          borderRadius: theme.radius.md,
+        },
+      ]}
+    >
+      <Text
+        style={[
+          styles.newChatButtonText,
+          { color: dark.text, fontFamily: theme.fonts.bodySemibold },
+        ]}
+      >
+        + New chat
+      </Text>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#14161F' },
+  container: { flex: 1 },
   brandHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -283,27 +378,23 @@ const styles = StyleSheet.create({
     paddingTop: 14,
     paddingBottom: 4,
   },
-  brandHeaderText: { color: '#F1F5F9', fontWeight: '700', fontSize: 15, letterSpacing: -0.2 },
+  brandHeaderText: { fontWeight: '600', fontSize: 15, letterSpacing: -0.2 },
   newChatButton: {
     margin: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#334155',
     paddingVertical: 10,
     alignItems: 'center',
   },
-  newChatButtonText: { color: '#F6F7FA', fontWeight: '600' },
+  newChatButtonText: { fontWeight: '600' },
   list: { flex: 1 },
   centered: { alignItems: 'center', gap: 8, padding: 16 },
-  errorText: { color: '#FCA5A5', fontSize: 12, textAlign: 'center' },
+  errorText: { fontSize: 12, textAlign: 'center' },
   retryButton: { paddingVertical: 6, paddingHorizontal: 12 },
-  retryButtonText: { color: '#93C5FD', fontSize: 12 },
-  emptyText: { color: '#64748B', fontSize: 12, textAlign: 'center', padding: 16 },
+  retryButtonText: { fontSize: 12, fontWeight: '600' },
+  emptyText: { fontSize: 12, textAlign: 'center', padding: 16 },
   groupHeader: {
-    color: '#64748B',
     fontSize: 11,
-    fontWeight: '700',
     textTransform: 'uppercase',
+    letterSpacing: 0.3,
     paddingHorizontal: 12,
     paddingTop: 12,
     paddingBottom: 4,
@@ -312,11 +403,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    borderTopWidth: 1,
-    borderTopColor: '#1E293B',
+    borderTopWidth: StyleSheet.hairlineWidth,
     padding: 12,
   },
-  footerName: { color: '#CBD5E1', fontSize: 12, flex: 1, marginRight: 8 },
+  footerName: { fontSize: 12, flex: 1, marginRight: 8 },
   logoutButton: { paddingVertical: 6, paddingHorizontal: 10 },
-  logoutButtonText: { color: '#93C5FD', fontSize: 12, fontWeight: '600' },
+  logoutButtonText: { fontSize: 12, fontWeight: '600' },
 });

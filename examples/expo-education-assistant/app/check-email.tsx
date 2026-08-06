@@ -1,8 +1,10 @@
 import { Link, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { EduM8Logo } from '@/components/EduM8Logo';
+import { Button } from '@/components/ui/Button';
 import { useAuth } from '@/lib/AuthProvider';
+import { useTheme } from '@/lib/Preferences';
 
 /** Fixed client-side cooldown between resend taps — a UX nicety only; the
  * backend enforces its own authoritative cooldown
@@ -27,6 +29,7 @@ export default function CheckEmailScreen() {
   const { resendVerification } = useAuth();
   const params = useLocalSearchParams<{ email?: string }>();
   const email = typeof params.email === 'string' ? params.email : '';
+  const theme = useTheme();
   const [sending, setSending] = useState(false);
   const [cooldown, setCooldown] = useState(0);
   const [justSent, setJustSent] = useState(false);
@@ -61,39 +64,63 @@ export default function CheckEmailScreen() {
   }
 
   return (
-    <View style={styles.container}>
-      <View style={styles.card}>
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
+      <View
+        style={[
+          styles.card,
+          { backgroundColor: theme.card, borderColor: theme.border, borderRadius: theme.radius.lg },
+        ]}
+      >
         <EduM8Logo size={30} style={styles.brandLogo} />
-        <Text style={styles.title}>Check your email</Text>
-        <Text style={styles.body}>
+        <Text
+          style={[
+            styles.title,
+            { color: theme.text, fontFamily: theme.fonts.display, fontSize: theme.scale(20) },
+          ]}
+        >
+          Check your email
+        </Text>
+        <Text
+          style={[
+            styles.body,
+            { color: theme.subtext, fontFamily: theme.fonts.body, fontSize: theme.scale(14) },
+          ]}
+        >
           We sent a verification link{email ? ` to ${maskEmail(email)}` : ''}. Click the link to
           confirm your address, then come back and sign in.
         </Text>
 
         {justSent && !sending && (
-          <View style={styles.noticeBox} accessibilityRole="alert">
-            <Text style={styles.noticeText}>Verification email sent.</Text>
+          <View
+            style={[
+              styles.noticeBox,
+              { backgroundColor: theme.warningSoft, borderRadius: theme.radius.md },
+            ]}
+            accessibilityRole="alert"
+          >
+            <Text
+              style={[styles.noticeText, { color: theme.ok, fontFamily: theme.fonts.bodyMedium }]}
+            >
+              Verification email sent.
+            </Text>
           </View>
         )}
 
-        <Pressable
-          style={[styles.button, (sending || cooldown > 0 || !email) && styles.buttonDisabled]}
+        <Button
+          label={cooldown > 0 ? `Resend available in ${cooldown}s` : 'Resend verification email'}
+          accessibilityLabel="Resend verification email"
           onPress={handleResend}
           disabled={sending || cooldown > 0 || !email}
-          accessibilityRole="button"
-          accessibilityLabel="Resend verification email"
-        >
-          {sending ? (
-            <ActivityIndicator color="#FFFFFF" />
-          ) : (
-            <Text style={styles.buttonText}>
-              {cooldown > 0 ? `Resend available in ${cooldown}s` : 'Resend verification email'}
-            </Text>
-          )}
-        </Pressable>
+          loading={sending}
+          fullWidth
+        />
 
         <Link href="/login" style={styles.link}>
-          <Text style={styles.linkText}>Back to sign in</Text>
+          <Text
+            style={[styles.linkText, { color: theme.accent, fontFamily: theme.fonts.bodySemibold }]}
+          >
+            Back to sign in
+          </Text>
         </Link>
       </View>
     </View>
@@ -103,29 +130,23 @@ export default function CheckEmailScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F6F7FA',
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
   },
-  card: { width: '100%', maxWidth: 420, gap: 8, alignItems: 'center' },
-  brandLogo: { marginBottom: 8 },
-  title: { fontSize: 20, fontWeight: '700', color: '#14161F', textAlign: 'center' },
-  body: { fontSize: 14, color: '#64748B', textAlign: 'center', lineHeight: 20, marginBottom: 16 },
-  noticeBox: { backgroundColor: '#F0FDF4', borderRadius: 8, padding: 10, marginBottom: 8 },
-  noticeText: { fontSize: 13, color: '#166534', textAlign: 'center' },
-  button: {
-    backgroundColor: '#2F5FE0',
-    borderRadius: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 44,
+  card: {
     width: '100%',
+    maxWidth: 420,
+    gap: 8,
+    alignItems: 'center',
+    padding: 28,
+    borderWidth: StyleSheet.hairlineWidth,
   },
-  buttonDisabled: { opacity: 0.6 },
-  buttonText: { color: '#FFFFFF', fontWeight: '600', fontSize: 15 },
+  brandLogo: { marginBottom: 8 },
+  title: { fontWeight: '600', textAlign: 'center' },
+  body: { textAlign: 'center', lineHeight: 20, marginBottom: 16 },
+  noticeBox: { padding: 10, marginBottom: 8, width: '100%' },
+  noticeText: { fontSize: 13, textAlign: 'center' },
   link: { marginTop: 16, paddingVertical: 8 },
-  linkText: { color: '#2F5FE0', fontWeight: '600' },
+  linkText: { fontWeight: '600' },
 });

@@ -18,6 +18,11 @@ import {
   type AttachmentImageLoadStatus,
 } from '@/components/AuthenticatedAttachmentImage';
 import type { AttachmentChipInfo } from '@/lib/chatAttachments';
+import { DARK_PALETTE, useTheme } from '@/lib/Preferences';
+
+// Always-dark, like a native photo viewer — independent of the app's own
+// light/dark theme, same convention as ConversationSidebar (see its docs).
+const dark = DARK_PALETTE;
 
 export interface AttachmentLightboxProps {
   visible: boolean;
@@ -46,6 +51,7 @@ const ZOOM_SCALE = 2.5;
  * "Known limitations".
  */
 function LightboxPage({ info }: { info: AttachmentChipInfo }) {
+  const theme = useTheme();
   const isPdf = info.mimeType === 'application/pdf';
   const [page, setPage] = useState(1);
   const [loadStatus, setLoadStatus] = useState<AttachmentImageLoadStatus>('loading');
@@ -104,14 +110,16 @@ function LightboxPage({ info }: { info: AttachmentChipInfo }) {
               onStatusChange={setLoadStatus}
             />
           ) : (
-            <Text style={styles.hint}>Preview is available once this message is sent.</Text>
+            <Text style={[styles.hint, { color: dark.subtext, fontFamily: theme.fonts.body }]}>
+              Preview is available once this message is sent.
+            </Text>
           )}
         </Animated.View>
       </Pressable>
 
       {info.remote && loadStatus === 'loading' && (
         <View style={styles.statusOverlay} pointerEvents="none">
-          <ActivityIndicator size="large" color="#E2E8F0" />
+          <ActivityIndicator size="large" color={dark.subtext} />
         </View>
       )}
 
@@ -122,8 +130,14 @@ function LightboxPage({ info }: { info: AttachmentChipInfo }) {
           accessibilityRole="button"
           accessibilityLabel="Retry loading image"
         >
-          <Text style={styles.statusTitle}>Couldn&apos;t load this image.</Text>
-          <Text style={styles.statusHint}>Tap to retry.</Text>
+          <Text
+            style={[styles.statusTitle, { color: dark.text, fontFamily: theme.fonts.bodySemibold }]}
+          >
+            Couldn&apos;t load this image.
+          </Text>
+          <Text style={[styles.statusHint, { color: dark.faint, fontFamily: theme.fonts.body }]}>
+            Tap to retry.
+          </Text>
         </Pressable>
       )}
 
@@ -132,21 +146,45 @@ function LightboxPage({ info }: { info: AttachmentChipInfo }) {
           <Pressable
             disabled={page <= 1}
             onPress={() => setPage((p) => Math.max(1, p - 1))}
-            style={[styles.pageNavButton, page <= 1 && styles.pageNavButtonDisabled]}
+            style={[
+              styles.pageNavButton,
+              { backgroundColor: dark.cardPressed, borderRadius: theme.radius.md },
+              page <= 1 && styles.pageNavButtonDisabled,
+            ]}
             accessibilityLabel="Previous page"
           >
-            <Text style={styles.pageNavText}>‹ Prev</Text>
+            <Text
+              style={[
+                styles.pageNavText,
+                { color: dark.text, fontFamily: theme.fonts.bodySemibold },
+              ]}
+            >
+              ‹ Prev
+            </Text>
           </Pressable>
-          <Text style={styles.pageIndicator}>
+          <Text
+            style={[styles.pageIndicator, { color: dark.subtext, fontFamily: theme.fonts.body }]}
+          >
             Page {page} of {pageCount}
           </Text>
           <Pressable
             disabled={page >= pageCount}
             onPress={() => setPage((p) => Math.min(pageCount, p + 1))}
-            style={[styles.pageNavButton, page >= pageCount && styles.pageNavButtonDisabled]}
+            style={[
+              styles.pageNavButton,
+              { backgroundColor: dark.cardPressed, borderRadius: theme.radius.md },
+              page >= pageCount && styles.pageNavButtonDisabled,
+            ]}
             accessibilityLabel="Next page"
           >
-            <Text style={styles.pageNavText}>Next ›</Text>
+            <Text
+              style={[
+                styles.pageNavText,
+                { color: dark.text, fontFamily: theme.fonts.bodySemibold },
+              ]}
+            >
+              Next ›
+            </Text>
           </Pressable>
         </View>
       )}
@@ -165,6 +203,7 @@ export function AttachmentLightbox({
   initialIndex,
   onClose,
 }: AttachmentLightboxProps) {
+  const theme = useTheme();
   const [index, setIndex] = useState(initialIndex);
   const listRef = useRef<FlatList<AttachmentChipInfo>>(null);
   const { width } = Dimensions.get('window');
@@ -201,20 +240,31 @@ export function AttachmentLightbox({
     <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
       <View style={styles.backdrop}>
         <View style={styles.topBar}>
-          <Text style={styles.filename} numberOfLines={1}>
+          <Text
+            style={[styles.filename, { color: dark.text, fontFamily: theme.fonts.bodySemibold }]}
+            numberOfLines={1}
+          >
             {current?.filename ?? ''}
           </Text>
           {attachments.length > 1 && (
-            <Text style={styles.counter}>
+            <Text style={[styles.counter, { color: dark.faint, fontFamily: theme.fonts.body }]}>
               {index + 1} / {attachments.length}
             </Text>
           )}
           <Pressable
             style={styles.closeButton}
             onPress={onClose}
+            accessibilityRole="button"
             accessibilityLabel="Close preview"
           >
-            <Text style={styles.closeButtonText}>✕</Text>
+            <Text
+              style={[
+                styles.closeButtonText,
+                { color: dark.text, fontFamily: theme.fonts.bodyBold },
+              ]}
+            >
+              ✕
+            </Text>
           </Pressable>
         </View>
 
@@ -246,7 +296,7 @@ export function AttachmentLightbox({
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.96)' },
+  backdrop: { flex: 1, backgroundColor: 'rgba(20, 22, 31, 0.96)' },
   topBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -255,17 +305,17 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     gap: 12,
   },
-  filename: { flex: 1, color: '#F6F7FA', fontSize: 14, fontWeight: '600' },
-  counter: { color: '#94A3B8', fontSize: 12 },
+  filename: { flex: 1, fontSize: 14 },
+  counter: { fontSize: 12 },
   closeButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: 'rgba(255,255,255,0.12)',
   },
-  closeButtonText: { color: '#F6F7FA', fontSize: 16, fontWeight: '700' },
+  closeButtonText: { fontSize: 16 },
   // flex:1 — without a bounded height the horizontal list collapses to 0px
   // under the top bar, and everything inside it (the page, the zoom
   // wrapper, the image) collapses with it (the dark-overlay-no-image bug).
@@ -280,9 +330,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  statusTitle: { color: '#F6F7FA', fontSize: 14, fontWeight: '600' },
-  statusHint: { color: '#94A3B8', fontSize: 12, marginTop: 4 },
-  hint: { color: '#CBD5E1', fontSize: 13, textAlign: 'center', paddingHorizontal: 24 },
+  statusTitle: { fontSize: 14 },
+  statusHint: { fontSize: 12, marginTop: 4 },
+  hint: { fontSize: 13, textAlign: 'center', paddingHorizontal: 24 },
   pageNav: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -291,12 +341,10 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
   },
   pageNavButton: {
-    backgroundColor: 'rgba(255,255,255,0.12)',
-    borderRadius: 8,
     paddingHorizontal: 14,
     paddingVertical: 8,
   },
   pageNavButtonDisabled: { opacity: 0.35 },
-  pageNavText: { color: '#F6F7FA', fontSize: 13, fontWeight: '600' },
-  pageIndicator: { color: '#E2E8F0', fontSize: 12 },
+  pageNavText: { fontSize: 13 },
+  pageIndicator: { fontSize: 12 },
 });

@@ -1,5 +1,5 @@
 import type { UseProjectsResult } from 'education-assistant-client';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Modal,
@@ -15,6 +15,12 @@ import {
 import { useClient } from '@/lib/ClientProvider';
 import { describeApiError } from '@/lib/errorDisplay';
 import { safeText } from '@/lib/format';
+import { DARK_PALETTE, useTheme, type Theme } from '@/lib/Preferences';
+
+// Always-dark, matching the sidebar this dialog is always triggered from
+// (see ConversationSidebar's docs on why that rail ignores the app's own
+// light/dark theme preference — this picker follows the same convention).
+const dark = DARK_PALETTE;
 
 const MAX_PROJECT_NAME_LENGTH = 80;
 
@@ -68,6 +74,8 @@ export function AddToProjectPicker({
   projects,
   onClose,
 }: AddToProjectPickerProps) {
+  const theme = useTheme();
+  const styles = useMemo(() => buildStyles(theme), [theme]);
   const { listState, projectConversationsStates, loadProjectConversations } = projects;
   const { baseUrl } = useClient();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
@@ -172,7 +180,9 @@ export function AddToProjectPicker({
             {`"${safeText(conversationTitle, 'this conversation')}"`}
           </Text>
 
-          {listState.status === 'loading' && <ActivityIndicator style={styles.spinner} />}
+          {listState.status === 'loading' && (
+            <ActivityIndicator style={styles.spinner} color={dark.accent} />
+          )}
           {listState.status === 'error' && (
             <Text style={styles.errorText}>
               {describeApiError('GET', baseUrl, '/projects', listState.error)}
@@ -209,7 +219,9 @@ export function AddToProjectPicker({
                     <Text style={styles.projectRowText} numberOfLines={2} ellipsizeMode="tail">
                       {project.name}
                     </Text>
-                    {(pending || !membershipKnown) && <ActivityIndicator size="small" />}
+                    {(pending || !membershipKnown) && (
+                      <ActivityIndicator size="small" color={dark.accent} />
+                    )}
                   </Pressable>
                 );
               })}
@@ -261,7 +273,7 @@ export function AddToProjectPicker({
                   accessibilityLabel="Create project and add conversation"
                 >
                   {creating ? (
-                    <ActivityIndicator size="small" />
+                    <ActivityIndicator size="small" color={dark.accent} />
                   ) : (
                     <Text style={styles.createText}>Create &amp; add</Text>
                   )}
@@ -284,67 +296,84 @@ export function AddToProjectPicker({
   );
 }
 
-const styles = StyleSheet.create({
-  overlay: {
-    ...StyleSheet.absoluteFillObject,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 30,
-    elevation: 30,
-  },
-  // Narrow/mobile: anchor the sheet to the bottom edge instead of centering
-  // it, and let it span the full width (panelWidth === windowWidth) — the
-  // "full-width bottom sheet" requirement.
-  overlayBottom: { alignItems: 'stretch', justifyContent: 'flex-end' },
-  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(15, 23, 42, 0.5)' },
-  panel: { backgroundColor: '#1E293B', padding: 16, gap: 8 },
-  panelCentered: { borderRadius: 12 },
-  panelSheet: { borderTopLeftRadius: 16, borderTopRightRadius: 16 },
-  title: { color: '#F6F7FA', fontSize: 14, fontWeight: '700' },
-  subtitle: { color: '#CBD5E1', fontSize: 13, marginBottom: 4 },
-  spinner: { marginVertical: 12 },
-  errorText: { color: '#FCA5A5', fontSize: 12 },
-  emptyText: { color: '#94A3B8', fontSize: 12 },
-  confirmationText: { color: '#86EFAC', fontSize: 12 },
-  projectList: {},
-  projectRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 8,
-    minHeight: 36,
-  },
-  checkbox: { color: '#93C5FD', fontSize: 16 },
-  projectRowText: { color: '#E2E8F0', fontSize: 13, flex: 1 },
-  divider: { height: 1, backgroundColor: '#334155', marginVertical: 4 },
-  newProjectButton: { paddingVertical: 8, minHeight: 36, justifyContent: 'center' },
-  newProjectButtonText: { color: '#93C5FD', fontSize: 13, fontWeight: '600' },
-  newProjectForm: { gap: 6 },
-  newProjectInput: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    backgroundColor: '#14161F',
-    borderRadius: 6,
-    minHeight: 36,
-  },
-  newProjectActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 16,
-    alignItems: 'center',
-  },
-  cancelText: { color: '#94A3B8', fontSize: 13, paddingVertical: 8 },
-  createText: { color: '#93C5FD', fontSize: 13, fontWeight: '600', paddingVertical: 8 },
-  doneButton: {
-    marginTop: 8,
-    alignSelf: 'flex-end',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    minHeight: 36,
-    justifyContent: 'center',
-  },
-  doneButtonText: { color: '#F6F7FA', fontSize: 13, fontWeight: '600' },
-});
+function buildStyles(theme: Theme) {
+  return StyleSheet.create({
+    overlay: {
+      ...StyleSheet.absoluteFillObject,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: 30,
+      elevation: 30,
+    },
+    // Narrow/mobile: anchor the sheet to the bottom edge instead of centering
+    // it, and let it span the full width (panelWidth === windowWidth) — the
+    // "full-width bottom sheet" requirement.
+    overlayBottom: { alignItems: 'stretch', justifyContent: 'flex-end' },
+    backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(20, 22, 31, 0.6)' },
+    panel: { backgroundColor: dark.card, padding: 16, gap: 8 },
+    panelCentered: { borderRadius: theme.radius.lg },
+    panelSheet: { borderTopLeftRadius: theme.radius.lg, borderTopRightRadius: theme.radius.lg },
+    title: { color: dark.text, fontSize: 14, fontFamily: theme.fonts.display },
+    subtitle: { color: dark.subtext, fontSize: 13, marginBottom: 4, fontFamily: theme.fonts.body },
+    spinner: { marginVertical: 12 },
+    errorText: { color: dark.danger, fontSize: 12, fontFamily: theme.fonts.body },
+    emptyText: { color: dark.faint, fontSize: 12, fontFamily: theme.fonts.body },
+    confirmationText: { color: dark.ok, fontSize: 12, fontFamily: theme.fonts.body },
+    projectList: {},
+    projectRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      paddingVertical: 8,
+      minHeight: 36,
+    },
+    checkbox: { color: dark.accent, fontSize: 16 },
+    projectRowText: { color: dark.text, fontSize: 13, flex: 1, fontFamily: theme.fonts.body },
+    divider: { height: StyleSheet.hairlineWidth, backgroundColor: dark.divider, marginVertical: 4 },
+    newProjectButton: { paddingVertical: 8, minHeight: 36, justifyContent: 'center' },
+    newProjectButtonText: {
+      color: dark.accent,
+      fontSize: 13,
+      fontFamily: theme.fonts.bodySemibold,
+    },
+    newProjectForm: { gap: 6 },
+    newProjectInput: {
+      color: dark.text,
+      fontSize: 13,
+      paddingVertical: 8,
+      paddingHorizontal: 10,
+      backgroundColor: dark.background,
+      borderRadius: theme.radius.sm,
+      minHeight: 36,
+      fontFamily: theme.fonts.body,
+    },
+    newProjectActions: {
+      flexDirection: 'row',
+      justifyContent: 'flex-end',
+      gap: 16,
+      alignItems: 'center',
+    },
+    cancelText: {
+      color: dark.faint,
+      fontSize: 13,
+      paddingVertical: 8,
+      fontFamily: theme.fonts.body,
+    },
+    createText: {
+      color: dark.accent,
+      fontSize: 13,
+      paddingVertical: 8,
+      fontFamily: theme.fonts.bodySemibold,
+    },
+    doneButton: {
+      marginTop: 8,
+      alignSelf: 'flex-end',
+      paddingVertical: 8,
+      paddingHorizontal: 12,
+      minHeight: 36,
+      justifyContent: 'center',
+    },
+    doneButtonText: { color: dark.text, fontSize: 13, fontFamily: theme.fonts.bodySemibold },
+  });
+}

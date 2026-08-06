@@ -9,7 +9,7 @@ import {
 } from 'education-assistant-client';
 import type { DisplayMessage, PostConversationMessageRequest } from 'education-assistant-client';
 import { useRouter } from 'expo-router';
-import { createElement, useEffect, useRef, useState } from 'react';
+import { createElement, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -40,6 +40,7 @@ import {
 import { useRefreshConversations } from '@/lib/ChatConversationsContext';
 import { useClient } from '@/lib/ClientProvider';
 import { useFeatureFlags } from '@/lib/FeatureFlags';
+import { useTheme, type Theme } from '@/lib/Preferences';
 import { useChatAttachments } from '@/lib/useChatAttachments';
 import { generateClientMessageId } from '@/lib/clientMessageId';
 import { describeApiError } from '@/lib/errorDisplay';
@@ -109,6 +110,8 @@ function formatRequestError(method: string, baseUrl: string, path: string, error
  * URL; the query string is never used as chat state.
  */
 export default function NewChatScreen() {
+  const theme = useTheme();
+  const styles = useMemo(() => buildStyles(theme), [theme]);
   const { client, baseUrl, hydrated } = useClient();
   const { imageGenerator: imageGeneratorEnabled } = useFeatureFlags();
   const router = useRouter();
@@ -439,53 +442,64 @@ export default function NewChatScreen() {
   if (!hydrated) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator />
+        <ActivityIndicator color={theme.accent} />
       </View>
     );
   }
 
   const composerBody = (
-    <>
-      <AttachmentPreviewRow attachments={attachments} onRemove={removeAttachment} />
-      {attachments.length > 0 && (
-        <CorpusToggle value={useCorpus} onValueChange={setUseCorpus} disabled={isBusy} />
-      )}
-      <View style={styles.inputRow}>
-        <AttachmentButton onPress={pickAttachment} disabled={phase !== 'idle'} />
-        {imageGeneratorEnabled && (
-          <ImageGenerateButton
-            onPress={() => {
-              setImageModalInitialValues(undefined);
-              setImageModalKey((k) => k + 1);
-              setImageModalOpen(true);
-            }}
-            disabled={phase !== 'idle'}
+    <View style={styles.composerOuter}>
+      <View style={styles.composerInner}>
+        <AttachmentPreviewRow attachments={attachments} onRemove={removeAttachment} />
+        {attachments.length > 0 && (
+          <CorpusToggle value={useCorpus} onValueChange={setUseCorpus} disabled={isBusy} />
+        )}
+        <View style={styles.inputRow}>
+          <AttachmentButton onPress={pickAttachment} disabled={phase !== 'idle'} />
+          {imageGeneratorEnabled && (
+            <ImageGenerateButton
+              onPress={() => {
+                setImageModalInitialValues(undefined);
+                setImageModalKey((k) => k + 1);
+                setImageModalOpen(true);
+              }}
+              disabled={phase !== 'idle'}
+            />
+          )}
+          <TextInput
+            style={styles.input}
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Ask about the corpus…"
+            placeholderTextColor={theme.faint}
+            editable={phase === 'idle'}
+            onSubmitEditing={handleAsk}
+            returnKeyType="send"
+            accessibilityLabel="Ask about the corpus"
           />
-        )}
-        <TextInput
-          style={styles.input}
-          value={query}
-          onChangeText={setQuery}
-          placeholder="Ask about the corpus…"
-          editable={phase === 'idle'}
-          onSubmitEditing={handleAsk}
-          returnKeyType="send"
-        />
-        {isBusy ? (
-          <Pressable style={[styles.button, styles.cancelButton]} onPress={handleCancel}>
-            <Text style={styles.buttonText}>Cancel</Text>
-          </Pressable>
-        ) : (
-          <Pressable
-            style={styles.button}
-            onPress={handleAsk}
-            disabled={!query.trim() || hasAttachmentErrors}
-          >
-            <Text style={styles.buttonText}>Ask</Text>
-          </Pressable>
-        )}
+          {isBusy ? (
+            <Pressable
+              style={[styles.button, styles.cancelButton]}
+              onPress={handleCancel}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel"
+            >
+              <Text style={styles.buttonText}>Cancel</Text>
+            </Pressable>
+          ) : (
+            <Pressable
+              style={styles.button}
+              onPress={handleAsk}
+              disabled={!query.trim() || hasAttachmentErrors}
+              accessibilityRole="button"
+              accessibilityLabel="Ask"
+            >
+              <Text style={styles.buttonText}>Ask</Text>
+            </Pressable>
+          )}
+        </View>
       </View>
-    </>
+    </View>
   );
 
   // See chat/[id].tsx's identical composer/dropZoneRefCallback split for
@@ -510,19 +524,26 @@ export default function NewChatScreen() {
       <View style={styles.body}>
         {submittedQuestion ? (
           <ScrollView contentContainerStyle={styles.turnScrollContent}>
-            <ConversationTurnCard
-              userContent={submittedQuestion}
-              assistant={assistantTurn}
-              userAttachments={submittedAttachments.map(attachmentChipFromPending)}
-              onCitationPress={() => {}}
-            />
-            {phase === 'error' && (
-              <View style={styles.retryBox}>
-                <Pressable style={styles.button} onPress={handleRetry}>
-                  <Text style={styles.buttonText}>Retry</Text>
-                </Pressable>
-              </View>
-            )}
+            <View style={styles.turnWrap}>
+              <ConversationTurnCard
+                userContent={submittedQuestion}
+                assistant={assistantTurn}
+                userAttachments={submittedAttachments.map(attachmentChipFromPending)}
+                onCitationPress={() => {}}
+              />
+              {phase === 'error' && (
+                <View style={styles.retryBox}>
+                  <Pressable
+                    style={styles.button}
+                    onPress={handleRetry}
+                    accessibilityRole="button"
+                    accessibilityLabel="Retry"
+                  >
+                    <Text style={styles.buttonText}>Retry</Text>
+                  </Pressable>
+                </View>
+              )}
+            </View>
           </ScrollView>
         ) : (
           <View style={styles.hintBody}>
@@ -537,6 +558,8 @@ export default function NewChatScreen() {
                     style={[styles.button, styles.secondaryButton]}
                     onPress={handleLoadSampleCorpus}
                     disabled={sampleUploadState.status === 'uploading'}
+                    accessibilityRole="button"
+                    accessibilityLabel="Load sample corpus"
                   >
                     <Text style={styles.buttonText}>
                       {sampleUploadState.status === 'uploading'
@@ -572,43 +595,63 @@ export default function NewChatScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F6F7FA' },
-  composerDragOver: { backgroundColor: '#EFF8FF' },
-  centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  body: { flex: 1 },
-  hintBody: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 16 },
-  hint: { color: '#64748B', textAlign: 'center' },
-  turnScrollContent: { padding: 16, flexGrow: 1 },
-  emptyCorpusBox: { alignItems: 'center', gap: 12, paddingHorizontal: 16 },
-  emptyCorpusText: { color: '#334155', textAlign: 'center', fontSize: 14, lineHeight: 20 },
-  secondaryButton: { backgroundColor: '#64748B' },
-  retryBox: { alignItems: 'center', gap: 8, marginTop: 12 },
-  error: { fontSize: 12, color: '#B91C1C', textAlign: 'center' },
-  inputRow: {
-    flexDirection: 'row',
-    padding: 12,
-    gap: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#E2E8F0',
-  },
-  input: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#FFFFFF',
-  },
-  button: {
-    backgroundColor: '#2F5FE0',
-    borderRadius: 8,
-    paddingHorizontal: 16,
-    justifyContent: 'center',
-    alignItems: 'center',
-    minWidth: 64,
-  },
-  buttonText: { color: '#FFFFFF', fontWeight: '600' },
-  cancelButton: { backgroundColor: '#B91C1C' },
-});
+function buildStyles(theme: Theme) {
+  return StyleSheet.create({
+    container: { flex: 1, backgroundColor: theme.background },
+    composerDragOver: { backgroundColor: theme.accentSoft },
+    centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+    body: { flex: 1 },
+    hintBody: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 16 },
+    hint: { color: theme.subtext, textAlign: 'center', fontFamily: theme.fonts.body },
+    // See chat/[id].tsx's identical listContent/turnWrap pair — same
+    // reading-column treatment, kept consistent between the two screens.
+    turnScrollContent: { padding: 16, flexGrow: 1, alignItems: 'center' },
+    turnWrap: { width: '100%', maxWidth: 720 },
+    emptyCorpusBox: { alignItems: 'center', gap: 12, paddingHorizontal: 16 },
+    emptyCorpusText: {
+      color: theme.text,
+      textAlign: 'center',
+      fontSize: 14,
+      lineHeight: 20,
+      fontFamily: theme.fonts.body,
+    },
+    secondaryButton: { backgroundColor: theme.subtext },
+    retryBox: { alignItems: 'center', gap: 8, marginTop: 12 },
+    error: { fontSize: 12, color: theme.danger, textAlign: 'center', fontFamily: theme.fonts.body },
+    // See chat/[id].tsx's identical composerOuter/composerInner pair —
+    // same floating-composer treatment, kept consistent between screens.
+    composerOuter: { backgroundColor: theme.background, paddingHorizontal: 16, paddingBottom: 12 },
+    composerInner: { width: '100%', maxWidth: 720, alignSelf: 'center' },
+    inputRow: {
+      flexDirection: 'row',
+      padding: 10,
+      gap: 8,
+      marginTop: 8,
+      borderWidth: StyleSheet.hairlineWidth * 2,
+      borderColor: theme.border,
+      borderRadius: theme.radius.lg,
+      backgroundColor: theme.card,
+    },
+    input: {
+      flex: 1,
+      borderWidth: StyleSheet.hairlineWidth * 2,
+      borderColor: theme.border,
+      borderRadius: theme.radius.md,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      backgroundColor: theme.background,
+      color: theme.text,
+      fontFamily: theme.fonts.body,
+    },
+    button: {
+      backgroundColor: theme.accent,
+      borderRadius: theme.radius.md,
+      paddingHorizontal: 16,
+      justifyContent: 'center',
+      alignItems: 'center',
+      minWidth: 64,
+    },
+    buttonText: { color: theme.accentContrast, fontFamily: theme.fonts.bodySemibold },
+    cancelButton: { backgroundColor: theme.danger },
+  });
+}

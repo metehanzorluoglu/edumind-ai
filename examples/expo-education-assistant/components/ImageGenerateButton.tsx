@@ -1,4 +1,5 @@
 import { Pressable, StyleSheet, Text } from 'react-native';
+import { useTheme } from '@/lib/Preferences';
 
 export interface ImageGenerateButtonProps {
   onPress: () => void;
@@ -7,9 +8,18 @@ export interface ImageGenerateButtonProps {
 
 /** Sits beside AttachmentButton in the composer's input row — opens ImageGenerationModal. Mirrors AttachmentButton's exact shape/sizing so the two read as a pair. */
 export function ImageGenerateButton({ onPress, disabled = false }: ImageGenerateButtonProps) {
+  const theme = useTheme();
   return (
     <Pressable
-      style={[styles.button, disabled && styles.buttonDisabled]}
+      style={[
+        styles.button,
+        {
+          borderColor: theme.border,
+          backgroundColor: theme.card,
+          borderRadius: theme.radius.md,
+        },
+        disabled && styles.buttonDisabled,
+      ]}
       onPress={onPress}
       disabled={disabled}
       accessibilityRole="button"
@@ -23,12 +33,10 @@ export function ImageGenerateButton({ onPress, disabled = false }: ImageGenerate
 const styles = StyleSheet.create({
   button: {
     width: 44,
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 8,
+    minHeight: 44,
+    borderWidth: StyleSheet.hairlineWidth * 2,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#FFFFFF',
   },
   buttonDisabled: { opacity: 0.5 },
   icon: { fontSize: 18 },

@@ -130,7 +130,7 @@ describe('LoginScreen', () => {
 
     expect(findPressableByLabel(renderer.root, 'Continue with Google')).toBeTruthy();
     expect(findPressableByLabel(renderer.root, 'Continue with Facebook')).toBeTruthy();
-    expect(findByText(renderer.root, 'or continue with email')).toBeTruthy();
+    expect(findByText(renderer.root, 'or sign in with email')).toBeTruthy();
     expect(findInputByLabel(renderer.root, 'Email')).toBeTruthy();
   });
 
@@ -149,7 +149,7 @@ describe('LoginScreen', () => {
     });
 
     expect(findPressableByLabel(renderer.root, 'Continue with Google')).toBeTruthy();
-    expect(findByText(renderer.root, 'or continue with email')).toBeNull();
+    expect(findByText(renderer.root, 'or sign in with email')).toBeNull();
     expect(findInputByLabel(renderer.root, 'Email')).toBeNull();
   });
 

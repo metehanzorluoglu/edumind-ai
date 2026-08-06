@@ -70,3 +70,7 @@ deploy/prod/.env.prod
 deploy/oracle/.env.oracle
 
 deploy/oracle/.env.oracle.before-optimization
+
+# Reference/inspiration assets supplied during design work (mockups, demo
+# HTML, logo sheets) — not part of the shipped app, never committed.
+extend_asset/

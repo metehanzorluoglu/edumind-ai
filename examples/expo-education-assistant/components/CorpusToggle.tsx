@@ -1,4 +1,5 @@
 import { StyleSheet, Switch, Text, View } from 'react-native';
+import { useTheme } from '@/lib/Preferences';
 
 export interface CorpusToggleProps {
   value: boolean;
@@ -18,13 +19,18 @@ export interface CorpusToggleProps {
  * rag-backend's app/core/model_routing.py.
  */
 export function CorpusToggle({ value, onValueChange, disabled = false }: CorpusToggleProps) {
+  const theme = useTheme();
   return (
     <View style={styles.row}>
-      <Text style={styles.label}>Also use my research corpus</Text>
+      <Text style={[styles.label, { color: theme.subtext, fontFamily: theme.fonts.bodyMedium }]}>
+        Also use my research corpus
+      </Text>
       <Switch
         value={value}
         onValueChange={onValueChange}
         disabled={disabled}
+        trackColor={{ true: theme.accent, false: theme.border }}
+        thumbColor={theme.card}
         accessibilityLabel="Also use my research corpus"
       />
     </View>
@@ -39,5 +45,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingTop: 6,
   },
-  label: { fontSize: 12, color: '#334155', fontWeight: '500' },
+  label: { fontSize: 12 },
 });

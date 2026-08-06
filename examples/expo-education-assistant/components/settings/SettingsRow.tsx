@@ -39,20 +39,34 @@ export function SettingsRow({
         <Text
           style={[
             styles.label,
-            { color: disabled ? theme.faint : labelColor, fontSize: theme.scale(15) },
+            {
+              color: disabled ? theme.faint : labelColor,
+              fontSize: theme.scale(15),
+              fontFamily: theme.fonts.bodyMedium,
+            },
           ]}
         >
           {label}
         </Text>
         {description ? (
-          <Text style={[styles.description, { color: theme.faint, fontSize: theme.scale(12) }]}>
+          <Text
+            style={[
+              styles.description,
+              { color: theme.faint, fontSize: theme.scale(12), fontFamily: theme.fonts.body },
+            ]}
+          >
             {description}
           </Text>
         ) : null}
       </View>
       <View style={styles.trailing}>
         {value ? (
-          <Text style={[styles.value, { color: theme.subtext, fontSize: theme.scale(13) }]}>
+          <Text
+            style={[
+              styles.value,
+              { color: theme.subtext, fontSize: theme.scale(13), fontFamily: theme.fonts.body },
+            ]}
+          >
             {value}
           </Text>
         ) : null}

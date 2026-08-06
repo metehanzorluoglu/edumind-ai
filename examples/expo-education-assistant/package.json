@@ -5,10 +5,12 @@
   "dependencies": {
     "education-assistant-client": "file:../../packages/education-assistant-client",
     "expo": "^54.0.36",
+    "expo-asset": "~12.0.13",
     "expo-auth-session": "~7.0.11",
     "expo-constants": "~18.0.13",
     "expo-document-picker": "~14.0.8",
     "expo-file-system": "~19.0.23",
+    "expo-font": "~14.0.12",
     "expo-image-picker": "~17.0.11",
     "expo-linking": "~8.0.12",
     "expo-router": "~6.0.24",
@@ -59,9 +61,16 @@
   "private": true,
   "jest": {
     "preset": "jest-expo",
-    "testPathIgnorePatterns": ["/node_modules/", "<rootDir>/e2e/"],
-    "modulePathIgnorePatterns": ["<rootDir>/e2e/"],
-    "watchPathIgnorePatterns": ["<rootDir>/e2e/"],
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "<rootDir>/e2e/"
+    ],
+    "modulePathIgnorePatterns": [
+      "<rootDir>/e2e/"
+    ],
+    "watchPathIgnorePatterns": [
+      "<rootDir>/e2e/"
+    ],
     "moduleNameMapper": {
       "^react$": "<rootDir>/node_modules/react",
       "^react-dom$": "<rootDir>/node_modules/react-dom"

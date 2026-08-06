@@ -22,14 +22,29 @@ export function SettingsSection({
   const theme = useTheme();
   return (
     <View style={styles.wrap}>
-      <Text style={[styles.title, { color: theme.subtext, fontSize: theme.scale(12) }]}>
+      <Text
+        style={[
+          styles.title,
+          { color: theme.subtext, fontSize: theme.scale(12), fontFamily: theme.fonts.bodyBold },
+        ]}
+      >
         {title.toUpperCase()}
       </Text>
-      <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+      <View
+        style={[
+          styles.card,
+          { backgroundColor: theme.card, borderColor: theme.border, borderRadius: theme.radius.md },
+        ]}
+      >
         {children}
       </View>
       {footer ? (
-        <Text style={[styles.footer, { color: theme.faint, fontSize: theme.scale(12) }]}>
+        <Text
+          style={[
+            styles.footer,
+            { color: theme.faint, fontSize: theme.scale(12), fontFamily: theme.fonts.body },
+          ]}
+        >
           {footer}
         </Text>
       ) : null}
@@ -39,7 +54,7 @@ export function SettingsSection({
 
 const styles = StyleSheet.create({
   wrap: { gap: 6 },
-  title: { fontWeight: '700', letterSpacing: 0.8, paddingHorizontal: 4 },
-  card: { borderRadius: 12, borderWidth: 1, overflow: 'hidden' },
+  title: { letterSpacing: 0.8, paddingHorizontal: 4 },
+  card: { borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },
   footer: { lineHeight: 17, paddingHorizontal: 4, paddingTop: 2 },
 });

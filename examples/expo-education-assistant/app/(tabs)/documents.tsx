@@ -6,7 +6,7 @@ import type {
   UploadableFile,
 } from 'education-assistant-client';
 import * as DocumentPicker from 'expo-document-picker';
-import { createElement, useCallback, useEffect, useRef, useState } from 'react';
+import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -18,10 +18,13 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { PageHeader } from '@/components/ui/PageHeader';
 import { DOCUMENT_TYPES, DOCUMENT_TYPE_LABELS, JOURNAL_QUARTILES } from '@/lib/enums';
 import { fileExtension, formatFileSize, validateCandidateFile } from '@/lib/documentUpload';
 import { safeText } from '@/lib/format';
 import { useClient } from '@/lib/ClientProvider';
+import { useTheme, type Theme } from '@/lib/Preferences';
 import {
   SAMPLE_DOCUMENT_FILENAME,
   SAMPLE_DOCUMENT_TITLE,
@@ -79,6 +82,8 @@ interface SelectedFile {
 }
 
 export default function DocumentsScreen() {
+  const theme = useTheme();
+  const styles = useMemo(() => buildStyles(theme), [theme]);
   const { client, hydrated } = useClient();
   const {
     listState,
@@ -360,7 +365,7 @@ export default function DocumentsScreen() {
   if (!hydrated) {
     return (
       <View style={styles.screenCentered}>
-        <ActivityIndicator />
+        <ActivityIndicator color={theme.accent} />
       </View>
     );
   }
@@ -374,441 +379,510 @@ export default function DocumentsScreen() {
   );
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Upload</Text>
-        <Text style={styles.hint}>
-          Parsing and duplicate checks happen immediately; embedding and indexing run in the
-          background afterward and can take a while on this hardware — progress is shown below.
-        </Text>
-
-        {Platform.OS === 'web'
-          ? createElement(
-              // A plain host <div>, not <View> — react-native-web's View
-              // silently drops onDrag*/onDrop props (they're not in its
-              // forwarded-props whitelist), and its ref resolves to a
-              // class-component instance rather than the DOM node either
-              // way. A raw div gives dropZoneRefCallback a real element to
-              // attach native drag-and-drop listeners to (see above), while
-              // every visible/styled piece below stays an ordinary RN
-              // View/Text/Pressable.
-              'div',
-              { ref: dropZoneRefCallback, 'data-testid': 'document-drop-zone' },
-              <View
-                key="drop-zone-content"
-                testID="document-drop-zone-highlight"
-                style={[styles.dropZone, isDragOver && styles.dropZoneActive]}
-              >
-                <Text style={styles.dropZoneText}>
-                  Drag and drop a PDF, DOCX, TXT, or HTML file here
-                </Text>
-                <Text style={styles.dropZoneOr}>or</Text>
-                {chooseFileButton}
-              </View>
-            )
-          : chooseFileButton}
-
-        {selectedFile && (
-          <View style={styles.selectedFileBox}>
-            <View style={styles.selectedFileMain}>
-              <Text style={styles.selectedFileName}>{selectedFile.name}</Text>
-              <Text style={styles.hint}>
-                {selectedFile.mimeType ?? (fileExtension(selectedFile.name) || 'Unknown type')}
-                {selectedFile.size !== null ? ` · ${formatFileSize(selectedFile.size)}` : ''}
-              </Text>
-            </View>
-            <Pressable
-              onPress={handleClearFile}
-              style={styles.clearButton}
-              accessibilityRole="button"
-              accessibilityLabel="Remove selected file"
-              disabled={isUploading}
-            >
-              <Text style={styles.clearButtonText}>Remove</Text>
-            </Pressable>
-          </View>
-        )}
-        {fileError && <Text style={styles.errorText}>{fileError}</Text>}
-
-        {__DEV__ && (
-          <View style={styles.sampleBox}>
-            <Text style={styles.sampleBoxText}>
-              Dev only: no real documents on hand? Load one small fictional sample document to try
-              chat/search/citations end to end. Never treat it as real research evidence — remove it
-              afterward with{' '}
-              <Text style={styles.sampleBoxCode}>python -m cli.documents remove &lt;id&gt;</Text> on
-              the backend.
+    <View style={styles.container}>
+      <PageHeader title="Documents" />
+      <ScrollView contentContainerStyle={styles.content}>
+        <View style={styles.pageInner}>
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Upload</Text>
+            <Text style={styles.hint}>
+              Parsing and duplicate checks happen immediately; embedding and indexing run in the
+              background afterward and can take a while on this hardware — progress is shown below.
             </Text>
-            <Pressable
-              style={styles.secondaryButton}
-              onPress={handleLoadSampleCorpus}
-              disabled={isUploading}
-            >
-              <Text style={styles.secondaryButtonText}>Load sample corpus (dev only)</Text>
-            </Pressable>
-            {sampleError && <Text style={styles.warning}>{sampleError}</Text>}
-          </View>
-        )}
 
-        <Text style={styles.filterLabel}>Document type</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow}>
-          {DOCUMENT_TYPES.map((type) => (
-            <Pressable
-              key={type}
-              style={[styles.chip, documentType === type && styles.chipSelected]}
-              onPress={() => setDocumentType(type)}
-            >
-              <Text style={[styles.chipText, documentType === type && styles.chipTextSelected]}>
-                {DOCUMENT_TYPE_LABELS[type]}
-              </Text>
-            </Pressable>
-          ))}
-        </ScrollView>
-
-        {documentType === 'journal_article' && (
-          <>
-            <Text style={styles.filterLabel}>Journal quartile</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow}>
-              {JOURNAL_QUARTILES.map((quartile) => (
-                <Pressable
-                  key={quartile}
-                  style={[styles.chip, journalQuartile === quartile && styles.chipSelected]}
-                  onPress={() =>
-                    setJournalQuartile((current) => (current === quartile ? undefined : quartile))
-                  }
-                >
-                  <Text
-                    style={[
-                      styles.chipText,
-                      journalQuartile === quartile && styles.chipTextSelected,
-                    ]}
+            {Platform.OS === 'web'
+              ? createElement(
+                  // A plain host <div>, not <View> — react-native-web's View
+                  // silently drops onDrag*/onDrop props (they're not in its
+                  // forwarded-props whitelist), and its ref resolves to a
+                  // class-component instance rather than the DOM node either
+                  // way. A raw div gives dropZoneRefCallback a real element to
+                  // attach native drag-and-drop listeners to (see above), while
+                  // every visible/styled piece below stays an ordinary RN
+                  // View/Text/Pressable.
+                  'div',
+                  { ref: dropZoneRefCallback, 'data-testid': 'document-drop-zone' },
+                  <View
+                    key="drop-zone-content"
+                    testID="document-drop-zone-highlight"
+                    style={[styles.dropZone, isDragOver && styles.dropZoneActive]}
                   >
-                    {quartile}
+                    <Text style={styles.dropZoneText}>
+                      Drag and drop a PDF, DOCX, TXT, or HTML file here
+                    </Text>
+                    <Text style={styles.dropZoneOr}>or</Text>
+                    {chooseFileButton}
+                  </View>
+                )
+              : chooseFileButton}
+
+            {selectedFile && (
+              <View style={styles.selectedFileBox}>
+                <View style={styles.selectedFileMain}>
+                  <Text style={styles.selectedFileName}>{selectedFile.name}</Text>
+                  <Text style={styles.hint}>
+                    {selectedFile.mimeType ?? (fileExtension(selectedFile.name) || 'Unknown type')}
+                    {selectedFile.size !== null ? ` · ${formatFileSize(selectedFile.size)}` : ''}
+                  </Text>
+                </View>
+                <Pressable
+                  onPress={handleClearFile}
+                  style={styles.clearButton}
+                  accessibilityRole="button"
+                  accessibilityLabel="Remove selected file"
+                  disabled={isUploading}
+                >
+                  <Text style={styles.clearButtonText}>Remove</Text>
+                </Pressable>
+              </View>
+            )}
+            {fileError && <Text style={styles.errorText}>{fileError}</Text>}
+
+            {__DEV__ && (
+              <View style={styles.sampleBox}>
+                <Text style={styles.sampleBoxText}>
+                  Dev only: no real documents on hand? Load one small fictional sample document to
+                  try chat/search/citations end to end. Never treat it as real research evidence —
+                  remove it afterward with{' '}
+                  <Text style={styles.sampleBoxCode}>
+                    python -m cli.documents remove &lt;id&gt;
+                  </Text>{' '}
+                  on the backend.
+                </Text>
+                <Pressable
+                  style={styles.secondaryButton}
+                  onPress={handleLoadSampleCorpus}
+                  disabled={isUploading}
+                >
+                  <Text style={styles.secondaryButtonText}>Load sample corpus (dev only)</Text>
+                </Pressable>
+                {sampleError && <Text style={styles.warning}>{sampleError}</Text>}
+              </View>
+            )}
+
+            <Text style={styles.filterLabel}>Document type</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow}>
+              {DOCUMENT_TYPES.map((type) => (
+                <Pressable
+                  key={type}
+                  style={[styles.chip, documentType === type && styles.chipSelected]}
+                  onPress={() => setDocumentType(type)}
+                >
+                  <Text style={[styles.chipText, documentType === type && styles.chipTextSelected]}>
+                    {DOCUMENT_TYPE_LABELS[type]}
                   </Text>
                 </Pressable>
               ))}
             </ScrollView>
-          </>
-        )}
 
-        <TextInput
-          style={styles.input}
-          value={title}
-          onChangeText={setTitle}
-          placeholder="Title (optional)"
-          editable={!isUploading}
-        />
+            {documentType === 'journal_article' && (
+              <>
+                <Text style={styles.filterLabel}>Journal quartile</Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={styles.chipRow}
+                >
+                  {JOURNAL_QUARTILES.map((quartile) => (
+                    <Pressable
+                      key={quartile}
+                      style={[styles.chip, journalQuartile === quartile && styles.chipSelected]}
+                      onPress={() =>
+                        setJournalQuartile((current) =>
+                          current === quartile ? undefined : quartile
+                        )
+                      }
+                    >
+                      <Text
+                        style={[
+                          styles.chipText,
+                          journalQuartile === quartile && styles.chipTextSelected,
+                        ]}
+                      >
+                        {quartile}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              </>
+            )}
 
-        {selectedFile && (
-          <View style={styles.metadataReview}>
-            {previewState.status === 'loading' && (
-              <View style={styles.centered}>
-                <ActivityIndicator size="small" />
-                <Text style={styles.hint}>Detecting metadata…</Text>
+            <TextInput
+              style={styles.input}
+              placeholderTextColor={theme.faint}
+              value={title}
+              onChangeText={setTitle}
+              placeholder="Title (optional)"
+              editable={!isUploading}
+            />
+
+            {selectedFile && (
+              <View style={styles.metadataReview}>
+                {previewState.status === 'loading' && (
+                  <View style={styles.centered}>
+                    <ActivityIndicator size="small" color={theme.accent} />
+                    <Text style={styles.hint}>Detecting metadata…</Text>
+                  </View>
+                )}
+                {previewState.status === 'error' && (
+                  <Text style={styles.hint}>
+                    Couldn&apos;t auto-detect metadata for this file — you can still fill it in
+                    manually below.
+                  </Text>
+                )}
+                <Text style={styles.hint}>
+                  Review the detected fields below and edit anything that&apos;s wrong before
+                  uploading.
+                </Text>
+                <TextInput
+                  style={styles.input}
+                  placeholderTextColor={theme.faint}
+                  value={authorsText}
+                  onChangeText={setAuthorsText}
+                  placeholder="Authors, comma-separated (optional)"
+                  editable={!isUploading}
+                />
+                <TextInput
+                  style={styles.input}
+                  placeholderTextColor={theme.faint}
+                  value={publicationYearText}
+                  onChangeText={setPublicationYearText}
+                  placeholder="Publication year (optional)"
+                  keyboardType="number-pad"
+                  editable={!isUploading}
+                />
+                <TextInput
+                  style={styles.input}
+                  placeholderTextColor={theme.faint}
+                  value={sourceVenue}
+                  onChangeText={setSourceVenue}
+                  placeholder="Source venue / journal (optional)"
+                  editable={!isUploading}
+                />
+                <TextInput
+                  style={styles.input}
+                  placeholderTextColor={theme.faint}
+                  value={doi}
+                  onChangeText={setDoi}
+                  placeholder="DOI (optional)"
+                  autoCapitalize="none"
+                  editable={!isUploading}
+                />
+                <TextInput
+                  style={styles.input}
+                  placeholderTextColor={theme.faint}
+                  value={sourceUrl}
+                  onChangeText={setSourceUrl}
+                  placeholder="Source URL (optional)"
+                  autoCapitalize="none"
+                  editable={!isUploading}
+                />
               </View>
             )}
-            {previewState.status === 'error' && (
-              <Text style={styles.hint}>
-                Couldn&apos;t auto-detect metadata for this file — you can still fill it in manually
-                below.
-              </Text>
+
+            {uploadState.status === 'idle' && (
+              <Pressable style={styles.button} onPress={handleUpload} disabled={!canUpload}>
+                <Text style={styles.buttonText}>Upload</Text>
+              </Pressable>
             )}
-            <Text style={styles.hint}>
-              Review the detected fields below and edit anything that&apos;s wrong before uploading.
-            </Text>
-            <TextInput
-              style={styles.input}
-              value={authorsText}
-              onChangeText={setAuthorsText}
-              placeholder="Authors, comma-separated (optional)"
-              editable={!isUploading}
-            />
-            <TextInput
-              style={styles.input}
-              value={publicationYearText}
-              onChangeText={setPublicationYearText}
-              placeholder="Publication year (optional)"
-              keyboardType="number-pad"
-              editable={!isUploading}
-            />
-            <TextInput
-              style={styles.input}
-              value={sourceVenue}
-              onChangeText={setSourceVenue}
-              placeholder="Source venue / journal (optional)"
-              editable={!isUploading}
-            />
-            <TextInput
-              style={styles.input}
-              value={doi}
-              onChangeText={setDoi}
-              placeholder="DOI (optional)"
-              autoCapitalize="none"
-              editable={!isUploading}
-            />
-            <TextInput
-              style={styles.input}
-              value={sourceUrl}
-              onChangeText={setSourceUrl}
-              placeholder="Source URL (optional)"
-              autoCapitalize="none"
-              editable={!isUploading}
-            />
+            {uploadState.status === 'uploading' && (
+              <View style={styles.centered}>
+                <ActivityIndicator color={theme.accent} />
+                <Text style={styles.hint}>Uploading…</Text>
+              </View>
+            )}
+            {uploadState.status === 'processing' && (
+              <View style={styles.centered}>
+                <ActivityIndicator color={theme.accent} />
+                <Text style={styles.hint}>
+                  {STAGE_LABELS[uploadState.job.stage]}
+                  {uploadState.job.total_chunks > 0
+                    ? ` — ${uploadState.job.embedded_chunks} of ${uploadState.job.total_chunks} chunk(s)`
+                    : ''}
+                </Text>
+              </View>
+            )}
+            {uploadState.status === 'success' && (
+              <View style={styles.successBox}>
+                <Text style={styles.successText}>
+                  Ingested &quot;
+                  {safeText(uploadState.document.title, uploadState.document.source_filename)}&quot;
+                  — {uploadState.document.chunk_count} chunk(s) from{' '}
+                  {uploadState.document.page_count} page(s).
+                </Text>
+                <Pressable style={styles.secondaryButton} onPress={handleUploadDone}>
+                  <Text style={styles.secondaryButtonText}>Done</Text>
+                </Pressable>
+              </View>
+            )}
+            {uploadState.status === 'error' && (
+              <View style={styles.errorBox}>
+                <Text style={styles.errorText}>
+                  {uploadState.error.statusCode !== null
+                    ? `HTTP ${uploadState.error.statusCode} — ${uploadState.error.message}`
+                    : uploadState.error.message}
+                </Text>
+                <Pressable style={styles.secondaryButton} onPress={resetUpload}>
+                  <Text style={styles.secondaryButtonText}>Try again</Text>
+                </Pressable>
+              </View>
+            )}
+            {uploadState.status === 'cancelled' && (
+              <Text style={styles.hint}>Upload cancelled.</Text>
+            )}
           </View>
-        )}
 
-        {uploadState.status === 'idle' && (
-          <Pressable style={styles.button} onPress={handleUpload} disabled={!canUpload}>
-            <Text style={styles.buttonText}>Upload</Text>
-          </Pressable>
-        )}
-        {uploadState.status === 'uploading' && (
-          <View style={styles.centered}>
-            <ActivityIndicator />
-            <Text style={styles.hint}>Uploading…</Text>
-          </View>
-        )}
-        {uploadState.status === 'processing' && (
-          <View style={styles.centered}>
-            <ActivityIndicator />
-            <Text style={styles.hint}>
-              {STAGE_LABELS[uploadState.job.stage]}
-              {uploadState.job.total_chunks > 0
-                ? ` — ${uploadState.job.embedded_chunks} of ${uploadState.job.total_chunks} chunk(s)`
-                : ''}
-            </Text>
-          </View>
-        )}
-        {uploadState.status === 'success' && (
-          <View style={styles.successBox}>
-            <Text style={styles.successText}>
-              Ingested &quot;
-              {safeText(uploadState.document.title, uploadState.document.source_filename)}&quot; —{' '}
-              {uploadState.document.chunk_count} chunk(s) from {uploadState.document.page_count}{' '}
-              page(s).
-            </Text>
-            <Pressable style={styles.secondaryButton} onPress={handleUploadDone}>
-              <Text style={styles.secondaryButtonText}>Done</Text>
-            </Pressable>
-          </View>
-        )}
-        {uploadState.status === 'error' && (
-          <View style={styles.errorBox}>
-            <Text style={styles.errorText}>
-              {uploadState.error.statusCode !== null
-                ? `HTTP ${uploadState.error.statusCode} — ${uploadState.error.message}`
-                : uploadState.error.message}
-            </Text>
-            <Pressable style={styles.secondaryButton} onPress={resetUpload}>
-              <Text style={styles.secondaryButtonText}>Try again</Text>
-            </Pressable>
-          </View>
-        )}
-        {uploadState.status === 'cancelled' && <Text style={styles.hint}>Upload cancelled.</Text>}
-      </View>
-
-      <View style={styles.section}>
-        <View style={styles.listHeader}>
-          <Text style={styles.sectionTitle}>Documents</Text>
-          <Pressable onPress={() => refresh({ limit: 20 })}>
-            <Text style={styles.refreshText}>Refresh</Text>
-          </Pressable>
-        </View>
-        {listState.status === 'loading' && <ActivityIndicator style={styles.spinner} />}
-        {listState.status === 'error' && (
-          <Text style={styles.errorText}>{listState.error.message}</Text>
-        )}
-        {listState.status === 'success' && (
-          <>
-            <Text style={styles.hint}>{listState.total} document(s) total</Text>
-            {listState.documents.map((doc) => {
-              const deleteState = deleteStates[doc.document_id];
-              const isDeleting = deleteState?.status === 'deleting';
-              return (
-                <View key={doc.document_id} style={styles.docCard}>
-                  <View style={styles.docCardRow}>
-                    <View style={styles.docCardMain}>
-                      <View style={styles.docTitleRow}>
-                        <Text style={styles.docTitle}>
-                          {safeText(doc.title, doc.source_filename)}
-                        </Text>
-                        {isSampleSource(doc.source_filename) && (
-                          <View style={styles.sampleBadge}>
-                            <Text style={styles.sampleBadgeText}>Sample</Text>
+          <View style={styles.section}>
+            <View style={styles.listHeader}>
+              <Text style={styles.sectionTitle}>Documents</Text>
+              <Pressable onPress={() => refresh({ limit: 20 })}>
+                <Text style={styles.refreshText}>Refresh</Text>
+              </Pressable>
+            </View>
+            {listState.status === 'loading' && (
+              <ActivityIndicator style={styles.spinner} color={theme.accent} />
+            )}
+            {listState.status === 'error' && (
+              <Text style={styles.errorText}>{listState.error.message}</Text>
+            )}
+            {listState.status === 'success' && listState.total === 0 && (
+              <EmptyState
+                title="No documents yet"
+                description="Upload a PDF, DOCX, TXT, or HTML file above to start building your research corpus."
+              />
+            )}
+            {listState.status === 'success' && listState.total > 0 && (
+              <>
+                <Text style={styles.hint}>{listState.total} document(s) total</Text>
+                {listState.documents.map((doc) => {
+                  const deleteState = deleteStates[doc.document_id];
+                  const isDeleting = deleteState?.status === 'deleting';
+                  return (
+                    <View key={doc.document_id} style={styles.docCard}>
+                      <View style={styles.docCardRow}>
+                        <View style={styles.docCardMain}>
+                          <View style={styles.docTitleRow}>
+                            <Text style={styles.docTitle}>
+                              {safeText(doc.title, doc.source_filename)}
+                            </Text>
+                            {isSampleSource(doc.source_filename) && (
+                              <View style={styles.sampleBadge}>
+                                <Text style={styles.sampleBadgeText}>Sample</Text>
+                              </View>
+                            )}
                           </View>
-                        )}
+                          <Text style={styles.docMeta}>
+                            {DOCUMENT_TYPE_LABELS[doc.document_type]} · {doc.chunk_count} chunk(s)
+                          </Text>
+                        </View>
+                        <Pressable
+                          accessibilityLabel={`Delete ${safeText(doc.title, doc.source_filename)}`}
+                          style={[styles.deleteButton, isDeleting && styles.deleteButtonDisabled]}
+                          onPress={() => handleDeletePress(doc)}
+                          disabled={isDeleting}
+                        >
+                          {isDeleting ? (
+                            <ActivityIndicator size="small" color={theme.danger} />
+                          ) : (
+                            <Text style={styles.deleteButtonText}>Delete</Text>
+                          )}
+                        </Pressable>
                       </View>
-                      <Text style={styles.docMeta}>
-                        {DOCUMENT_TYPE_LABELS[doc.document_type]} · {doc.chunk_count} chunk(s)
-                      </Text>
-                    </View>
-                    <Pressable
-                      accessibilityLabel={`Delete ${safeText(doc.title, doc.source_filename)}`}
-                      style={[styles.deleteButton, isDeleting && styles.deleteButtonDisabled]}
-                      onPress={() => handleDeletePress(doc)}
-                      disabled={isDeleting}
-                    >
-                      {isDeleting ? (
-                        <ActivityIndicator size="small" color="#B91C1C" />
-                      ) : (
-                        <Text style={styles.deleteButtonText}>Delete</Text>
+                      {isDeleting && <Text style={styles.hint}>Deleting…</Text>}
+                      {deleteState?.status === 'error' && (
+                        <View style={styles.deleteErrorRow}>
+                          <Text style={styles.errorText}>{deleteState.error.message}</Text>
+                          <Pressable onPress={() => resetDeleteState(doc.document_id)}>
+                            <Text style={styles.refreshText}>Dismiss</Text>
+                          </Pressable>
+                        </View>
                       )}
-                    </Pressable>
-                  </View>
-                  {isDeleting && <Text style={styles.hint}>Deleting…</Text>}
-                  {deleteState?.status === 'error' && (
-                    <View style={styles.deleteErrorRow}>
-                      <Text style={styles.errorText}>{deleteState.error.message}</Text>
-                      <Pressable onPress={() => resetDeleteState(doc.document_id)}>
-                        <Text style={styles.refreshText}>Dismiss</Text>
-                      </Pressable>
                     </View>
-                  )}
-                </View>
-              );
-            })}
-          </>
-        )}
-      </View>
-    </ScrollView>
+                  );
+                })}
+              </>
+            )}
+          </View>
+        </View>
+      </ScrollView>
+    </View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F6F7FA' },
-  content: { padding: 16, gap: 24 },
-  section: { gap: 8 },
-  sectionTitle: { fontWeight: '700', fontSize: 16 },
-  screenCentered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  hint: { fontSize: 12, color: '#64748B' },
-  warning: { fontSize: 12, color: '#B45309' },
-  filterLabel: { fontSize: 12, fontWeight: '600', color: '#475569', marginTop: 4 },
-  chipRow: { flexDirection: 'row' },
-  chip: {
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    marginRight: 6,
-  },
-  chipSelected: { backgroundColor: '#2F5FE0', borderColor: '#2F5FE0' },
-  chipText: { fontSize: 12, color: '#334155' },
-  chipTextSelected: { color: '#FFFFFF', fontWeight: '600' },
-  input: {
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#FFFFFF',
-  },
-  button: {
-    backgroundColor: '#2F5FE0',
-    borderRadius: 8,
-    paddingVertical: 10,
-    alignItems: 'center',
-  },
-  buttonText: { color: '#FFFFFF', fontWeight: '600' },
-  secondaryButton: {
-    borderWidth: 1,
-    borderColor: '#2F5FE0',
-    borderRadius: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    alignItems: 'center',
-  },
-  secondaryButtonText: { color: '#2F5FE0', fontWeight: '600' },
-  centered: { alignItems: 'center', gap: 8 },
-  metadataReview: { gap: 8 },
-  successBox: { backgroundColor: '#F0FDF4', borderRadius: 8, padding: 12, gap: 8 },
-  successText: { color: '#166534', fontSize: 13 },
-  errorBox: { backgroundColor: '#FEF2F2', borderRadius: 8, padding: 12, gap: 8 },
-  errorText: { color: '#B91C1C', fontSize: 13 },
-  listHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  refreshText: { color: '#2F5FE0', fontWeight: '600', fontSize: 13 },
-  spinner: { marginTop: 12 },
-  dropZone: {
-    borderWidth: 2,
-    borderColor: '#CBD5E1',
-    borderStyle: 'dashed',
-    borderRadius: 12,
-    paddingVertical: 20,
-    paddingHorizontal: 16,
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: '#F6F7FA',
-  },
-  dropZoneActive: { borderColor: '#2F5FE0', backgroundColor: '#EFF8FF' },
-  dropZoneText: { fontSize: 13, color: '#475569', textAlign: 'center' },
-  dropZoneOr: { fontSize: 11, color: '#94A3B8' },
-  selectedFileBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderRadius: 8,
-    padding: 10,
-    backgroundColor: '#FFFFFF',
-    gap: 8,
-  },
-  selectedFileMain: { flex: 1, minWidth: 0 },
-  selectedFileName: { fontSize: 13, fontWeight: '600', color: '#14161F' },
-  clearButton: {
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  clearButtonText: { color: '#475569', fontSize: 12, fontWeight: '600' },
-  docCard: {
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderRadius: 8,
-    padding: 10,
-    marginTop: 6,
-    backgroundColor: '#FFFFFF',
-  },
-  docCardRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
-  docCardMain: { flex: 1, minWidth: 0 },
-  docTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  docTitle: { fontWeight: '600', fontSize: 14, flexShrink: 1 },
-  docMeta: { fontSize: 12, color: '#64748B', marginTop: 2 },
-  deleteButton: {
-    backgroundColor: '#FEF2F2',
-    borderWidth: 1,
-    borderColor: '#FCA5A5',
-    borderRadius: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    minWidth: 64,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  deleteButtonDisabled: { opacity: 0.6 },
-  deleteButtonText: { color: '#B91C1C', fontWeight: '600', fontSize: 12 },
-  deleteErrorRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  sampleBox: {
-    backgroundColor: '#FEF3C7',
-    borderRadius: 8,
-    padding: 10,
-    gap: 8,
-    marginTop: 4,
-  },
-  sampleBoxText: { fontSize: 12, color: '#92400E' },
-  sampleBoxCode: { fontFamily: 'monospace', fontSize: 11 },
-  sampleBadge: {
-    backgroundColor: '#FEF3C7',
-    borderRadius: 6,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-  },
-  sampleBadgeText: { fontSize: 10, fontWeight: '700', color: '#92400E' },
-});
+/** Built inside the component via useMemo(() => buildStyles(theme), [theme])
+ * — every screen's JSX below references plain `styles.x`, unaware this is
+ * theme-derived, so light/dark/brand-font support is one change here
+ * rather than touching every call site. */
+function buildStyles(theme: Theme) {
+  return StyleSheet.create({
+    container: { flex: 1, backgroundColor: theme.background },
+    content: { padding: 24, alignItems: 'center' },
+    pageInner: { width: '100%', maxWidth: 760, gap: 24 },
+    section: { gap: 8 },
+    sectionTitle: { fontSize: 16, color: theme.text, fontFamily: theme.fonts.display },
+    screenCentered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+    hint: { fontSize: 12, color: theme.subtext, fontFamily: theme.fonts.body },
+    warning: { fontSize: 12, color: theme.warning, fontFamily: theme.fonts.bodyMedium },
+    filterLabel: {
+      fontSize: 12,
+      color: theme.subtext,
+      fontFamily: theme.fonts.bodySemibold,
+      marginTop: 4,
+    },
+    chipRow: { flexDirection: 'row' },
+    chip: {
+      borderWidth: StyleSheet.hairlineWidth * 2,
+      borderColor: theme.border,
+      borderRadius: theme.radius.pill,
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      marginRight: 6,
+    },
+    chipSelected: { backgroundColor: theme.accent, borderColor: theme.accent },
+    chipText: { fontSize: 12, color: theme.text, fontFamily: theme.fonts.body },
+    chipTextSelected: { color: theme.accentContrast, fontFamily: theme.fonts.bodySemibold },
+    input: {
+      borderWidth: StyleSheet.hairlineWidth * 2,
+      borderColor: theme.border,
+      borderRadius: theme.radius.md,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      backgroundColor: theme.card,
+      color: theme.text,
+      fontFamily: theme.fonts.body,
+    },
+    button: {
+      backgroundColor: theme.accent,
+      borderRadius: theme.radius.md,
+      paddingVertical: 12,
+      alignItems: 'center',
+      minHeight: 44,
+      justifyContent: 'center',
+    },
+    buttonText: { color: theme.accentContrast, fontFamily: theme.fonts.bodySemibold },
+    secondaryButton: {
+      borderWidth: StyleSheet.hairlineWidth * 2,
+      borderColor: theme.accent,
+      borderRadius: theme.radius.md,
+      paddingVertical: 10,
+      paddingHorizontal: 16,
+      alignItems: 'center',
+      minHeight: 44,
+      justifyContent: 'center',
+    },
+    secondaryButtonText: { color: theme.accent, fontFamily: theme.fonts.bodySemibold },
+    centered: { alignItems: 'center', gap: 8 },
+    metadataReview: { gap: 8 },
+    successBox: {
+      backgroundColor: theme.warningSoft,
+      borderRadius: theme.radius.md,
+      padding: 12,
+      gap: 8,
+    },
+    successText: { color: theme.ok, fontSize: 13, fontFamily: theme.fonts.body },
+    errorBox: {
+      backgroundColor: theme.dangerSoft,
+      borderRadius: theme.radius.md,
+      padding: 12,
+      gap: 8,
+    },
+    errorText: { color: theme.danger, fontSize: 13, fontFamily: theme.fonts.body },
+    listHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+    refreshText: { color: theme.accent, fontFamily: theme.fonts.bodySemibold, fontSize: 13 },
+    spinner: { marginTop: 12 },
+    dropZone: {
+      borderWidth: 2,
+      borderColor: theme.border,
+      borderStyle: 'dashed',
+      borderRadius: theme.radius.lg,
+      paddingVertical: 20,
+      paddingHorizontal: 16,
+      alignItems: 'center',
+      gap: 8,
+      backgroundColor: theme.background,
+    },
+    dropZoneActive: { borderColor: theme.accent, backgroundColor: theme.accentSoft },
+    dropZoneText: {
+      fontSize: 13,
+      color: theme.subtext,
+      textAlign: 'center',
+      fontFamily: theme.fonts.body,
+    },
+    dropZoneOr: { fontSize: 11, color: theme.faint, fontFamily: theme.fonts.body },
+    selectedFileBox: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.border,
+      borderRadius: theme.radius.md,
+      padding: 10,
+      backgroundColor: theme.card,
+      gap: 8,
+    },
+    selectedFileMain: { flex: 1, minWidth: 0 },
+    selectedFileName: { fontSize: 13, color: theme.text, fontFamily: theme.fonts.bodySemibold },
+    clearButton: {
+      borderWidth: StyleSheet.hairlineWidth * 2,
+      borderColor: theme.border,
+      borderRadius: theme.radius.sm,
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+    },
+    clearButtonText: { color: theme.subtext, fontSize: 12, fontFamily: theme.fonts.bodySemibold },
+    docCard: {
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.border,
+      borderRadius: theme.radius.md,
+      padding: 10,
+      marginTop: 6,
+      backgroundColor: theme.card,
+    },
+    docCardRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+    docCardMain: { flex: 1, minWidth: 0 },
+    docTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+    docTitle: {
+      fontSize: 14,
+      flexShrink: 1,
+      color: theme.text,
+      fontFamily: theme.fonts.bodySemibold,
+    },
+    docMeta: { fontSize: 12, color: theme.subtext, marginTop: 2, fontFamily: theme.fonts.body },
+    deleteButton: {
+      backgroundColor: theme.dangerSoft,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.danger,
+      borderRadius: theme.radius.sm,
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      minWidth: 64,
+      minHeight: 36,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    deleteButtonDisabled: { opacity: 0.6 },
+    deleteButtonText: { color: theme.danger, fontSize: 12, fontFamily: theme.fonts.bodySemibold },
+    deleteErrorRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginTop: 4,
+    },
+    sampleBox: {
+      backgroundColor: theme.warningSoft,
+      borderRadius: theme.radius.md,
+      padding: 10,
+      gap: 8,
+      marginTop: 4,
+    },
+    sampleBoxText: { fontSize: 12, color: theme.warning, fontFamily: theme.fonts.body },
+    sampleBoxCode: { fontFamily: theme.fonts.mono, fontSize: 11 },
+    sampleBadge: {
+      backgroundColor: theme.warningSoft,
+      borderRadius: theme.radius.sm,
+      paddingHorizontal: 6,
+      paddingVertical: 2,
+    },
+    sampleBadgeText: { fontSize: 10, color: theme.warning, fontFamily: theme.fonts.bodyBold },
+  });
+}

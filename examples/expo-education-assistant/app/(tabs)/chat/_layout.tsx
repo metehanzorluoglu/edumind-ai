@@ -1,133 +1,15 @@
-import { useConversations, useProjects } from 'education-assistant-client';
-import { Slot, usePathname, useRouter } from 'expo-router';
-import { useState } from 'react';
-import { Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
-import { ConversationSidebar } from '@/components/ConversationSidebar';
-import { EduM8Symbol } from '@/components/EduM8Logo';
-import { ChatConversationsProvider } from '@/lib/ChatConversationsContext';
-import { useClient } from '@/lib/ClientProvider';
-
-const WIDE_PANEL_BREAKPOINT_PX = 900;
+import { Slot } from 'expo-router';
 
 /**
- * Wraps every /chat/* screen with the conversation sidebar: a persistent
- * side panel on wide web (desktop-class viewport), or a hamburger-triggered
- * overlay drawer everywhere else (native at any width, narrow web) — see
- * ConversationSidebar's own docs for why the split lives here and not in
- * the sidebar component itself.
+ * Pass-through only. The conversation drawer, nav rail, and responsive
+ * mobile chrome (hamburger topbar / bottom nav / overlay drawer) that
+ * used to live here now live one level up, in (tabs)/_layout.tsx — so
+ * they're shared by Search/Documents/Settings too, not just Chat (see
+ * that file's docs for why the lift happened). ChatConversationsProvider
+ * moved up with them. This file stays only because Expo Router route
+ * groups read more predictably with an explicit (if trivial) layout for
+ * the /chat/* subtree than by relying on the absence of one.
  */
 export default function ChatLayout() {
-  const { width } = useWindowDimensions();
-  const isWidePanel = Platform.OS === 'web' && width >= WIDE_PANEL_BREAKPOINT_PX;
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const router = useRouter();
-  const pathname = usePathname();
-  const { client } = useClient();
-  const conversations = useConversations(client);
-  const projects = useProjects(client);
-
-  // "/chat/c1" -> "c1"; "/chat/new" and "/chat" both have no active
-  // conversation to highlight in the sidebar.
-  const segments = pathname.split('/').filter(Boolean);
-  const lastSegment = segments[segments.length - 1];
-  const activeConversationId =
-    lastSegment && lastSegment !== 'chat' && lastSegment !== 'new' ? lastSegment : null;
-
-  function handleSelect(id: string): void {
-    router.push(`/chat/${id}`);
-  }
-
-  function handleNewChat(): void {
-    router.push('/chat/new');
-  }
-
-  return (
-    <ChatConversationsProvider value={{ refreshConversations: () => conversations.refresh() }}>
-      <View style={styles.root}>
-        {isWidePanel && (
-          <View style={styles.panel}>
-            <ConversationSidebar
-              conversations={conversations}
-              projects={projects}
-              activeConversationId={activeConversationId}
-              onSelect={handleSelect}
-              onNewChat={handleNewChat}
-            />
-          </View>
-        )}
-
-        <View style={styles.content}>
-          {!isWidePanel && (
-            <View style={styles.topBar}>
-              <Pressable
-                style={styles.hamburgerButton}
-                onPress={() => setDrawerOpen(true)}
-                hitSlop={8}
-                accessibilityLabel="Open conversation list"
-              >
-                <Text style={styles.hamburgerIcon}>☰</Text>
-              </Pressable>
-              <View style={styles.topBarBrand}>
-                <EduM8Symbol size={18} />
-                <Text style={styles.topBarTitle}>Chat</Text>
-              </View>
-              <Pressable
-                style={styles.hamburgerButton}
-                onPress={handleNewChat}
-                hitSlop={8}
-                accessibilityLabel="New chat"
-              >
-                <Text style={styles.newChatIcon}>+</Text>
-              </Pressable>
-            </View>
-          )}
-          <Slot />
-        </View>
-
-        {!isWidePanel && drawerOpen && (
-          <View style={styles.overlay}>
-            <Pressable
-              style={styles.overlayBackdrop}
-              onPress={() => setDrawerOpen(false)}
-              accessibilityLabel="Close conversation list"
-            />
-            <View style={styles.drawerPanel}>
-              <ConversationSidebar
-                conversations={conversations}
-                projects={projects}
-                activeConversationId={activeConversationId}
-                onSelect={handleSelect}
-                onNewChat={handleNewChat}
-                onRequestClose={() => setDrawerOpen(false)}
-              />
-            </View>
-          </View>
-        )}
-      </View>
-    </ChatConversationsProvider>
-  );
+  return <Slot />;
 }
-
-const styles = StyleSheet.create({
-  root: { flex: 1, flexDirection: 'row', backgroundColor: '#F6F7FA' },
-  panel: { width: 280, borderRightWidth: 1, borderRightColor: '#1E293B' },
-  content: { flex: 1 },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
-    backgroundColor: '#FFFFFF',
-  },
-  hamburgerButton: { padding: 4 },
-  hamburgerIcon: { fontSize: 20, color: '#14161F' },
-  newChatIcon: { fontSize: 22, color: '#14161F', fontWeight: '600' },
-  topBarBrand: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  topBarTitle: { fontSize: 16, fontWeight: '700', color: '#14161F' },
-  overlay: { ...StyleSheet.absoluteFillObject, flexDirection: 'row', zIndex: 20 },
-  overlayBackdrop: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.5)' },
-  drawerPanel: { width: 280 },
-});

@@ -1,7 +1,7 @@
 import { hasStreamingCapability, useConversationMessages } from 'education-assistant-client';
 import type { DisplayMessage, PostConversationMessageRequest } from 'education-assistant-client';
 import { useLocalSearchParams } from 'expo-router';
-import { createElement, useCallback, useEffect, useRef, useState } from 'react';
+import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ListRenderItemInfo, NativeScrollEvent, NativeSyntheticEvent } from 'react-native';
 import {
   ActivityIndicator,
@@ -28,7 +28,7 @@ import {
 import { attachmentChipFromPersisted, toAttachmentUploads } from '@/lib/chatAttachments';
 import { useClient } from '@/lib/ClientProvider';
 import { useFeatureFlags } from '@/lib/FeatureFlags';
-import { usePreferences } from '@/lib/Preferences';
+import { usePreferences, useTheme, type Theme } from '@/lib/Preferences';
 import { useChatAttachments } from '@/lib/useChatAttachments';
 import { useRefreshConversations } from '@/lib/ChatConversationsContext';
 import { generateClientMessageId } from '@/lib/clientMessageId';
@@ -88,6 +88,8 @@ function pairMessages(messages: DisplayMessage[]): RenderTurn[] {
  * turns.
  */
 function ChatConversationScreen({ conversationId }: { conversationId: string }) {
+  const theme = useTheme();
+  const styles = useMemo(() => buildStyles(theme), [theme]);
   const { client, baseUrl, hydrated } = useClient();
   const { imageGenerator: imageGeneratorEnabled } = useFeatureFlags();
   const { preferences } = usePreferences();
@@ -282,26 +284,28 @@ function ChatConversationScreen({ conversationId }: { conversationId: string }) 
 
   const renderTurn = useCallback(
     ({ item: turn }: ListRenderItemInfo<RenderTurn>) => (
-      <ConversationTurnCard
-        userContent={turn.userContent}
-        assistant={turn.assistant}
-        userAttachments={turn.userAttachments.map((a) =>
-          attachmentChipFromPersisted(a, { conversationId, messageId: turn.id })
-        )}
-        highlightedSourceId={highlighted?.messageId === turn.id ? highlighted.sourceId : null}
-        onCitationPress={(sourceId) => scrollToSource(turn.id, sourceId)}
-        conversationId={conversationId}
-        onUseImageAsAttachment={addAttachment}
-        onRegenerateImage={handleRegenerateImage}
-      />
+      <View style={styles.turnWrap}>
+        <ConversationTurnCard
+          userContent={turn.userContent}
+          assistant={turn.assistant}
+          userAttachments={turn.userAttachments.map((a) =>
+            attachmentChipFromPersisted(a, { conversationId, messageId: turn.id })
+          )}
+          highlightedSourceId={highlighted?.messageId === turn.id ? highlighted.sourceId : null}
+          onCitationPress={(sourceId) => scrollToSource(turn.id, sourceId)}
+          conversationId={conversationId}
+          onUseImageAsAttachment={addAttachment}
+          onRegenerateImage={handleRegenerateImage}
+        />
+      </View>
     ),
-    [conversationId, highlighted, scrollToSource, addAttachment, handleRegenerateImage]
+    [conversationId, highlighted, scrollToSource, addAttachment, handleRegenerateImage, styles]
   );
 
   if (!hydrated || loadState.status === 'loading') {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator />
+        <ActivityIndicator color={theme.accent} />
       </View>
     );
   }
@@ -317,62 +321,78 @@ function ChatConversationScreen({ conversationId }: { conversationId: string }) 
   }
 
   const composerBody = (
-    <>
-      <AttachmentPreviewRow attachments={attachments} onRemove={removeAttachment} />
-      {attachments.length > 0 && (
-        <CorpusToggle value={useCorpus} onValueChange={setUseCorpus} disabled={isBusy} />
-      )}
-      <View style={styles.inputRow}>
-        <AttachmentButton onPress={pickAttachment} disabled={isBusy} />
-        {imageGeneratorEnabled && (
-          <ImageGenerateButton
-            onPress={() => {
-              setImageModalInitialValues(undefined);
-              setImageModalKey((k) => k + 1);
-              setImageModalOpen(true);
-            }}
-            disabled={isBusy}
-          />
+    <View style={styles.composerOuter}>
+      <View style={styles.composerInner}>
+        <AttachmentPreviewRow attachments={attachments} onRemove={removeAttachment} />
+        {attachments.length > 0 && (
+          <CorpusToggle value={useCorpus} onValueChange={setUseCorpus} disabled={isBusy} />
         )}
-        <TextInput
-          style={styles.input}
-          value={query}
-          onChangeText={setQuery}
-          placeholder={conversation ? `Ask ${conversation.title}…` : 'Ask about the corpus…'}
-          editable={!isBusy}
-          onSubmitEditing={handleAsk}
-          returnKeyType="send"
-        />
-        {isBusy ? (
-          <Pressable style={[styles.button, styles.cancelButton]} onPress={cancelSend}>
-            <Text style={styles.buttonText}>Cancel</Text>
-          </Pressable>
-        ) : (
-          <Pressable
-            style={styles.button}
-            onPress={handleAsk}
-            disabled={!query.trim() || hasAttachmentErrors}
-          >
-            <Text style={styles.buttonText}>Ask</Text>
-          </Pressable>
+        <View style={styles.inputRow}>
+          <AttachmentButton onPress={pickAttachment} disabled={isBusy} />
+          {imageGeneratorEnabled && (
+            <ImageGenerateButton
+              onPress={() => {
+                setImageModalInitialValues(undefined);
+                setImageModalKey((k) => k + 1);
+                setImageModalOpen(true);
+              }}
+              disabled={isBusy}
+            />
+          )}
+          <TextInput
+            style={styles.input}
+            value={query}
+            onChangeText={setQuery}
+            placeholder={conversation ? `Ask ${conversation.title}…` : 'Ask about the corpus…'}
+            placeholderTextColor={theme.faint}
+            editable={!isBusy}
+            onSubmitEditing={handleAsk}
+            returnKeyType="send"
+            accessibilityLabel="Ask a question"
+          />
+          {isBusy ? (
+            <Pressable
+              style={[styles.button, styles.cancelButton]}
+              onPress={cancelSend}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel"
+            >
+              <Text style={styles.buttonText}>Cancel</Text>
+            </Pressable>
+          ) : (
+            <Pressable
+              style={styles.button}
+              onPress={handleAsk}
+              disabled={!query.trim() || hasAttachmentErrors}
+              accessibilityRole="button"
+              accessibilityLabel="Ask"
+            >
+              <Text style={styles.buttonText}>Ask</Text>
+            </Pressable>
+          )}
+        </View>
+        {sendState.status === 'error' && (
+          <View style={styles.retryRow}>
+            <Text style={styles.retryHint}>
+              {describeApiError(
+                'POST',
+                baseUrl,
+                `/conversations/${conversationId}/messages`,
+                sendState.error
+              )}
+            </Text>
+            <Pressable
+              style={styles.retryButton}
+              onPress={handleRetry}
+              accessibilityRole="button"
+              accessibilityLabel="Retry"
+            >
+              <Text style={styles.buttonText}>Retry</Text>
+            </Pressable>
+          </View>
         )}
       </View>
-      {sendState.status === 'error' && (
-        <View style={styles.retryRow}>
-          <Text style={styles.retryHint}>
-            {describeApiError(
-              'POST',
-              baseUrl,
-              `/conversations/${conversationId}/messages`,
-              sendState.error
-            )}
-          </Text>
-          <Pressable style={styles.retryButton} onPress={handleRetry}>
-            <Text style={styles.buttonText}>Retry</Text>
-          </Pressable>
-        </View>
-      )}
-    </>
+    </View>
   );
 
   // A plain host <div>, not <View> — see documents.tsx's
@@ -412,6 +432,8 @@ function ChatConversationScreen({ conversationId }: { conversationId: string }) 
           <Pressable
             style={styles.resumingCancelButton}
             onPress={() => cancelPersistedGeneration(resumingMessageId)}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel"
           >
             <Text style={styles.resumingCancelText}>Cancel</Text>
           </Pressable>
@@ -435,7 +457,12 @@ function ChatConversationScreen({ conversationId }: { conversationId: string }) 
           ListFooterComponent={<View style={styles.listFooterSpacer} />}
         />
         {showJumpToLatest && (
-          <Pressable style={styles.jumpButton} onPress={jumpToLatest}>
+          <Pressable
+            style={styles.jumpButton}
+            onPress={jumpToLatest}
+            accessibilityRole="button"
+            accessibilityLabel="Jump to latest message"
+          >
             <Text style={styles.jumpButtonText}>↓ Jump to latest</Text>
           </Pressable>
         )}
@@ -469,79 +496,113 @@ export default function ChatConversationRoute() {
   return <ChatConversationScreen key={id} conversationId={id} />;
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F6F7FA' },
-  composerDragOver: { backgroundColor: '#EFF8FF' },
-  banner: { backgroundColor: '#FEF3C7', padding: 8 },
-  bannerText: { fontSize: 12, color: '#92400E', textAlign: 'center' },
-  resumingBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#EFF6FF',
-    borderBottomWidth: 1,
-    borderBottomColor: '#BFDBFE',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    gap: 8,
-  },
-  resumingBannerText: { fontSize: 12, color: '#1D4ED8', flexShrink: 1 },
-  resumingCancelButton: { paddingVertical: 4, paddingHorizontal: 10 },
-  resumingCancelText: { fontSize: 12, color: '#B91C1C', fontWeight: '600' },
-  listWrap: { flex: 1 },
-  list: { flex: 1 },
-  listContent: { padding: 16, flexGrow: 1 },
-  listFooterSpacer: { height: 8 },
-  hint: { color: '#64748B', textAlign: 'center', marginTop: 24 },
-  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 24 },
-  errorText: { color: '#7F1D1D', marginTop: 4 },
-  jumpButton: {
-    position: 'absolute',
-    bottom: 12,
-    alignSelf: 'center',
-    backgroundColor: '#14161F',
-    borderRadius: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-  },
-  jumpButtonText: { color: '#FFFFFF', fontSize: 13, fontWeight: '600' },
-  inputRow: {
-    flexDirection: 'row',
-    padding: 12,
-    gap: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#E2E8F0',
-  },
-  input: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#FFFFFF',
-  },
-  button: {
-    backgroundColor: '#2F5FE0',
-    borderRadius: 8,
-    paddingHorizontal: 16,
-    justifyContent: 'center',
-  },
-  cancelButton: { backgroundColor: '#DC2626' },
-  buttonText: { color: '#FFFFFF', fontWeight: '600' },
-  retryRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingBottom: 12,
-    gap: 8,
-  },
-  retryHint: { fontSize: 12, color: '#B91C1C', flexShrink: 1 },
-  retryButton: {
-    backgroundColor: '#2F5FE0',
-    borderRadius: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-  },
-});
+function buildStyles(theme: Theme) {
+  return StyleSheet.create({
+    container: { flex: 1, backgroundColor: theme.background },
+    composerDragOver: { backgroundColor: theme.accentSoft },
+    banner: { backgroundColor: theme.warningSoft, padding: 8 },
+    bannerText: {
+      fontSize: 12,
+      color: theme.warning,
+      textAlign: 'center',
+      fontFamily: theme.fonts.bodyMedium,
+    },
+    resumingBanner: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      backgroundColor: theme.accentSoft,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: theme.border,
+      paddingVertical: 8,
+      paddingHorizontal: 12,
+      gap: 8,
+    },
+    resumingBannerText: {
+      fontSize: 12,
+      color: theme.accent,
+      flexShrink: 1,
+      fontFamily: theme.fonts.body,
+    },
+    resumingCancelButton: { paddingVertical: 4, paddingHorizontal: 10 },
+    resumingCancelText: { fontSize: 12, color: theme.danger, fontFamily: theme.fonts.bodySemibold },
+    listWrap: { flex: 1 },
+    list: { flex: 1 },
+    // alignItems: 'center' + a maxWidth wrapper on each turn (see turnWrap)
+    // is what gives the reading canvas its "research notebook" feel —
+    // comfortable line length on wide screens, full-bleed on narrow ones
+    // (maxWidth simply never binds below 720px).
+    listContent: { padding: 16, flexGrow: 1, alignItems: 'center' },
+    turnWrap: { width: '100%', maxWidth: 720 },
+    listFooterSpacer: { height: 8 },
+    hint: {
+      color: theme.subtext,
+      textAlign: 'center',
+      marginTop: 24,
+      fontFamily: theme.fonts.body,
+    },
+    centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 24 },
+    errorText: { color: theme.danger, marginTop: 4, fontFamily: theme.fonts.body },
+    jumpButton: {
+      position: 'absolute',
+      bottom: 12,
+      alignSelf: 'center',
+      backgroundColor: theme.effective === 'dark' ? theme.card : '#14161F',
+      borderRadius: theme.radius.pill,
+      paddingHorizontal: 14,
+      paddingVertical: 8,
+    },
+    jumpButtonText: { color: '#FFFFFF', fontSize: 13, fontFamily: theme.fonts.bodySemibold },
+    // The whole composer (attachments/toggle/input/retry) sits on the
+    // page background, not theme.card — that's what lets inputRow read as
+    // a floating card rather than a docked toolbar (brief: "floating
+    // input composer"). composerInner caps line length to match turnWrap
+    // so the input never drifts wider than the text above it.
+    composerOuter: { backgroundColor: theme.background, paddingHorizontal: 16, paddingBottom: 12 },
+    composerInner: { width: '100%', maxWidth: 720, alignSelf: 'center' },
+    inputRow: {
+      flexDirection: 'row',
+      padding: 10,
+      gap: 8,
+      marginTop: 8,
+      borderWidth: StyleSheet.hairlineWidth * 2,
+      borderColor: theme.border,
+      borderRadius: theme.radius.lg,
+      backgroundColor: theme.card,
+    },
+    input: {
+      flex: 1,
+      borderWidth: StyleSheet.hairlineWidth * 2,
+      borderColor: theme.border,
+      borderRadius: theme.radius.md,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      backgroundColor: theme.background,
+      color: theme.text,
+      fontFamily: theme.fonts.body,
+    },
+    button: {
+      backgroundColor: theme.accent,
+      borderRadius: theme.radius.md,
+      paddingHorizontal: 16,
+      justifyContent: 'center',
+    },
+    cancelButton: { backgroundColor: theme.danger },
+    buttonText: { color: theme.accentContrast, fontFamily: theme.fonts.bodySemibold },
+    retryRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 12,
+      paddingBottom: 12,
+      gap: 8,
+    },
+    retryHint: { fontSize: 12, color: theme.danger, flexShrink: 1, fontFamily: theme.fonts.body },
+    retryButton: {
+      backgroundColor: theme.accent,
+      borderRadius: theme.radius.md,
+      paddingHorizontal: 16,
+      paddingVertical: 8,
+    },
+  });
+}

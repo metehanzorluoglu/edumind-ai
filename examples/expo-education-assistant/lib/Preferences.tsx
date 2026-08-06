@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useColorScheme } from 'react-native';
+import { fontFamilies, useFontsReady, type FontFamilies } from './fonts';
 import { getStorageItem, setStorageItem } from './platformStorage';
 
 /**
@@ -37,7 +38,23 @@ export interface Preferences {
   responseStyle: ResponseStyle;
   citationDisplay: CitationDisplay;
   autoScrollDuringStreaming: boolean;
+  /** Collapsed state of the app drawer (conversation history / projects /
+   * shortcuts) on wide web — persisted so a user's chosen layout survives
+   * a reload. Never applies on narrow/native, where the drawer is always
+   * an overlay regardless of this value. */
+  sidebarCollapsed: boolean;
+  /** Drawer width in px on wide web, user-adjustable via a drag handle.
+   * Clamped to SIDEBAR_WIDTH_MIN/MAX (see below) wherever it's read, so a
+   * corrupted or hand-edited stored value can never render an unusable
+   * (zero-width or overflowing) drawer. */
+  sidebarWidth: number;
 }
+
+/** Drag-resize bounds for the drawer — narrow enough to still show full
+ * conversation titles, wide enough to never crowd out the reading canvas. */
+export const SIDEBAR_WIDTH_MIN = 220;
+export const SIDEBAR_WIDTH_MAX = 400;
+export const SIDEBAR_WIDTH_DEFAULT = 280;
 
 export const DEFAULT_PREFERENCES: Preferences = {
   themeMode: 'system',
@@ -46,6 +63,8 @@ export const DEFAULT_PREFERENCES: Preferences = {
   responseStyle: 'balanced',
   citationDisplay: 'shown',
   autoScrollDuringStreaming: true,
+  sidebarCollapsed: false,
+  sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
 };
 
 // Intentionally NOT renamed to "edum8.*" despite the EduM8 rebrand — this
@@ -89,6 +108,16 @@ function parseStoredPreferences(raw: string | null): Preferences {
         typeof parsed.autoScrollDuringStreaming === 'boolean'
           ? parsed.autoScrollDuringStreaming
           : DEFAULT_PREFERENCES.autoScrollDuringStreaming,
+      sidebarCollapsed:
+        typeof parsed.sidebarCollapsed === 'boolean'
+          ? parsed.sidebarCollapsed
+          : DEFAULT_PREFERENCES.sidebarCollapsed,
+      sidebarWidth:
+        typeof parsed.sidebarWidth === 'number' &&
+        parsed.sidebarWidth >= SIDEBAR_WIDTH_MIN &&
+        parsed.sidebarWidth <= SIDEBAR_WIDTH_MAX
+          ? parsed.sidebarWidth
+          : DEFAULT_PREFERENCES.sidebarWidth,
     };
   } catch {
     return { ...DEFAULT_PREFERENCES };
@@ -181,6 +210,7 @@ export interface ThemePalette {
   card: string;
   cardPressed: string;
   border: string;
+  borderStrong: string;
   divider: string;
   text: string;
   subtext: string;
@@ -188,12 +218,24 @@ export interface ThemePalette {
   accent: string;
   accentSoft: string;
   accentContrast: string;
+  /** Citations / AI-grounding badges specifically — ochre, never the
+   * general accent blue. See brand/BRAND_GUIDELINES.md §3: "the moment
+   * orange carries text or a functional signal, switch from amber to
+   * ochre." Light uses ochre (4.5:1 on white); dark uses amber (8:1 on
+   * ink) — amber is decorative-only on light backgrounds but is the
+   * *more* accessible of the two oranges once the background is dark. */
+  citation: string;
+  citationSoft: string;
   danger: string;
   dangerSoft: string;
   ok: string;
   warning: string;
   warningSoft: string;
   overlay: string;
+  /** Focus ring for keyboard navigation — visible against both card and
+   * background in this theme, distinct enough from `accent` to remain
+   * legible when the focused element is itself accent-colored. */
+  focusRing: string;
 }
 
 const LIGHT_PALETTE: ThemePalette = {
@@ -201,6 +243,7 @@ const LIGHT_PALETTE: ThemePalette = {
   card: '#FFFFFF',
   cardPressed: '#EDEEF3',
   border: '#E2E4EA',
+  borderStrong: '#C9CCDA',
   divider: '#ECEDF2',
   text: '#14161F',
   subtext: '#434654',
@@ -208,19 +251,29 @@ const LIGHT_PALETTE: ThemePalette = {
   accent: '#2F5FE0',
   accentSoft: '#E6EBFC',
   accentContrast: '#FFFFFF',
+  citation: '#B0641F',
+  citationSoft: '#FBF3EA',
   danger: '#B91C1C',
   dangerSoft: '#FEF2F2',
   ok: '#166534',
   warning: '#B45309',
   warningSoft: '#FEF3C7',
   overlay: 'rgba(20, 22, 31, 0.5)',
+  focusRing: '#2F5FE0',
 };
 
-const DARK_PALETTE: ThemePalette = {
+/**
+ * Exported (unlike LIGHT_PALETTE) because ConversationSidebar is
+ * deliberately always-dark regardless of the user's theme choice — a
+ * ChatGPT-style persistent dark rail — and should draw from the same
+ * dark tokens as everything else rather than duplicating hex values.
+ */
+export const DARK_PALETTE: ThemePalette = {
   background: '#14161F',
   card: '#1B1E29',
   cardPressed: '#232635',
   border: '#2F3242',
+  borderStrong: '#3D4157',
   divider: '#262838',
   text: '#F0F0FB',
   subtext: '#B7BAC9',
@@ -228,13 +281,44 @@ const DARK_PALETTE: ThemePalette = {
   accent: '#B5C4FF',
   accentSoft: '#212C4F',
   accentContrast: '#00164E',
+  citation: '#DDA14B',
+  citationSoft: '#2E2A22',
   danger: '#F87171',
   dangerSoft: '#3B1B1B',
   ok: '#4ADE80',
   warning: '#FBBF24',
   warningSoft: '#3B2F14',
   overlay: 'rgba(2, 6, 23, 0.6)',
+  focusRing: '#B5C4FF',
 };
+
+/**
+ * Spacing scale, 4px base — matches brand/BRAND_GUIDELINES.md's spacing
+ * unit. Components are free to use raw numbers where a one-off value
+ * genuinely doesn't fit the scale, but should reach for these first so
+ * gaps/padding stay visually consistent across screens built at
+ * different times.
+ */
+export const space = {
+  xs: 4,
+  sm: 8,
+  md: 12,
+  lg: 16,
+  xl: 24,
+  xxl: 32,
+  xxxl: 48,
+} as const;
+
+/** Corner radius scale — 10px is the brand guideline's documented default
+ * for cards/panels; sm/lg cover the few places that genuinely need
+ * something tighter or rounder (chips vs. modals), pill for fully-round
+ * controls (the composer, avatar fallbacks). */
+export const radius = {
+  sm: 6,
+  md: 10,
+  lg: 14,
+  pill: 999,
+} as const;
 
 export interface Theme extends ThemePalette {
   /** The mode the user chose. */
@@ -245,6 +329,11 @@ export interface Theme extends ThemePalette {
   scale: (size: number) => number;
   /** True when animations should be toned down (reduce-motion setting). */
   reduceMotion: boolean;
+  /** Brand type family names — see lib/fonts.tsx. Falls back to the
+   * system font stack until the brand fonts finish loading. */
+  fonts: FontFamilies;
+  space: typeof space;
+  radius: typeof radius;
 }
 
 const TEXT_SIZE_FACTORS: Record<TextSize, number> = {
@@ -282,6 +371,7 @@ export function useTheme(): Theme {
       : preferences.themeMode;
   const palette = effective === 'dark' ? DARK_PALETTE : LIGHT_PALETTE;
   const factor = TEXT_SIZE_FACTORS[preferences.textSize];
+  const fontsReady = useFontsReady();
 
   return useMemo<Theme>(
     () => ({
@@ -290,7 +380,10 @@ export function useTheme(): Theme {
       effective,
       scale: (size: number) => Math.round(size * factor * 10) / 10,
       reduceMotion: preferences.reduceMotion,
+      fonts: fontFamilies(fontsReady),
+      space,
+      radius,
     }),
-    [palette, preferences.themeMode, preferences.reduceMotion, effective, factor]
+    [palette, preferences.themeMode, preferences.reduceMotion, effective, factor, fontsReady]
   );
 }

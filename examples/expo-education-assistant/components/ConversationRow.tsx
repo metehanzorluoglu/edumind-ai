@@ -12,6 +12,7 @@ import {
 import { focusRef } from '@/lib/focusElement';
 import { safeText } from '@/lib/format';
 import { measureWindowRect } from '@/lib/measureWindowRect';
+import { useTheme } from '@/lib/Preferences';
 import {
   useSidebarContextMenu,
   type SidebarContextMenuAction,
@@ -88,6 +89,7 @@ export function ConversationRow({
   onRemoveFromProject,
   removingFromProject = false,
 }: ConversationRowProps) {
+  const theme = useTheme();
   const [renaming, setRenaming] = useState(false);
   const [titleInput, setTitleInput] = useState(item.title);
   /** Set when the rename API call rejects — shown inline under the input,
@@ -242,7 +244,7 @@ export function ConversationRow({
       <View style={[styles.row, active && styles.rowActive]}>
         <View style={styles.renameWrap}>
           <TextInput
-            style={styles.renameInput}
+            style={[styles.renameInput, { fontFamily: theme.fonts.body }]}
             value={titleInput}
             onChangeText={(text) => {
               setTitleInput(text);
@@ -255,7 +257,10 @@ export function ConversationRow({
             accessibilityLabel="Conversation title"
           />
           {renameError && (
-            <Text style={styles.renameErrorText} accessibilityRole="alert">
+            <Text
+              style={[styles.renameErrorText, { fontFamily: theme.fonts.body }]}
+              accessibilityRole="alert"
+            >
               {renameError}
             </Text>
           )}
@@ -268,12 +273,24 @@ export function ConversationRow({
 
   return (
     <View style={[styles.row, active && styles.rowActive]}>
-      <Pressable style={styles.rowMain} onPress={() => onSelect(item.id)}>
-        <Text numberOfLines={1} style={[styles.rowTitle, active && styles.rowTitleActive]}>
+      <Pressable
+        style={styles.rowMain}
+        onPress={() => onSelect(item.id)}
+        accessibilityRole="button"
+        accessibilityLabel={safeText(item.title, 'New conversation')}
+      >
+        <Text
+          numberOfLines={1}
+          style={[
+            styles.rowTitle,
+            { fontFamily: theme.fonts.body },
+            active && [styles.rowTitleActive, { fontFamily: theme.fonts.bodySemibold }],
+          ]}
+        >
           {safeText(item.title, 'New conversation')}
         </Text>
         {item.lastMessagePreview && (
-          <Text numberOfLines={1} style={styles.rowPreview}>
+          <Text numberOfLines={1} style={[styles.rowPreview, { fontFamily: theme.fonts.body }]}>
             {item.lastMessagePreview}
           </Text>
         )}

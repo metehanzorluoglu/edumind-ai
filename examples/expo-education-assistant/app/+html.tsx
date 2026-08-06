@@ -8,10 +8,12 @@ import { type PropsWithChildren } from 'react';
  * manifest, and Open Graph tags; nothing else in the app can set these for
  * a statically-rendered page.
  *
- * Favicon: the small, geometric-"8" construction from the EduM8 brand
- * guidelines (brand/BRAND_GUIDELINES.md §5.1) — the wordmark's typographic
- * "8" doesn't survive down at 16–32px, so the browser tab gets the
- * favicon-optimized SVG/PNG family instead of a scaled-down primary mark.
+ * Favicon: the "E8" mark — brand/BRAND_GUIDELINES.md's single source of
+ * truth (assets/brand/e8-icon.svg). Unlike the previous magnifying-glass
+ * symbol, this glyph is bold and simple enough to stay legible all the
+ * way down to 16px on its own, so every favicon size below is rendered
+ * directly from the same master SVG rather than a separately simplified
+ * construction.
  *
  * FAVICON_VERSION: bump this (and rename the matching files in public/)
  * any time the favicon art changes. nginx serves everything under
@@ -22,7 +24,10 @@ import { type PropsWithChildren } from 'react';
  * cached the old ones under that URL have no reason to ever refetch.
  * This is exactly what caused the "old icon after redeploy" bug this
  * fixed — see brand/BRAND_GUIDELINES.md's favicon section / the fix
- * writeup for the full root-cause trace.
+ * writeup for the full root-cause trace. og-image.png is now versioned
+ * the same way (previously wasn't — this rebrand is exactly the
+ * scenario that gap would have broken: a stale cached OG image forever
+ * showing the old mark).
  *
  * Also note the plain `/favicon.ico` link below is NOT auto-injected by
  * Expo's static export the way it would be if public/favicon.ico didn't
@@ -33,7 +38,7 @@ import { type PropsWithChildren } from 'react';
  * public/favicon.ico keeps that generator a no-op, so there's exactly
  * one favicon declaration in the page, not two competing ones.
  */
-const FAVICON_VERSION = 'v1';
+const FAVICON_VERSION = 'v2';
 export default function Root({ children }: PropsWithChildren) {
   return (
     <html lang="en">
@@ -79,7 +84,7 @@ export default function Root({ children }: PropsWithChildren) {
 
         {/* PWA */}
         <link rel="manifest" href="/manifest.json" />
-        <meta name="theme-color" content="#2F5FE0" media="(prefers-color-scheme: light)" />
+        <meta name="theme-color" content="#4F46E5" media="(prefers-color-scheme: light)" />
         <meta name="theme-color" content="#14161F" media="(prefers-color-scheme: dark)" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="default" />
@@ -93,14 +98,14 @@ export default function Root({ children }: PropsWithChildren) {
           property="og:description"
           content="Your private AI workspace for learning and research, grounded in the documents you upload."
         />
-        <meta property="og:image" content="/og-image.png" />
+        <meta property="og:image" content={`/og-image-${FAVICON_VERSION}.png`} />
         <meta name="twitter:card" content="summary_large_image" />
         <meta name="twitter:title" content="EduM8 — Education Research Assistant" />
         <meta
           name="twitter:description"
           content="Your private AI workspace for learning and research, grounded in the documents you upload."
         />
-        <meta name="twitter:image" content="/og-image.png" />
+        <meta name="twitter:image" content={`/og-image-${FAVICON_VERSION}.png`} />
 
         <ScrollViewStyleReset />
       </head>

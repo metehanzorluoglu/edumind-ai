@@ -29,7 +29,14 @@ export function SegmentedControl<T extends string>({
       accessibilityLabel={label}
       testID={testID}
     >
-      <Text style={[styles.label, { color: theme.text, fontSize: theme.scale(15) }]}>{label}</Text>
+      <Text
+        style={[
+          styles.label,
+          { color: theme.text, fontSize: theme.scale(15), fontFamily: theme.fonts.bodyMedium },
+        ]}
+      >
+        {label}
+      </Text>
       <View
         style={[styles.track, { backgroundColor: theme.background, borderColor: theme.border }]}
       >
@@ -55,7 +62,7 @@ export function SegmentedControl<T extends string>({
                   {
                     color: selected ? theme.accent : theme.subtext,
                     fontSize: theme.scale(13),
-                    fontWeight: selected ? '700' : '500',
+                    fontFamily: selected ? theme.fonts.bodyBold : theme.fonts.bodyMedium,
                   },
                 ]}
               >

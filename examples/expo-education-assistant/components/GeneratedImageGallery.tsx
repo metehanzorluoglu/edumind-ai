@@ -1,5 +1,5 @@
 import type { ConversationMessageAttachment } from 'education-assistant-client';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { AttachmentLightbox } from '@/components/AttachmentLightbox';
 import { AuthenticatedAttachmentImage } from '@/components/AuthenticatedAttachmentImage';
@@ -12,6 +12,7 @@ import {
 import { useClient } from '@/lib/ClientProvider';
 import { useFeatureFlags } from '@/lib/FeatureFlags';
 import { downloadAttachment } from '@/lib/downloadAttachment';
+import { useTheme, type Theme } from '@/lib/Preferences';
 import { isReferenceMimeType } from '@/lib/referenceImages';
 import type { ImageGenerationFormInitialValues } from '@/components/ImageGenerationModal';
 
@@ -45,6 +46,8 @@ export function GeneratedImageGallery({
   onUseAsAttachment,
   onRegenerate,
 }: GeneratedImageGalleryProps) {
+  const theme = useTheme();
+  const styles = useMemo(() => buildStyles(theme), [theme]);
   const { client } = useClient();
   const { imageGenerator: imageGeneratorEnabled } = useFeatureFlags();
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
@@ -193,7 +196,9 @@ export function GeneratedImageGallery({
               </Pressable>
             </View>
 
-            {busyId === image.id && <ActivityIndicator size="small" style={styles.busyIndicator} />}
+            {busyId === image.id && (
+              <ActivityIndicator size="small" style={styles.busyIndicator} color={theme.accent} />
+            )}
             {errorById[image.id] && <Text style={styles.errorText}>{errorById[image.id]}</Text>}
 
             <SaveImageToProjectPicker
@@ -216,25 +221,27 @@ export function GeneratedImageGallery({
   );
 }
 
-const styles = StyleSheet.create({
-  container: { marginTop: 4 },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
-  tile: { width: 220 },
-  thumbnail: {
-    width: 220,
-    height: 220,
-    borderRadius: 10,
-    backgroundColor: '#E2E8F0',
-  },
-  actionsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 },
-  actionButton: {
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  actionText: { fontSize: 11, color: '#334155' },
-  busyIndicator: { marginTop: 6 },
-  errorText: { fontSize: 11, color: '#B91C1C', marginTop: 4 },
-});
+function buildStyles(theme: Theme) {
+  return StyleSheet.create({
+    container: { marginTop: 4 },
+    grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+    tile: { width: 220 },
+    thumbnail: {
+      width: 220,
+      height: 220,
+      borderRadius: theme.radius.md,
+      backgroundColor: theme.cardPressed,
+    },
+    actionsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 },
+    actionButton: {
+      borderWidth: StyleSheet.hairlineWidth * 2,
+      borderColor: theme.border,
+      borderRadius: theme.radius.sm,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+    },
+    actionText: { fontSize: 11, color: theme.subtext, fontFamily: theme.fonts.bodyMedium },
+    busyIndicator: { marginTop: 6 },
+    errorText: { fontSize: 11, color: theme.danger, marginTop: 4, fontFamily: theme.fonts.body },
+  });
+}

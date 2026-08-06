@@ -220,7 +220,7 @@ describe('AuthProvider + LoginScreen, wired together end to end', () => {
 
     expect(findPressableByLabel(renderer.root, 'Continue with Google')).toBeTruthy();
     expect(findInputByLabel(renderer.root, 'Email')).toBeTruthy();
-    expect(findByText(renderer.root, 'or continue with email')).toBeTruthy();
+    expect(findByText(renderer.root, 'or sign in with email')).toBeTruthy();
     expect(findByText(renderer.root, UNAVAILABLE_MESSAGE)).toBeNull();
   });
 
@@ -296,7 +296,11 @@ describe('AuthProvider + LoginScreen, wired together end to end', () => {
         const url = String(input);
         if (url.includes('/auth/refresh')) return jsonResponse({ detail: 'none' }, 401);
         if (url.includes('/auth/providers')) {
-          return jsonResponse({ providers: [], dev_login_enabled: false, local_auth_enabled: true });
+          return jsonResponse({
+            providers: [],
+            dev_login_enabled: false,
+            local_auth_enabled: true,
+          });
         }
         if (url.includes('/auth/login')) {
           loginCalls += 1;

@@ -1,11 +1,17 @@
 import { EducationAssistantError, type UseProjectsResult } from 'education-assistant-client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { ProjectRow } from '@/components/ProjectRow';
 import { useAuth } from '@/lib/AuthProvider';
 import { useClient } from '@/lib/ClientProvider';
 import { describeApiError } from '@/lib/errorDisplay';
+import { DARK_PALETTE, useTheme, type Theme } from '@/lib/Preferences';
 import { loadExpandedProjectIds, saveExpandedProjectIds } from '@/lib/projectsStorage';
+
+// Always-dark — this section only ever renders inside the sidebar (see
+// ConversationSidebar's docs for why that rail ignores the app's own
+// light/dark theme preference).
+const dark = DARK_PALETTE;
 
 const MAX_PROJECT_NAME_LENGTH = 80;
 
@@ -36,6 +42,8 @@ export function ProjectsSection({
   onDeleteConversation,
   deletingConversationIds,
 }: ProjectsSectionProps) {
+  const theme = useTheme();
+  const styles = useMemo(() => buildStyles(theme), [theme]);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [creating, setCreating] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
@@ -133,7 +141,7 @@ export function ProjectsSection({
             value={newProjectName}
             onChangeText={setNewProjectName}
             placeholder="Project name"
-            placeholderTextColor="#64748B"
+            placeholderTextColor={dark.faint}
             maxLength={MAX_PROJECT_NAME_LENGTH}
             autoFocus
             editable={!submitting}
@@ -161,7 +169,7 @@ export function ProjectsSection({
               accessibilityLabel="Create project"
             >
               {submitting ? (
-                <ActivityIndicator size="small" />
+                <ActivityIndicator size="small" color={dark.accent} />
               ) : (
                 <Text style={styles.createText}>Create</Text>
               )}
@@ -171,7 +179,7 @@ export function ProjectsSection({
       )}
 
       {projects.listState.status === 'loading' && (
-        <ActivityIndicator size="small" style={styles.spinner} />
+        <ActivityIndicator size="small" style={styles.spinner} color={dark.accent} />
       )}
       {projects.listState.status === 'error' && (
         <Text style={styles.errorText}>
@@ -198,46 +206,64 @@ export function ProjectsSection({
   );
 }
 
-const styles = StyleSheet.create({
-  container: { paddingBottom: 4 },
-  headingRow: { paddingHorizontal: 12, paddingTop: 12, paddingBottom: 4 },
-  heading: {
-    color: '#64748B',
-    fontSize: 11,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-  },
-  newProjectButton: {
-    marginHorizontal: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 8,
-    minHeight: 36,
-  },
-  newProjectButtonText: { color: '#93C5FD', fontSize: 13, fontWeight: '600' },
-  newProjectForm: { marginHorizontal: 8, gap: 6, marginBottom: 4 },
-  newProjectInput: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    backgroundColor: '#1E293B',
-    borderRadius: 6,
-    minHeight: 36,
-  },
-  newProjectActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 16,
-    alignItems: 'center',
-  },
-  cancelText: { color: '#94A3B8', fontSize: 13, paddingVertical: 8, minHeight: 36 },
-  createText: {
-    color: '#93C5FD',
-    fontSize: 13,
-    fontWeight: '600',
-    paddingVertical: 8,
-    minHeight: 36,
-  },
-  errorText: { color: '#FCA5A5', fontSize: 11, marginHorizontal: 4 },
-  spinner: { marginVertical: 8 },
-});
+function buildStyles(theme: Theme) {
+  return StyleSheet.create({
+    container: { paddingBottom: 4 },
+    headingRow: { paddingHorizontal: 12, paddingTop: 12, paddingBottom: 4 },
+    heading: {
+      color: dark.faint,
+      fontSize: 11,
+      textTransform: 'uppercase',
+      fontFamily: theme.fonts.bodyBold,
+    },
+    newProjectButton: {
+      marginHorizontal: 8,
+      paddingVertical: 8,
+      paddingHorizontal: 8,
+      minHeight: 36,
+    },
+    newProjectButtonText: {
+      color: dark.accent,
+      fontSize: 13,
+      fontFamily: theme.fonts.bodySemibold,
+    },
+    newProjectForm: { marginHorizontal: 8, gap: 6, marginBottom: 4 },
+    newProjectInput: {
+      color: dark.text,
+      fontSize: 13,
+      paddingVertical: 8,
+      paddingHorizontal: 10,
+      backgroundColor: dark.cardPressed,
+      borderRadius: theme.radius.sm,
+      minHeight: 36,
+      fontFamily: theme.fonts.body,
+    },
+    newProjectActions: {
+      flexDirection: 'row',
+      justifyContent: 'flex-end',
+      gap: 16,
+      alignItems: 'center',
+    },
+    cancelText: {
+      color: dark.faint,
+      fontSize: 13,
+      paddingVertical: 8,
+      minHeight: 36,
+      fontFamily: theme.fonts.body,
+    },
+    createText: {
+      color: dark.accent,
+      fontSize: 13,
+      paddingVertical: 8,
+      minHeight: 36,
+      fontFamily: theme.fonts.bodySemibold,
+    },
+    errorText: {
+      color: dark.danger,
+      fontSize: 11,
+      marginHorizontal: 4,
+      fontFamily: theme.fonts.body,
+    },
+    spinner: { marginVertical: 8 },
+  });
+}

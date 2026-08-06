@@ -32,13 +32,19 @@ export function SettingsToggleRow({
             {
               color: disabled ? theme.faint : theme.text,
               fontSize: theme.scale(15),
+              fontFamily: theme.fonts.bodyMedium,
             },
           ]}
         >
           {label}
         </Text>
         {description ? (
-          <Text style={[styles.description, { color: theme.faint, fontSize: theme.scale(12) }]}>
+          <Text
+            style={[
+              styles.description,
+              { color: theme.faint, fontSize: theme.scale(12), fontFamily: theme.fonts.body },
+            ]}
+          >
             {description}
           </Text>
         ) : null}
