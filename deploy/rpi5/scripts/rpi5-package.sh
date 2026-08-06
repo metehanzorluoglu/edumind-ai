@@ -84,7 +84,7 @@ rpi5_info "REPO_ROOT resolved to: $REPO_ROOT"
 
 # Verify we're actually sitting inside a sane repo.
 if [[ ! -d "$REPO_ROOT/rag-backend" ]] || [[ ! -f "$REPO_ROOT/rag-backend/pyproject.toml" ]]; then
-  rpi5_die "RPI5_DIR=$RPI5_DIR is not inside the EduMind AI repo (rag-backend/ not found)."
+  rpi5_die "RPI5_DIR=$RPI5_DIR is not inside the EduM8 AI repo (rag-backend/ not found)."
 fi
 
 # ----------------------------------------------------------------------------

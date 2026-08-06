@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Backs up the EduMind Oracle VM stack's persistent volumes and deployment
+# Backs up the EduM8 Oracle VM stack's persistent volumes and deployment
 # metadata into a timestamped, checksummed backup directory.
 #
 # Adapted from deploy/prod/scripts/prod-backup.sh — same overall shape
@@ -181,7 +181,7 @@ write_backup_metadata() {
     info "Collecting backup metadata..."
 
     {
-        echo "EduMind AI Oracle VM Backup"
+        echo "EduM8 AI Oracle VM Backup"
         echo "============================"
         echo
         echo "Backup timestamp: $(date --iso-8601=seconds 2>/dev/null || date)"
@@ -249,7 +249,7 @@ write_backup_metadata() {
 
 write_restore_instructions() {
     cat >"$BACKUP_DIR/restore-instructions.txt" <<EOF_RESTORE
-EduMind AI Oracle VM Restore Instructions
+EduM8 AI Oracle VM Restore Instructions
 ==========================================
 
 Backup:
@@ -363,7 +363,7 @@ apply_retention_policy() {
 main() {
     parse_arguments "$@"
     check_oracle_environment
-    print_header "EduMind Oracle — Backup"
+    print_header "EduM8 Oracle — Backup"
 
     validate_positive_integer "$KEEP_BACKUPS" "KEEP_BACKUPS"
 

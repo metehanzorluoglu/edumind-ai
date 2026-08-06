@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Restarts the EduMind Oracle VM stack safely: recreates containers without
+# Restarts the EduM8 Oracle VM stack safely: recreates containers without
 # ever deleting persistent volumes.
 #
 # Adapted from deploy/prod/scripts/prod-restart.sh — extended with an
@@ -59,7 +59,7 @@ main() {
     parse_arguments "$@"
 
     check_oracle_environment
-    print_header "EduMind Oracle — Restart"
+    print_header "EduM8 Oracle — Restart"
 
     info "Validating Oracle Compose configuration..."
     oracle_compose config --quiet \

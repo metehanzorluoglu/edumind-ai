@@ -9,6 +9,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { EduM8Logo } from '@/components/EduM8Logo';
 import { providerIcon } from '@/components/ProviderIcon';
 import { useAuth } from '@/lib/AuthProvider';
 import { evaluatePasswordChecklist } from '@/lib/passwordChecklist';
@@ -222,7 +223,7 @@ export default function LoginScreen() {
       accessibilityLabel="Sign in to EduM8"
     >
       <View style={styles.card}>
-        <Text style={styles.brand}>EduM8</Text>
+        <EduM8Logo size={34} style={styles.brandLogo} />
         <Text style={styles.supportingTitle}>Education Research Assistant</Text>
         <Text style={styles.subtitle}>Your private AI workspace for learning and research.</Text>
 
@@ -529,7 +530,7 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   container: {
     flexGrow: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#F6F7FA',
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
@@ -540,12 +541,9 @@ const styles = StyleSheet.create({
     maxWidth: 420,
     gap: 4,
   },
-  brand: {
-    fontSize: 30,
-    fontWeight: '800',
-    color: '#0F172A',
-    textAlign: 'center',
-    letterSpacing: -0.5,
+  brandLogo: {
+    alignSelf: 'center',
+    marginBottom: 4,
   },
   supportingTitle: {
     fontSize: 15,
@@ -564,9 +562,9 @@ const styles = StyleSheet.create({
   centered: { alignItems: 'center', gap: 8, paddingVertical: 8 },
   noProvidersText: { fontSize: 13, color: '#64748B', textAlign: 'center' },
   retryButton: { paddingVertical: 6, paddingHorizontal: 12 },
-  retryText: { color: '#208AEF', fontWeight: '600' },
+  retryText: { color: '#2F5FE0', fontWeight: '600' },
   button: {
-    backgroundColor: '#208AEF',
+    backgroundColor: '#2F5FE0',
     borderRadius: 8,
     paddingVertical: 12,
     alignItems: 'center',
@@ -604,7 +602,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   label: { fontSize: 13, fontWeight: '600', color: '#334155' },
-  forgotLink: { fontSize: 12, color: '#208AEF', fontWeight: '600' },
+  forgotLink: { fontSize: 12, color: '#2F5FE0', fontWeight: '600' },
   input: {
     borderWidth: 1,
     borderColor: '#CBD5E1',
@@ -614,7 +612,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     minHeight: 44,
     fontSize: 15,
-    color: '#0F172A',
+    color: '#14161F',
   },
   inputError: { borderColor: '#DC2626' },
   fieldErrorText: { fontSize: 12, color: '#B91C1C' },
@@ -626,7 +624,7 @@ const styles = StyleSheet.create({
     minHeight: 44,
     justifyContent: 'center',
   },
-  showHideText: { fontSize: 13, color: '#208AEF', fontWeight: '600' },
+  showHideText: { fontSize: 13, color: '#2F5FE0', fontWeight: '600' },
   noticeBox: {
     backgroundColor: '#F1F5F9',
     borderRadius: 8,
@@ -636,9 +634,9 @@ const styles = StyleSheet.create({
   },
   noticeTitle: { fontSize: 13, color: '#334155', fontWeight: '600' },
   noticeText: { fontSize: 12, color: '#475569', lineHeight: 18 },
-  noticeLink: { fontSize: 13, color: '#208AEF', fontWeight: '600' },
+  noticeLink: { fontSize: 13, color: '#2F5FE0', fontWeight: '600' },
   checklistBox: {
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#F6F7FA',
     borderWidth: 1,
     borderColor: '#E2E8F0',
     borderRadius: 8,
@@ -649,7 +647,7 @@ const styles = StyleSheet.create({
   checklistItem: { fontSize: 12, color: '#94A3B8' },
   checklistItemMet: { color: '#16A34A' },
   submitButton: {
-    backgroundColor: '#208AEF',
+    backgroundColor: '#2F5FE0',
     borderRadius: 8,
     paddingVertical: 13,
     alignItems: 'center',
@@ -660,7 +658,7 @@ const styles = StyleSheet.create({
   submitButtonText: { color: '#FFFFFF', fontWeight: '700', fontSize: 15 },
   modeSwitchButton: { alignItems: 'center', paddingVertical: 8 },
   modeSwitchText: { fontSize: 13, color: '#64748B' },
-  modeSwitchLink: { color: '#208AEF', fontWeight: '600' },
+  modeSwitchLink: { color: '#2F5FE0', fontWeight: '600' },
   errorBox: {
     backgroundColor: '#FEF2F2',
     borderRadius: 8,

@@ -1,6 +1,7 @@
 import { Link, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { EduM8Logo } from '@/components/EduM8Logo';
 import { useAuth } from '@/lib/AuthProvider';
 
 /** Fixed client-side cooldown between resend taps — a UX nicety only; the
@@ -62,7 +63,7 @@ export default function CheckEmailScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.card}>
-        <Text style={styles.brand}>EduM8</Text>
+        <EduM8Logo size={30} style={styles.brandLogo} />
         <Text style={styles.title}>Check your email</Text>
         <Text style={styles.body}>
           We sent a verification link{email ? ` to ${maskEmail(email)}` : ''}. Click the link to
@@ -102,26 +103,19 @@ export default function CheckEmailScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#F6F7FA',
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
   },
   card: { width: '100%', maxWidth: 420, gap: 8, alignItems: 'center' },
-  brand: {
-    fontSize: 26,
-    fontWeight: '800',
-    color: '#0F172A',
-    textAlign: 'center',
-    letterSpacing: -0.5,
-    marginBottom: 8,
-  },
-  title: { fontSize: 20, fontWeight: '700', color: '#0F172A', textAlign: 'center' },
+  brandLogo: { marginBottom: 8 },
+  title: { fontSize: 20, fontWeight: '700', color: '#14161F', textAlign: 'center' },
   body: { fontSize: 14, color: '#64748B', textAlign: 'center', lineHeight: 20, marginBottom: 16 },
   noticeBox: { backgroundColor: '#F0FDF4', borderRadius: 8, padding: 10, marginBottom: 8 },
   noticeText: { fontSize: 13, color: '#166534', textAlign: 'center' },
   button: {
-    backgroundColor: '#208AEF',
+    backgroundColor: '#2F5FE0',
     borderRadius: 8,
     paddingVertical: 12,
     paddingHorizontal: 20,
@@ -133,5 +127,5 @@ const styles = StyleSheet.create({
   buttonDisabled: { opacity: 0.6 },
   buttonText: { color: '#FFFFFF', fontWeight: '600', fontSize: 15 },
   link: { marginTop: 16, paddingVertical: 8 },
-  linkText: { color: '#208AEF', fontWeight: '600' },
+  linkText: { color: '#2F5FE0', fontWeight: '600' },
 });

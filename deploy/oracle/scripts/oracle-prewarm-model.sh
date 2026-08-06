@@ -268,7 +268,7 @@ PY
 main() {
     parse_arguments "$@"
     check_oracle_environment
-    print_header "EduMind Oracle — Ollama Model Prewarm"
+    print_header "EduM8 Oracle — Ollama Model Prewarm"
 
     local backend_id
     backend_id="$(oracle_container_id backend)"

@@ -8,7 +8,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 check_environment
 print_header
 
-info "Starting EduMind production services..."
+info "Starting EduM8 production services..."
 compose up -d
 
 echo

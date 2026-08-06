@@ -48,6 +48,12 @@ export const DEFAULT_PREFERENCES: Preferences = {
   autoScrollDuringStreaming: true,
 };
 
+// Intentionally NOT renamed to "edum8.*" despite the EduM8 rebrand — this
+// is a storage key, not display text. Changing it would silently reset
+// every existing user's stored preferences (theme, text size, etc.) back
+// to defaults on their next launch, with no migration. Brand renames
+// apply to what users read, never to storage/DB keys (see
+// brand/BRAND_GUIDELINES.md's own scope note).
 const STORAGE_KEY = 'edumind.preferences.v1';
 
 /** Parses a stored blob defensively: unknown/missing/corrupt fields fall
@@ -157,9 +163,18 @@ export function usePreferences(): PreferencesContextValue {
 }
 
 /**
- * The app's two palettes. Light keeps the existing EduMind look exactly
- * (slate surfaces, #208AEF blue); dark is the same slate family inverted,
- * with a brightened blue so the accent keeps its contrast on dark cards.
+ * The app's two palettes — EduM8 brand tokens (see
+ * brand/BRAND_GUIDELINES.md §3 at the repo root for the full system and
+ * the contrast ratios behind these choices).
+ *
+ * Light uses the brand's actual UI colors as-is: surface #F6F7FA, ink
+ * #14161F, accent blue #2F5FE0 (5.5:1 on white — passes AA text).
+ *
+ * Dark keeps the same slate-family structure this palette always had, but
+ * swaps `background` for the brand's ink (#14161F) and `accent` for the
+ * product design system's own `inverse-primary` (#B5C4FF) rather than the
+ * raw brand blue — #2F5FE0 only reaches 3.3:1 against ink, enough for the
+ * logo itself but not for small text (see BRAND_GUIDELINES.md §8).
  */
 export interface ThemePalette {
   background: string;
@@ -182,37 +197,37 @@ export interface ThemePalette {
 }
 
 const LIGHT_PALETTE: ThemePalette = {
-  background: '#F8FAFC',
+  background: '#F6F7FA',
   card: '#FFFFFF',
-  cardPressed: '#F1F5F9',
-  border: '#E2E8F0',
-  divider: '#F1F5F9',
-  text: '#0F172A',
-  subtext: '#64748B',
-  faint: '#94A3B8',
-  accent: '#208AEF',
-  accentSoft: '#E8F2FE',
+  cardPressed: '#EDEEF3',
+  border: '#E2E4EA',
+  divider: '#ECEDF2',
+  text: '#14161F',
+  subtext: '#434654',
+  faint: '#85889A',
+  accent: '#2F5FE0',
+  accentSoft: '#E6EBFC',
   accentContrast: '#FFFFFF',
   danger: '#B91C1C',
   dangerSoft: '#FEF2F2',
   ok: '#166534',
   warning: '#B45309',
   warningSoft: '#FEF3C7',
-  overlay: 'rgba(15, 23, 42, 0.5)',
+  overlay: 'rgba(20, 22, 31, 0.5)',
 };
 
 const DARK_PALETTE: ThemePalette = {
-  background: '#0F172A',
-  card: '#1E293B',
-  cardPressed: '#263449',
-  border: '#334155',
-  divider: '#293548',
-  text: '#F1F5F9',
-  subtext: '#94A3B8',
-  faint: '#64748B',
-  accent: '#5AA9FF',
-  accentSoft: '#17324F',
-  accentContrast: '#0F172A',
+  background: '#14161F',
+  card: '#1B1E29',
+  cardPressed: '#232635',
+  border: '#2F3242',
+  divider: '#262838',
+  text: '#F0F0FB',
+  subtext: '#B7BAC9',
+  faint: '#7C7F92',
+  accent: '#B5C4FF',
+  accentSoft: '#212C4F',
+  accentContrast: '#00164E',
   danger: '#F87171',
   dangerSoft: '#3B1B1B',
   ok: '#4ADE80',

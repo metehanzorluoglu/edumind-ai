@@ -235,11 +235,15 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
   },
   cardHighlighted: {
-    borderColor: '#208AEF',
-    backgroundColor: '#EFF8FF',
+    // Ochre, not blue — matches the citation-marker convention (see
+    // brand/BRAND_GUIDELINES.md §3): orange is reserved for citations and
+    // source-grounding UI specifically, distinct from the blue used for
+    // ordinary interactive elements.
+    borderColor: '#B0641F',
+    backgroundColor: '#FBF3EA',
   },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2 },
-  sourceId: { fontWeight: '700', color: '#208AEF' },
+  sourceId: { fontWeight: '700', color: '#B0641F' },
   sampleBadge: {
     backgroundColor: '#FEF3C7',
     borderRadius: 6,
@@ -251,10 +255,10 @@ const styles = StyleSheet.create({
   meta: { fontSize: 12, color: '#475569' },
   excerpt: { fontSize: 13, color: '#334155', marginTop: 6, marginBottom: 4 },
   toggleButton: { alignSelf: 'flex-start', marginBottom: 6, paddingVertical: 2 },
-  toggleText: { color: '#208AEF', fontSize: 12, fontWeight: '700' },
+  toggleText: { color: '#2F5FE0', fontSize: 12, fontWeight: '700' },
   actionsRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
   linkButton: { alignSelf: 'flex-start' },
-  linkText: { color: '#208AEF', fontSize: 13, fontWeight: '600' },
+  linkText: { color: '#2F5FE0', fontSize: 13, fontWeight: '600' },
   noLink: { fontSize: 12, color: '#94A3B8', fontStyle: 'italic' },
   unavailableChip: {
     backgroundColor: '#FEF2F2',

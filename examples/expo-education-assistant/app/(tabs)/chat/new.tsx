@@ -573,7 +573,7 @@ export default function NewChatScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8FAFC' },
+  container: { flex: 1, backgroundColor: '#F6F7FA' },
   composerDragOver: { backgroundColor: '#EFF8FF' },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   body: { flex: 1 },
@@ -602,7 +602,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
   },
   button: {
-    backgroundColor: '#208AEF',
+    backgroundColor: '#2F5FE0',
     borderRadius: 8,
     paddingHorizontal: 16,
     justifyContent: 'center',

@@ -6,6 +6,7 @@ import type {
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { AddToProjectPicker } from '@/components/AddToProjectPicker';
+import { EduM8Symbol } from '@/components/EduM8Logo';
 import { ConversationRow, type ConversationRowItem } from '@/components/ConversationRow';
 import { ProjectsSection } from '@/components/ProjectsSection';
 import { useAuth } from '@/lib/AuthProvider';
@@ -172,6 +173,11 @@ export function ConversationSidebar({
 
   return (
     <View style={styles.container}>
+      <View style={styles.brandHeader}>
+        <EduM8Symbol size={20} />
+        <Text style={styles.brandHeaderText}>EduM8</Text>
+      </View>
+
       {/* SidebarContextMenuProvider wraps the FlatList (and everything it
           renders, including ProjectRow's own three-dot menu and its own
           nested ConversationRows) but renders its actual popup as its own
@@ -268,7 +274,16 @@ export function ConversationSidebar({
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0F172A' },
+  container: { flex: 1, backgroundColor: '#14161F' },
+  brandHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 4,
+  },
+  brandHeaderText: { color: '#F1F5F9', fontWeight: '700', fontSize: 15, letterSpacing: -0.2 },
   newChatButton: {
     margin: 12,
     borderRadius: 8,
@@ -277,7 +292,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     alignItems: 'center',
   },
-  newChatButtonText: { color: '#F8FAFC', fontWeight: '600' },
+  newChatButtonText: { color: '#F6F7FA', fontWeight: '600' },
   list: { flex: 1 },
   centered: { alignItems: 'center', gap: 8, padding: 16 },
   errorText: { color: '#FCA5A5', fontSize: 12, textAlign: 'center' },

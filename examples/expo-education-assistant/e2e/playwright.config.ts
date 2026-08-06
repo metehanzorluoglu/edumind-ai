@@ -1,13 +1,13 @@
 import { defineConfig, devices } from '@playwright/test';
 
 /**
- * Checked-in E2E suite for the EduMind frontend. Runs against a real,
- * already-deployed instance (EDUMIND_BASE_URL) — this is not a local dev
+ * Checked-in E2E suite for the EduM8 frontend. Runs against a real,
+ * already-deployed instance (EDUM8_BASE_URL) — this is not a local dev
  * server harness, on purpose: the flows under test (stream-disconnect
  * recovery, vision generation) only mean anything against the real
  * backend/Ollama/Qdrant stack.
  *
- * Credentials (EDUMIND_TEST_EMAIL / EDUMIND_TEST_PASSWORD) come from the
+ * Credentials (EDUM8_TEST_EMAIL / EDUM8_TEST_PASSWORD) come from the
  * environment only — see .env.example. Tracing is deliberately left off
  * by default: a trace can capture DOM snapshots, and while a password
  * field renders masked, the safest default is not to record one at all.
@@ -24,7 +24,7 @@ export default defineConfig({
   workers: 1,
   reporter: [['list'], ['html', { open: 'never' }]],
   use: {
-    baseURL: process.env.EDUMIND_BASE_URL ?? 'https://app.edum8.us',
+    baseURL: process.env.EDUM8_BASE_URL ?? 'https://app.edum8.us',
     trace: 'off',
     video: 'off',
     screenshot: 'only-on-failure',

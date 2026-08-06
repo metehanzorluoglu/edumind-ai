@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Recreates ONLY the EduMind frontend container — backend, Ollama, Qdrant,
+# Recreates ONLY the EduM8 frontend container — backend, Ollama, Qdrant,
 # networks, and volumes are preserved.
 #
 # Adapted from deploy/oracle/scripts/oracle-restart.sh, narrowed to the
@@ -65,7 +65,7 @@ main() {
     parse_arguments "$@"
 
     check_frontend_environment
-    print_header "EduMind Frontend — Restart"
+    print_header "EduM8 Frontend — Restart"
 
     info "Validating Compose configuration..."
     frontend_compose config --quiet \

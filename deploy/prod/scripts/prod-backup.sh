@@ -131,7 +131,7 @@ write_backup_metadata() {
     info "Collecting backup metadata..."
 
     {
-        echo "EduMind AI Production Backup"
+        echo "EduM8 AI Production Backup"
         echo "============================"
         echo
         echo "Backup timestamp: $(date --iso-8601=seconds 2>/dev/null || date)"
@@ -205,7 +205,7 @@ write_backup_metadata() {
 
 write_restore_instructions() {
     cat >"$BACKUP_DIR/restore-instructions.txt" <<EOF_RESTORE
-EduMind AI Restore Instructions
+EduM8 AI Restore Instructions
 ================================
 
 Backup:

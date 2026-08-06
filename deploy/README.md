@@ -1,6 +1,6 @@
-# EduMind AI Deployment Guide
+# EduM8 AI Deployment Guide
 
-This directory contains everything required to deploy, operate, maintain, and recover the EduMind AI backend.
+This directory contains everything required to deploy, operate, maintain, and recover the EduM8 AI backend.
 
 ```
 deploy/
@@ -57,7 +57,7 @@ deploy/
 
 # Overview
 
-EduMind AI supports multiple deployment environments.
+EduM8 AI supports multiple deployment environments.
 
 | Environment | Purpose | Docker Project |
 |-------------|----------|----------------|

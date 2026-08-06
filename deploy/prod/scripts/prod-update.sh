@@ -177,7 +177,7 @@ short_commit() {
 show_update_plan() {
     echo
     echo "============================================================"
-    echo "EduMind production update plan"
+    echo "EduM8 production update plan"
     echo "============================================================"
     printf '%-22s %s\n' "Repository:" "$REPO_ROOT"
     printf '%-22s %s/%s\n' "Source:" "$REMOTE" "$BRANCH"
@@ -329,7 +329,7 @@ verify_deployment() {
 print_summary() {
     echo
     echo "============================================================"
-    echo "EduMind production update completed"
+    echo "EduM8 production update completed"
     echo "============================================================"
     printf '%-22s %s\n' "Previous commit:" "$(short_commit "$CURRENT_COMMIT")"
     printf '%-22s %s\n' "Current commit:" "$(git_commit)"

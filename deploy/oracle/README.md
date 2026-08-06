@@ -1,6 +1,6 @@
-# EduMind Oracle VM Deployment
+# EduM8 Oracle VM Deployment
 
-Operations guide for the EduMind Oracle Cloud deployment — Docker Compose project **`edumind-oracle`**.
+Operations guide for the EduM8 Oracle Cloud deployment — Docker Compose project **`edumind-oracle`**.
 
 ---
 

@@ -286,7 +286,7 @@ const styles = StyleSheet.create({
   turn: { marginBottom: 20 },
   userBubble: {
     alignSelf: 'flex-end',
-    backgroundColor: '#208AEF',
+    backgroundColor: '#2F5FE0',
     borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 8,

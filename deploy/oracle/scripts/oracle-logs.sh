@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Tails logs for the EduMind Oracle VM stack, all services by default.
+# Tails logs for the EduM8 Oracle VM stack, all services by default.
 #
 # Adapted from deploy/prod/scripts/prod-logs.sh — extended with
 # --tail/--no-follow/--timestamps flags and service-name validation.

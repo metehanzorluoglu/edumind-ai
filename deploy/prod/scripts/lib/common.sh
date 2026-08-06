@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 #
-# Common library for EduMind production management scripts.
+# Common library for EduM8 production management scripts.
 #
 
 set -euo pipefail
@@ -132,7 +132,7 @@ frontend_health() {
 print_header() {
     echo
     echo "============================================================"
-    echo " EduMind Production Operations"
+    echo " EduM8 Production Operations"
     echo "============================================================"
     echo
 }

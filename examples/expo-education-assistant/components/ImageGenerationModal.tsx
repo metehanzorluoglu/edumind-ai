@@ -504,7 +504,7 @@ export function ImageGenerationModal({
                     />
                     {ref.loading && (
                       <View style={styles.referenceLoading} pointerEvents="none">
-                        <ActivityIndicator size="small" color="#208AEF" />
+                        <ActivityIndicator size="small" color="#2F5FE0" />
                       </View>
                     )}
                   </View>
@@ -649,13 +649,13 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 16,
   },
-  title: { color: '#F8FAFC', fontSize: 16, fontWeight: '700', marginBottom: 12 },
+  title: { color: '#F6F7FA', fontSize: 16, fontWeight: '700', marginBottom: 12 },
   label: { color: '#94A3B8', fontSize: 12, fontWeight: '600', marginBottom: 6, marginTop: 12 },
   textArea: {
-    color: '#F8FAFC',
+    color: '#F6F7FA',
     fontSize: 14,
     minHeight: 60,
-    backgroundColor: '#0F172A',
+    backgroundColor: '#14161F',
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 10,
@@ -669,7 +669,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
   },
-  chipSelected: { backgroundColor: '#208AEF', borderColor: '#208AEF' },
+  chipSelected: { backgroundColor: '#2F5FE0', borderColor: '#2F5FE0' },
   chipText: { color: '#CBD5E1', fontSize: 12 },
   chipTextSelected: { color: '#FFFFFF', fontWeight: '600' },
   stepperRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
@@ -681,9 +681,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  stepperButtonText: { color: '#F8FAFC', fontSize: 18, fontWeight: '700' },
+  stepperButtonText: { color: '#F6F7FA', fontSize: 18, fontWeight: '700' },
   stepperValue: {
-    color: '#F8FAFC',
+    color: '#F6F7FA',
     fontSize: 14,
     fontWeight: '600',
     minWidth: 20,
@@ -697,13 +697,13 @@ const styles = StyleSheet.create({
     backgroundColor: '#334155',
     overflow: 'hidden',
   },
-  progressFill: { height: '100%', backgroundColor: '#208AEF', borderRadius: 3 },
+  progressFill: { height: '100%', backgroundColor: '#2F5FE0', borderRadius: 3 },
   progressIndeterminateSegment: {
     position: 'absolute',
     width: 90,
     height: '100%',
     borderRadius: 3,
-    backgroundColor: '#208AEF',
+    backgroundColor: '#2F5FE0',
   },
   errorBox: { backgroundColor: '#450A0A', borderRadius: 8, padding: 10, marginTop: 12 },
   errorText: { color: '#FCA5A5', fontSize: 12 },
@@ -716,7 +716,7 @@ const styles = StyleSheet.create({
   },
   cancelText: { color: '#94A3B8', fontSize: 13, paddingVertical: 8, paddingHorizontal: 4 },
   generateButton: {
-    backgroundColor: '#208AEF',
+    backgroundColor: '#2F5FE0',
     borderRadius: 8,
     paddingVertical: 10,
     paddingHorizontal: 16,

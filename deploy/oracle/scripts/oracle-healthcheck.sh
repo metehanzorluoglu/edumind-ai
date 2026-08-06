@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Comprehensive health check for the EduMind Oracle VM stack.
+# Comprehensive health check for the EduM8 Oracle VM stack.
 #
 # Adapted from deploy/prod/scripts/prod-healthcheck.sh — extended with
 # published-port checks, migration-completion verification, and configured
@@ -229,7 +229,7 @@ check_models() {
 
 main() {
     check_environment_quiet
-    print_header "EduMind Oracle — Health Check"
+    print_header "EduM8 Oracle — Health Check"
 
     print_section "Containers"
     for service in "${ORACLE_SERVICES[@]}"; do

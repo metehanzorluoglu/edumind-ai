@@ -1,8 +1,8 @@
 {
-  "name": "edumind-e2e",
+  "name": "edum8-e2e",
   "private": true,
   "version": "1.0.0",
-  "description": "Checked-in Playwright end-to-end coverage for the EduMind frontend — text chat, image/vision chat, auth, and stream-recovery flows against a real running deployment. Credentials come from environment variables only; nothing here is a secret.",
+  "description": "Checked-in Playwright end-to-end coverage for the EduM8 frontend — text chat, image/vision chat, auth, and stream-recovery flows against a real running deployment. Credentials come from environment variables only; nothing here is a secret.",
   "scripts": {
     "test": "playwright test",
     "test:headed": "playwright test --headed",

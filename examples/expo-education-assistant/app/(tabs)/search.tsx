@@ -134,13 +134,13 @@ const chipStyles = StyleSheet.create({
     paddingVertical: 6,
     marginRight: 6,
   },
-  chipSelected: { backgroundColor: '#208AEF', borderColor: '#208AEF' },
+  chipSelected: { backgroundColor: '#2F5FE0', borderColor: '#2F5FE0' },
   chipText: { fontSize: 12, color: '#334155' },
   chipTextSelected: { color: '#FFFFFF', fontWeight: '600' },
 });
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8FAFC' },
+  container: { flex: 1, backgroundColor: '#F6F7FA' },
   form: {
     padding: 16,
     gap: 8,
@@ -158,7 +158,7 @@ const styles = StyleSheet.create({
   filterLabel: { fontSize: 12, fontWeight: '600', color: '#475569', marginTop: 4 },
   chipRow: { flexDirection: 'row' },
   button: {
-    backgroundColor: '#208AEF',
+    backgroundColor: '#2F5FE0',
     borderRadius: 8,
     paddingVertical: 10,
     alignItems: 'center',

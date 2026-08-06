@@ -8,7 +8,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 check_environment
 print_header
 
-info "Recreating EduMind production services..."
+info "Recreating EduM8 production services..."
 compose up -d --force-recreate
 
 echo

@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Education Assistant (Dev Example)",
+    "name": "EduM8",
     "slug": "expo-education-assistant",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -15,7 +15,7 @@
     "android": {
       "package": "com.example.expoeducationassistant",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#FFFFFF",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
@@ -35,7 +35,7 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#F8FAFC"
+          "backgroundColor": "#F6F7FA"
         }
       ],
       "expo-web-browser"

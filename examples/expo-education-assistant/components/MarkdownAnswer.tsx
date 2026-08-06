@@ -10,6 +10,12 @@ import { Renderer, useMarkdown } from 'react-native-marked';
 const CITATION_LINK_SCHEME = 'citation:';
 const FENCED_CODE_BLOCK_PATTERN = /```[\s\S]*?```/g;
 
+// Ochre, not the general link blue — [S<n>] markers are citation/evidence
+// UI specifically, and brand/BRAND_GUIDELINES.md §3 reserves orange for
+// exactly that (citation markers, AI-grounding badges), distinct from blue
+// for ordinary links.
+const CITATION_MARKER_STYLE: TextStyle = { color: '#B0641F', fontWeight: '700' };
+
 /**
  * Rewrites resolvable [S<n>] citation markers (see splitAnswerIntoSegments)
  * into real markdown links pointing at a `citation:` pseudo-scheme, so
@@ -61,7 +67,11 @@ class CitationAwareRenderer extends Renderer {
     if (href.startsWith(CITATION_LINK_SCHEME)) {
       const sourceId = href.slice(CITATION_LINK_SCHEME.length);
       return (
-        <Text key={this.getKey()} style={styles} onPress={() => this.onCitationPress(sourceId)}>
+        <Text
+          key={this.getKey()}
+          style={[styles, CITATION_MARKER_STYLE]}
+          onPress={() => this.onCitationPress(sourceId)}
+        >
           {children}
         </Text>
       );
@@ -111,7 +121,7 @@ export function MarkdownAnswer({ answer, citations, onCitationPress }: MarkdownA
 
 const codeBlockStyles = StyleSheet.create({
   scroll: {
-    backgroundColor: '#0F172A',
+    backgroundColor: '#14161F',
     borderRadius: 8,
     marginVertical: 8,
   },
@@ -129,18 +139,18 @@ const codeBlockStyles = StyleSheet.create({
 const monospaceFont = Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' });
 
 const markdownStyles: MarkedStyles = {
-  text: { fontSize: 16, lineHeight: 24, color: '#0F172A' },
+  text: { fontSize: 16, lineHeight: 24, color: '#14161F' },
   paragraph: { marginBottom: 8 },
   strong: { fontWeight: '700' },
   em: { fontStyle: 'italic' },
   strikethrough: { textDecorationLine: 'line-through' },
-  link: { color: '#208AEF', fontWeight: '600' },
-  h1: { fontSize: 24, fontWeight: '700', color: '#0F172A', marginTop: 12, marginBottom: 8 },
-  h2: { fontSize: 20, fontWeight: '700', color: '#0F172A', marginTop: 10, marginBottom: 6 },
-  h3: { fontSize: 17, fontWeight: '700', color: '#0F172A', marginTop: 8, marginBottom: 4 },
-  h4: { fontSize: 16, fontWeight: '700', color: '#0F172A', marginTop: 6, marginBottom: 4 },
-  h5: { fontSize: 15, fontWeight: '700', color: '#0F172A', marginTop: 6, marginBottom: 4 },
-  h6: { fontSize: 14, fontWeight: '700', color: '#0F172A', marginTop: 6, marginBottom: 4 },
+  link: { color: '#2F5FE0', fontWeight: '600' },
+  h1: { fontSize: 24, fontWeight: '700', color: '#14161F', marginTop: 12, marginBottom: 8 },
+  h2: { fontSize: 20, fontWeight: '700', color: '#14161F', marginTop: 10, marginBottom: 6 },
+  h3: { fontSize: 17, fontWeight: '700', color: '#14161F', marginTop: 8, marginBottom: 4 },
+  h4: { fontSize: 16, fontWeight: '700', color: '#14161F', marginTop: 6, marginBottom: 4 },
+  h5: { fontSize: 15, fontWeight: '700', color: '#14161F', marginTop: 6, marginBottom: 4 },
+  h6: { fontSize: 14, fontWeight: '700', color: '#14161F', marginTop: 6, marginBottom: 4 },
   blockquote: {
     borderLeftWidth: 3,
     borderLeftColor: '#CBD5E1',
@@ -151,13 +161,13 @@ const markdownStyles: MarkedStyles = {
     fontFamily: monospaceFont,
     fontSize: 14,
     backgroundColor: '#E2E8F0',
-    color: '#0F172A',
+    color: '#14161F',
     borderRadius: 4,
     paddingHorizontal: 4,
   },
   hr: { borderBottomWidth: 1, borderBottomColor: '#E2E8F0', marginVertical: 12 },
   list: { marginVertical: 4 },
-  li: { fontSize: 16, lineHeight: 24, color: '#0F172A' },
+  li: { fontSize: 16, lineHeight: 24, color: '#14161F' },
   table: { borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 6, marginVertical: 8 },
   tableRow: { borderBottomWidth: 1, borderBottomColor: '#E2E8F0' },
   tableCell: { padding: 6 },

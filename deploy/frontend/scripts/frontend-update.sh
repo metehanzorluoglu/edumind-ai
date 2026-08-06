@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Updates and redeploys ONLY the EduMind frontend: fetches and
+# Updates and redeploys ONLY the EduM8 frontend: fetches and
 # fast-forwards the configured Git branch, shows which frontend-related
 # files changed, and — only when something the frontend image depends on
 # actually changed (or --force-build is given) — rebuilds and recreates the
@@ -173,7 +173,7 @@ short_commit() {
 show_update_plan() {
     echo
     echo "============================================================"
-    echo "EduMind frontend update plan"
+    echo "EduM8 frontend update plan"
     echo "============================================================"
     printf '%-26s %s\n' "Repository:" "$REPO_ROOT"
     printf '%-26s %s/%s\n' "Source:" "$REMOTE" "$BRANCH"
@@ -275,7 +275,7 @@ verify_deployment() {
 print_summary() {
     echo
     echo "============================================================"
-    echo "EduMind frontend update completed"
+    echo "EduM8 frontend update completed"
     echo "============================================================"
     printf '%-26s %s\n' "Previous commit:" "$(short_commit "$CURRENT_COMMIT")"
     printf '%-26s %s\n' "Current commit:" "$(git_commit_short)"
@@ -294,7 +294,7 @@ print_summary() {
 main() {
     parse_arguments "$@"
     check_frontend_environment
-    print_header "EduMind Frontend — Update"
+    print_header "EduM8 Frontend — Update"
 
     require_clean_repository
     fetch_remote

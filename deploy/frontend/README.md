@@ -1,6 +1,6 @@
-# EduMind Frontend Deployment Operations
+# EduM8 Frontend Deployment Operations
 
-Operations toolkit for the EduMind **frontend service only**: start, stop,
+Operations toolkit for the EduM8 **frontend service only**: start, stop,
 restart, update, status, and logs for the nginx-served Expo web export that
 runs inside the Oracle VM Compose stack.
 

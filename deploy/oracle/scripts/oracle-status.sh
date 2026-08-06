@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Displays a full status dashboard for the EduMind Oracle VM stack.
+# Displays a full status dashboard for the EduM8 Oracle VM stack.
 #
 # Adapted from deploy/prod/scripts/prod-status.sh — extended with Ollama
 # loaded-model info, host memory/swap, Docker disk usage, effective
@@ -76,7 +76,7 @@ print_effective_config() {
 
 main() {
     check_oracle_environment
-    print_header "EduMind Oracle — Status"
+    print_header "EduM8 Oracle — Status"
 
     print_section "Docker Compose services"
     oracle_compose ps || warn "Could not list Compose services."

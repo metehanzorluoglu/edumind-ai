@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Shows logs for the EduMind frontend container only — follows by default.
+# Shows logs for the EduM8 frontend container only — follows by default.
 #
 # Adapted from deploy/oracle/scripts/oracle-logs.sh, narrowed to the single
 # frontend service (no service argument) and extended with --since.

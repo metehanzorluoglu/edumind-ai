@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Updates the EduMind Oracle VM deployment: fetches and fast-forwards the
+# Updates the EduM8 Oracle VM deployment: fetches and fast-forwards the
 # configured Git branch, rebuilds images only when needed, applies
 # migrations, recreates containers, and verifies health.
 #
@@ -138,7 +138,7 @@ short_commit() {
 show_update_plan() {
     echo
     echo "============================================================"
-    echo "EduMind Oracle update plan"
+    echo "EduM8 Oracle update plan"
     echo "============================================================"
     printf '%-22s %s\n' "Repository:" "$REPO_ROOT"
     printf '%-22s %s/%s\n' "Source:" "$REMOTE" "$BRANCH"
@@ -257,7 +257,7 @@ verify_deployment() {
 print_summary() {
     echo
     echo "============================================================"
-    echo "EduMind Oracle update completed"
+    echo "EduM8 Oracle update completed"
     echo "============================================================"
     printf '%-22s %s\n' "Previous commit:" "$(short_commit "$CURRENT_COMMIT")"
     printf '%-22s %s\n' "Current commit:" "$(git_commit_short)"
@@ -284,7 +284,7 @@ print_summary() {
 main() {
     parse_arguments "$@"
     check_oracle_environment
-    print_header "EduMind Oracle — Update"
+    print_header "EduM8 Oracle — Update"
 
     require_clean_repository
     fetch_remote

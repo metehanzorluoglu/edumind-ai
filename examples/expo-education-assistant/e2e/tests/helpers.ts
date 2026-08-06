@@ -15,8 +15,8 @@ export function requireEnv(name: string): string {
   return value;
 }
 
-export const TEST_EMAIL = () => requireEnv('EDUMIND_TEST_EMAIL');
-export const TEST_PASSWORD = () => requireEnv('EDUMIND_TEST_PASSWORD');
+export const TEST_EMAIL = () => requireEnv('EDUM8_TEST_EMAIL');
+export const TEST_PASSWORD = () => requireEnv('EDUM8_TEST_PASSWORD');
 
 /** Logs in via the real form. Never logs, screenshots, or traces the
  * password — it is filled directly from the environment variable and

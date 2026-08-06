@@ -703,10 +703,10 @@ describe('auth', () => {
   });
 
   it('buildOAuthAuthorizeUrl() builds the authorize URL with an encoded redirect_uri, without making a request', () => {
-    const url = makeClient().buildOAuthAuthorizeUrl('google', 'edumindai://auth-callback');
+    const url = makeClient().buildOAuthAuthorizeUrl('google', 'edum8://auth-callback');
 
     expect(url).toBe(
-      'http://localhost:8000/auth/google/authorize?redirect_uri=edumindai%3A%2F%2Fauth-callback'
+      'http://localhost:8000/auth/google/authorize?redirect_uri=edum8%3A%2F%2Fauth-callback'
     );
     expect(fetchMock).not.toHaveBeenCalled();
   });

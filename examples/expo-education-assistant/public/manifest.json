@@ -1,0 +1,42 @@
+{
+  "id": "/",
+  "name": "EduM8 — Education Research Assistant",
+  "short_name": "EduM8",
+  "description": "Your private AI workspace for learning and research, grounded in the documents you upload.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#2F5FE0",
+  "background_color": "#F6F7FA",
+  "icons": [
+    {
+      "src": "/favicon-16-v1.png",
+      "sizes": "16x16",
+      "type": "image/png"
+    },
+    {
+      "src": "/favicon-32-v1.png",
+      "sizes": "32x32",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-192-v1.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512-v1.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512-maskable-v1.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

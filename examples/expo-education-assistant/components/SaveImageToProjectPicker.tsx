@@ -151,7 +151,7 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 8,
   },
-  title: { color: '#F8FAFC', fontSize: 14, fontWeight: '700', marginBottom: 4 },
+  title: { color: '#F6F7FA', fontSize: 14, fontWeight: '700', marginBottom: 4 },
   spinner: { marginVertical: 12 },
   errorText: { color: '#FCA5A5', fontSize: 12 },
   emptyText: { color: '#94A3B8', fontSize: 12 },
@@ -173,5 +173,5 @@ const styles = StyleSheet.create({
     minHeight: 36,
     justifyContent: 'center',
   },
-  doneButtonText: { color: '#F8FAFC', fontSize: 13, fontWeight: '600' },
+  doneButtonText: { color: '#F6F7FA', fontSize: 13, fontWeight: '600' },
 });

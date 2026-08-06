@@ -399,7 +399,7 @@ export class EducationAssistantClient {
       path: '/auth/providers',
       signal: options.signal,
     });
-    // TEMPORARY (see EduMind AI's frontend-login-empty-state debugging
+    // TEMPORARY (see EduM8's frontend-login-empty-state debugging
     // session) — the raw, pre-normalization wire body, so a caller with
     // devtools open can compare exactly what the backend sent against the
     // normalized value logged in AuthProvider.tsx. Safe to remove once

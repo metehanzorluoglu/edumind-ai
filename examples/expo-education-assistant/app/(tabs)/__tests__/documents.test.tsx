@@ -541,7 +541,7 @@ describe('DocumentsScreen web drag-and-drop', () => {
         : [dropZone.props.style];
       return style
         .filter((entry): entry is { borderColor?: string } => Boolean(entry))
-        .some((entry) => entry.borderColor === '#208AEF');
+        .some((entry) => entry.borderColor === '#2F5FE0');
     }
 
     expect(isActive()).toBe(false);

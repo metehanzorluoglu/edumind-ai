@@ -3,6 +3,7 @@ import { Slot, usePathname, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { ConversationSidebar } from '@/components/ConversationSidebar';
+import { EduM8Symbol } from '@/components/EduM8Logo';
 import { ChatConversationsProvider } from '@/lib/ChatConversationsContext';
 import { useClient } from '@/lib/ClientProvider';
 
@@ -66,7 +67,10 @@ export default function ChatLayout() {
               >
                 <Text style={styles.hamburgerIcon}>☰</Text>
               </Pressable>
-              <Text style={styles.topBarTitle}>Chat</Text>
+              <View style={styles.topBarBrand}>
+                <EduM8Symbol size={18} />
+                <Text style={styles.topBarTitle}>Chat</Text>
+              </View>
               <Pressable
                 style={styles.hamburgerButton}
                 onPress={handleNewChat}
@@ -105,7 +109,7 @@ export default function ChatLayout() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, flexDirection: 'row', backgroundColor: '#F8FAFC' },
+  root: { flex: 1, flexDirection: 'row', backgroundColor: '#F6F7FA' },
   panel: { width: 280, borderRightWidth: 1, borderRightColor: '#1E293B' },
   content: { flex: 1 },
   topBar: {
@@ -119,9 +123,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
   },
   hamburgerButton: { padding: 4 },
-  hamburgerIcon: { fontSize: 20, color: '#0F172A' },
-  newChatIcon: { fontSize: 22, color: '#0F172A', fontWeight: '600' },
-  topBarTitle: { fontSize: 16, fontWeight: '700', color: '#0F172A' },
+  hamburgerIcon: { fontSize: 20, color: '#14161F' },
+  newChatIcon: { fontSize: 22, color: '#14161F', fontWeight: '600' },
+  topBarBrand: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  topBarTitle: { fontSize: 16, fontWeight: '700', color: '#14161F' },
   overlay: { ...StyleSheet.absoluteFillObject, flexDirection: 'row', zIndex: 20 },
   overlayBackdrop: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.5)' },
   drawerPanel: { width: 280 },

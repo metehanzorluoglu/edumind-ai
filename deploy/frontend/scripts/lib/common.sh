@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 #
-# Shared library for EduMind frontend deployment operations scripts.
+# Shared library for EduM8 frontend deployment operations scripts.
 #
 # Adapted from deploy/oracle/scripts/lib/common.sh for frontend-only
 # operations (deploy/frontend/). Controls ONLY the `frontend` service of
@@ -130,7 +130,7 @@ die() {
 }
 
 print_header() {
-    local title="${1:-EduMind Frontend Operations}"
+    local title="${1:-EduM8 Frontend Operations}"
     echo
     echo "============================================================"
     echo " $title"

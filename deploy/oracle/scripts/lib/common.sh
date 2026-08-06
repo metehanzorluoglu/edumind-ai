@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 #
-# Shared library for EduMind Oracle VM operations scripts.
+# Shared library for EduM8 Oracle VM operations scripts.
 #
 # Adapted from deploy/prod/scripts/lib/common.sh for the Oracle
 # Cloud VM.Standard.A1.Flex deployment (deploy/oracle/). Every
@@ -110,7 +110,7 @@ die() {
 }
 
 print_header() {
-    local title="${1:-EduMind Oracle VM Operations}"
+    local title="${1:-EduM8 Oracle VM Operations}"
     echo
     echo "============================================================"
     echo " $title"

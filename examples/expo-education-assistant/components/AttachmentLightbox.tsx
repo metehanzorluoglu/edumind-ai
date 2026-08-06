@@ -255,7 +255,7 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     gap: 12,
   },
-  filename: { flex: 1, color: '#F8FAFC', fontSize: 14, fontWeight: '600' },
+  filename: { flex: 1, color: '#F6F7FA', fontSize: 14, fontWeight: '600' },
   counter: { color: '#94A3B8', fontSize: 12 },
   closeButton: {
     width: 32,
@@ -265,7 +265,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: 'rgba(255,255,255,0.12)',
   },
-  closeButtonText: { color: '#F8FAFC', fontSize: 16, fontWeight: '700' },
+  closeButtonText: { color: '#F6F7FA', fontSize: 16, fontWeight: '700' },
   // flex:1 — without a bounded height the horizontal list collapses to 0px
   // under the top bar, and everything inside it (the page, the zoom
   // wrapper, the image) collapses with it (the dark-overlay-no-image bug).
@@ -280,7 +280,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  statusTitle: { color: '#F8FAFC', fontSize: 14, fontWeight: '600' },
+  statusTitle: { color: '#F6F7FA', fontSize: 14, fontWeight: '600' },
   statusHint: { color: '#94A3B8', fontSize: 12, marginTop: 4 },
   hint: { color: '#CBD5E1', fontSize: 13, textAlign: 'center', paddingHorizontal: 24 },
   pageNav: {
@@ -297,6 +297,6 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   pageNavButtonDisabled: { opacity: 0.35 },
-  pageNavText: { color: '#F8FAFC', fontSize: 13, fontWeight: '600' },
+  pageNavText: { color: '#F6F7FA', fontSize: 13, fontWeight: '600' },
   pageIndicator: { color: '#E2E8F0', fontSize: 12 },
 });

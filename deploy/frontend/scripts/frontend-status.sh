@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Displays a full status dashboard for the EduMind frontend service.
+# Displays a full status dashboard for the EduM8 frontend service.
 #
 # Adapted from deploy/oracle/scripts/oracle-status.sh, focused entirely on
 # the frontend: container/image/health details, HTTP checks against the
@@ -226,7 +226,7 @@ print_image_freshness() {
 
 main() {
     check_frontend_environment
-    print_header "EduMind Frontend — Status"
+    print_header "EduM8 Frontend — Status"
 
     print_container_details
     print_http_checks

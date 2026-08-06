@@ -1,5 +1,6 @@
 import { Redirect, Tabs } from 'expo-router';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import { EduM8Symbol } from '@/components/EduM8Logo';
 import { useAuth } from '@/lib/AuthProvider';
 
 /**
@@ -16,6 +17,9 @@ export default function TabsLayout() {
   if (status === 'loading') {
     return (
       <View style={styles.splash}>
+        {/* The mark itself never spins — see EduM8Logo's docs. The
+            ActivityIndicator below it is the "thinking" signal. */}
+        <EduM8Symbol size={40} style={styles.splashMark} />
         <ActivityIndicator />
       </View>
     );
@@ -43,5 +47,6 @@ export default function TabsLayout() {
 }
 
 const styles = StyleSheet.create({
-  splash: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F8FAFC' },
+  splash: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F6F7FA' },
+  splashMark: { marginBottom: 16 },
 });

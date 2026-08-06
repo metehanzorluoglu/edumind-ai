@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Starts the EduMind frontend service (and only the dependencies it
+# Starts the EduM8 frontend service (and only the dependencies it
 # declares) within the edumind-oracle Compose project.
 #
 # Adapted from deploy/oracle/scripts/oracle-start.sh, narrowed to the
@@ -111,7 +111,7 @@ main() {
     parse_arguments "$@"
 
     check_frontend_environment
-    print_header "EduMind Frontend — Start"
+    print_header "EduM8 Frontend — Start"
 
     validate_compose_config
     start_frontend

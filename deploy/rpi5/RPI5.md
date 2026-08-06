@@ -1,4 +1,4 @@
-# Raspberry Pi 5 deployment — EduMind RAG backend
+# Raspberry Pi 5 deployment — EduM8 RAG backend
 
 This directory lays out a self-contained Docker Compose deployment of the
 **rag-backend** (FastAPI + Ollama + Qdrant) onto a Raspberry Pi 5 (8 GB).

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Stops and removes the EduMind Oracle VM containers and network, WITHOUT
+# Stops and removes the EduM8 Oracle VM containers and network, WITHOUT
 # ever touching persistent volumes.
 #
 # Adapted from deploy/prod/scripts/prod-stop.sh. Never runs
@@ -55,7 +55,7 @@ main() {
     parse_arguments "$@"
 
     check_oracle_environment
-    print_header "EduMind Oracle — Stop"
+    print_header "EduM8 Oracle — Stop"
 
     warn "This will stop and remove all Oracle containers and the Oracle network."
     info "Persistent volumes are never removed by this script:"
@@ -65,7 +65,7 @@ main() {
 
     confirm_yes_no "Proceed with stopping the Oracle stack?" "$ASSUME_YES"
 
-    info "Stopping EduMind Oracle services (docker compose down, no -v)..."
+    info "Stopping EduM8 Oracle services (docker compose down, no -v)..."
     oracle_compose down
 
     echo

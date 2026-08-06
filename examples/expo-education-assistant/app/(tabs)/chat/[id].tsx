@@ -470,7 +470,7 @@ export default function ChatConversationRoute() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8FAFC' },
+  container: { flex: 1, backgroundColor: '#F6F7FA' },
   composerDragOver: { backgroundColor: '#EFF8FF' },
   banner: { backgroundColor: '#FEF3C7', padding: 8 },
   bannerText: { fontSize: 12, color: '#92400E', textAlign: 'center' },
@@ -499,7 +499,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: 12,
     alignSelf: 'center',
-    backgroundColor: '#0F172A',
+    backgroundColor: '#14161F',
     borderRadius: 16,
     paddingHorizontal: 14,
     paddingVertical: 8,
@@ -522,7 +522,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
   },
   button: {
-    backgroundColor: '#208AEF',
+    backgroundColor: '#2F5FE0',
     borderRadius: 8,
     paddingHorizontal: 16,
     justifyContent: 'center',
@@ -539,7 +539,7 @@ const styles = StyleSheet.create({
   },
   retryHint: { fontSize: 12, color: '#B91C1C', flexShrink: 1 },
   retryButton: {
-    backgroundColor: '#208AEF',
+    backgroundColor: '#2F5FE0',
     borderRadius: 8,
     paddingHorizontal: 16,
     paddingVertical: 8,

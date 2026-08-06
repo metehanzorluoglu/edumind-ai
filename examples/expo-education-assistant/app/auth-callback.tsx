@@ -74,7 +74,7 @@ export default function AuthCallbackScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#F6F7FA',
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
@@ -84,5 +84,5 @@ const styles = StyleSheet.create({
   errorTitle: { fontWeight: '700', fontSize: 16, color: '#B91C1C' },
   errorText: { color: '#7F1D1D', textAlign: 'center', fontSize: 14 },
   link: { marginTop: 8, paddingVertical: 8, paddingHorizontal: 12 },
-  linkText: { color: '#208AEF', fontWeight: '600' },
+  linkText: { color: '#2F5FE0', fontWeight: '600' },
 });

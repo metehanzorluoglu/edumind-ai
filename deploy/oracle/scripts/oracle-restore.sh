@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Restores the EduMind Oracle VM stack's persistent volumes from a backup
+# Restores the EduM8 Oracle VM stack's persistent volumes from a backup
 # created by oracle-backup.sh.
 #
 # Adapted from deploy/prod/scripts/prod-restore.sh — extended with
@@ -255,7 +255,7 @@ start_and_verify() {
 main() {
     parse_arguments "$@"
     check_oracle_environment
-    print_header "EduMind Oracle — Restore"
+    print_header "EduM8 Oracle — Restore"
 
     verify_oracle_backup_directory "$BACKUP_DIR" "$SKIP_OLLAMA"
     validate_restore_environment

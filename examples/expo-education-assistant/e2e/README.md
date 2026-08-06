@@ -1,6 +1,6 @@
-# EduMind E2E (Playwright)
+# EduM8 E2E (Playwright)
 
-Checked-in end-to-end coverage for the EduMind frontend, run against a
+Checked-in end-to-end coverage for the EduM8 frontend, run against a
 real, already-deployed instance — text chat, image/vision chat,
 authentication, and the stream-disconnect-recovery fix (QA finding
 BUG-1). This did not exist before; the previous QA audit's browser
@@ -12,11 +12,11 @@ testing was all ad hoc, throwaway scripts.
 cd e2e
 npm install
 npx playwright install chromium
-cp .env.example .env   # fill in EDUMIND_TEST_EMAIL / EDUMIND_TEST_PASSWORD
+cp .env.example .env   # fill in EDUM8_TEST_EMAIL / EDUM8_TEST_PASSWORD
 ```
 
-Credentials are read from the environment only (`EDUMIND_TEST_EMAIL`,
-`EDUMIND_TEST_PASSWORD`, `EDUMIND_BASE_URL`) — never hardcoded in a spec
+Credentials are read from the environment only (`EDUM8_TEST_EMAIL`,
+`EDUM8_TEST_PASSWORD`, `EDUM8_BASE_URL`) — never hardcoded in a spec
 file, `.env` is git-ignored, and tracing is off by default (see
 `playwright.config.ts`) so a password can never end up in a trace file.
 

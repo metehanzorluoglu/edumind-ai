@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Starts the complete EduMind Oracle VM stack (project: edumind-oracle).
+# Starts the complete EduM8 Oracle VM stack (project: edumind-oracle).
 #
 # Adapted from deploy/prod/scripts/prod-start.sh — extended with Compose
 # config validation, an optional --build, a mandatory post-start health
@@ -97,7 +97,7 @@ main() {
     parse_arguments "$@"
 
     check_oracle_environment
-    print_header "EduMind Oracle — Start"
+    print_header "EduM8 Oracle — Start"
 
     validate_compose_config
     start_stack

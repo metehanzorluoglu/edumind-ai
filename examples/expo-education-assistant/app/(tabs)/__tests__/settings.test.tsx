@@ -307,7 +307,7 @@ describe('SettingsScreen (consumer redesign)', () => {
       expect(
         queryByText(
           renderer.root,
-          'EduMind services are currently unreachable. Your data is safe — please try again in a moment.'
+          'EduM8 services are currently unreachable. Your data is safe — please try again in a moment.'
         )
       ).toBeNull();
     });
@@ -320,7 +320,7 @@ describe('SettingsScreen (consumer redesign)', () => {
       const banner = renderer.root.findAll(
         (n) =>
           String(n.type) === 'Text' &&
-          textContent(n).includes('EduMind services are currently unreachable')
+          textContent(n).includes('EduM8 services are currently unreachable')
       );
       expect(banner.length).toBe(1);
       expect(queryByText(renderer.root, 'Ollama')).toBeNull();
@@ -455,13 +455,13 @@ describe('SettingsScreen (consumer redesign)', () => {
       await act(async () => {
         findPressableByText(renderer.root, 'Delete all my data').props.onPress();
       });
-      expect(findByText(renderer.root, 'Delete your EduMind data?')).toBeTruthy();
+      expect(findByText(renderer.root, 'Delete your EduM8 data?')).toBeTruthy();
       // The dialog copy discloses that the account itself remains.
       expect(
         renderer.root.findAll(
           (n) =>
             String(n.type) === 'Text' &&
-            textContent(n).includes('Your EduMind account itself is not deleted')
+            textContent(n).includes('Your EduM8 account itself is not deleted')
         ).length
       ).toBeGreaterThan(0);
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Stops ONLY the EduMind frontend container — never the backend, Ollama,
+# Stops ONLY the EduM8 frontend container — never the backend, Ollama,
 # Qdrant, or the migration job, and never via `docker compose down`.
 #
 # Adapted from deploy/oracle/scripts/oracle-stop.sh, narrowed from a full
@@ -58,7 +58,7 @@ main() {
     parse_arguments "$@"
 
     check_frontend_environment
-    print_header "EduMind Frontend — Stop"
+    print_header "EduM8 Frontend — Stop"
 
     info "This stops ONLY the '$FRONTEND_SERVICE' container. Not affected:"
     echo "  - backend, backend-migrate, ollama, qdrant (keep running)"

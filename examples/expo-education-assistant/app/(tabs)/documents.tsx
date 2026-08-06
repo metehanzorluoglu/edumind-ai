@@ -675,7 +675,7 @@ export default function DocumentsScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8FAFC' },
+  container: { flex: 1, backgroundColor: '#F6F7FA' },
   content: { padding: 16, gap: 24 },
   section: { gap: 8 },
   sectionTitle: { fontWeight: '700', fontSize: 16 },
@@ -692,7 +692,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     marginRight: 6,
   },
-  chipSelected: { backgroundColor: '#208AEF', borderColor: '#208AEF' },
+  chipSelected: { backgroundColor: '#2F5FE0', borderColor: '#2F5FE0' },
   chipText: { fontSize: 12, color: '#334155' },
   chipTextSelected: { color: '#FFFFFF', fontWeight: '600' },
   input: {
@@ -704,7 +704,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
   },
   button: {
-    backgroundColor: '#208AEF',
+    backgroundColor: '#2F5FE0',
     borderRadius: 8,
     paddingVertical: 10,
     alignItems: 'center',
@@ -712,13 +712,13 @@ const styles = StyleSheet.create({
   buttonText: { color: '#FFFFFF', fontWeight: '600' },
   secondaryButton: {
     borderWidth: 1,
-    borderColor: '#208AEF',
+    borderColor: '#2F5FE0',
     borderRadius: 8,
     paddingVertical: 10,
     paddingHorizontal: 16,
     alignItems: 'center',
   },
-  secondaryButtonText: { color: '#208AEF', fontWeight: '600' },
+  secondaryButtonText: { color: '#2F5FE0', fontWeight: '600' },
   centered: { alignItems: 'center', gap: 8 },
   metadataReview: { gap: 8 },
   successBox: { backgroundColor: '#F0FDF4', borderRadius: 8, padding: 12, gap: 8 },
@@ -726,7 +726,7 @@ const styles = StyleSheet.create({
   errorBox: { backgroundColor: '#FEF2F2', borderRadius: 8, padding: 12, gap: 8 },
   errorText: { color: '#B91C1C', fontSize: 13 },
   listHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  refreshText: { color: '#208AEF', fontWeight: '600', fontSize: 13 },
+  refreshText: { color: '#2F5FE0', fontWeight: '600', fontSize: 13 },
   spinner: { marginTop: 12 },
   dropZone: {
     borderWidth: 2,
@@ -737,9 +737,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     alignItems: 'center',
     gap: 8,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#F6F7FA',
   },
-  dropZoneActive: { borderColor: '#208AEF', backgroundColor: '#EFF8FF' },
+  dropZoneActive: { borderColor: '#2F5FE0', backgroundColor: '#EFF8FF' },
   dropZoneText: { fontSize: 13, color: '#475569', textAlign: 'center' },
   dropZoneOr: { fontSize: 11, color: '#94A3B8' },
   selectedFileBox: {
@@ -754,7 +754,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   selectedFileMain: { flex: 1, minWidth: 0 },
-  selectedFileName: { fontSize: 13, fontWeight: '600', color: '#0F172A' },
+  selectedFileName: { fontSize: 13, fontWeight: '600', color: '#14161F' },
   clearButton: {
     borderWidth: 1,
     borderColor: '#CBD5E1',
