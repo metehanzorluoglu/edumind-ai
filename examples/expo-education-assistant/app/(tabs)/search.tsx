@@ -1,19 +1,15 @@
 import { useEducationSearch } from 'education-assistant-client';
 import type { DocumentType, JournalQuartile } from 'education-assistant-client';
 import { useMemo, useState } from 'react';
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { ChunkPreview } from '@/components/ChunkPreview';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { FilterChip } from '@/components/ui/FilterChip';
+import { Notice } from '@/components/ui/Notice';
 import { PageHeader } from '@/components/ui/PageHeader';
+import { Skeleton } from '@/components/ui/Skeleton';
+import { TextField } from '@/components/ui/TextField';
 import { DOCUMENT_TYPES, DOCUMENT_TYPE_LABELS, JOURNAL_QUARTILES } from '@/lib/enums';
 import { useClient } from '@/lib/ClientProvider';
 import { useTheme, type Theme } from '@/lib/Preferences';
@@ -50,12 +46,11 @@ export default function SearchScreen() {
       <PageHeader title="Search" />
       <View style={styles.formOuter}>
         <View style={styles.form}>
-          <TextInput
-            style={styles.input}
+          <TextField
+            label="Search"
             value={query}
             onChangeText={setQuery}
             placeholder="Search the corpus…"
-            placeholderTextColor={theme.faint}
             onSubmitEditing={handleSearch}
             returnKeyType="search"
             accessibilityLabel="Search the corpus"
@@ -111,10 +106,14 @@ export default function SearchScreen() {
             <Text style={styles.hint}>Retrieval only — no generation, no citations.</Text>
           )}
           {state.status === 'loading' && (
-            <ActivityIndicator style={styles.spinner} color={theme.accent} />
+            <View style={styles.skeletonList}>
+              {[1, 2, 3].map((i) => (
+                <Skeleton key={i} width="100%" height={104} radius={theme.radius.md} />
+              ))}
+            </View>
           )}
           {state.status === 'cancelled' && <Text style={styles.hint}>Search cancelled.</Text>}
-          {state.status === 'error' && <Text style={styles.error}>{state.error.message}</Text>}
+          {state.status === 'error' && <Notice tone="danger" body={state.error.message} />}
           {state.status === 'success' && state.results.length === 0 && (
             <EmptyState
               title="No results"
@@ -131,46 +130,6 @@ export default function SearchScreen() {
   );
 }
 
-function FilterChip({
-  label,
-  selected,
-  onPress,
-}: {
-  label: string;
-  selected: boolean;
-  onPress: () => void;
-}) {
-  const theme = useTheme();
-  const chipStyles = useMemo(() => buildChipStyles(theme), [theme]);
-  return (
-    <Pressable
-      style={[chipStyles.chip, selected && chipStyles.chipSelected]}
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityState={{ selected }}
-      accessibilityLabel={label}
-    >
-      <Text style={[chipStyles.chipText, selected && chipStyles.chipTextSelected]}>{label}</Text>
-    </Pressable>
-  );
-}
-
-function buildChipStyles(theme: Theme) {
-  return StyleSheet.create({
-    chip: {
-      borderWidth: StyleSheet.hairlineWidth * 2,
-      borderColor: theme.border,
-      borderRadius: theme.radius.pill,
-      paddingHorizontal: 12,
-      paddingVertical: 6,
-      marginRight: 6,
-    },
-    chipSelected: { backgroundColor: theme.accent, borderColor: theme.accent },
-    chipText: { fontSize: 12, color: theme.text, fontFamily: theme.fonts.body },
-    chipTextSelected: { color: theme.accentContrast, fontFamily: theme.fonts.bodySemibold },
-  });
-}
-
 function buildStyles(theme: Theme) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: theme.background },
@@ -185,15 +144,6 @@ function buildStyles(theme: Theme) {
       maxWidth: 760,
       padding: 20,
       gap: 8,
-    },
-    input: {
-      borderWidth: StyleSheet.hairlineWidth * 2,
-      borderColor: theme.border,
-      borderRadius: theme.radius.md,
-      paddingHorizontal: 12,
-      paddingVertical: 10,
-      color: theme.text,
-      fontFamily: theme.fonts.body,
     },
     filterLabel: {
       fontSize: 12,
@@ -212,12 +162,6 @@ function buildStyles(theme: Theme) {
       marginTop: 24,
       fontFamily: theme.fonts.body,
     },
-    spinner: { marginTop: 24 },
-    error: {
-      color: theme.danger,
-      textAlign: 'center',
-      marginTop: 24,
-      fontFamily: theme.fonts.body,
-    },
+    skeletonList: { gap: 10, marginTop: 12, width: '100%' },
   });
 }

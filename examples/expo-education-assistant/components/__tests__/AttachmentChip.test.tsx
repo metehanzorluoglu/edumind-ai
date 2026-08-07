@@ -1,6 +1,5 @@
 import { act, create, type ReactTestInstance } from 'react-test-renderer';
 import { AttachmentChip } from '../AttachmentChip';
-import { EFFECTIVE_PDF_PAGE_LIMIT } from '@/lib/visionLimits';
 import type { AttachmentChipInfo } from '@/lib/chatAttachments';
 
 function makeInfo(overrides: Partial<AttachmentChipInfo> = {}): AttachmentChipInfo {
@@ -25,50 +24,25 @@ function findByText(root: ReactTestInstance, text: string): ReactTestInstance | 
 }
 
 describe('AttachmentChip', () => {
-  it('shows no page-limit notice when the page count is not yet known (not-yet-sent attachment)', () => {
+  it('shows the page count for a persisted PDF of any length — no artificial cap', () => {
     let renderer!: ReturnType<typeof create>;
     act(() => {
-      renderer = create(<AttachmentChip info={makeInfo({ pageCount: null })} />);
+      renderer = create(<AttachmentChip info={makeInfo({ pageCount: 240 })} />);
     });
 
+    const meta = renderer.root.findAll(
+      (node) => String(node.type) === 'Text' && node.children.join('').includes('240 pages')
+    );
+    expect(meta.length).toBeGreaterThan(0);
+    // The app no longer warns that only some pages will be analyzed —
+    // the whole document is processed (see the batched-PDF pipeline).
     const notice = renderer.root.findAll(
       (node) => String(node.type) === 'Text' && node.children.join('').includes('Only the first')
     );
     expect(notice).toHaveLength(0);
   });
 
-  it('shows no page-limit notice when a persisted PDF fits under the effective limit', () => {
-    let renderer!: ReturnType<typeof create>;
-    act(() => {
-      renderer = create(
-        <AttachmentChip info={makeInfo({ pageCount: EFFECTIVE_PDF_PAGE_LIMIT })} />
-      );
-    });
-
-    const notice = renderer.root.findAll(
-      (node) => String(node.type) === 'Text' && node.children.join('').includes('Only the first')
-    );
-    expect(notice).toHaveLength(0);
-  });
-
-  it('shows the configured page-limit notice for an oversized persisted PDF', () => {
-    let renderer!: ReturnType<typeof create>;
-    act(() => {
-      renderer = create(<AttachmentChip info={makeInfo({ pageCount: 24 })} />);
-    });
-
-    const notice = renderer.root.find(
-      (node) =>
-        String(node.type) === 'Text' &&
-        node.children.join('').includes(`This PDF has 24 pages. Only the first`)
-    );
-    expect(notice).toBeTruthy();
-    expect(notice.children.join('')).toBe(
-      `This PDF has 24 pages. Only the first ${EFFECTIVE_PDF_PAGE_LIMIT} pages will be analyzed.`
-    );
-  });
-
-  it('still shows filename, size, and Remove button alongside the notice', () => {
+  it('shows filename, size, and Remove button', () => {
     const onRemove = jest.fn();
     let renderer!: ReturnType<typeof create>;
     act(() => {

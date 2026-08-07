@@ -71,7 +71,7 @@ export function AppDrawer({ width, onResizeEnd, ...sidebarProps }: AppDrawerProp
   }
 
   return (
-    <View style={[styles.container, { width: effectiveWidth }]}>
+    <View style={[styles.container, { width: effectiveWidth }]} testID="app-drawer">
       <View style={styles.sidebar}>
         <ConversationSidebar {...sidebarProps} />
       </View>

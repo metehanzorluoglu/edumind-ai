@@ -10,9 +10,11 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { ChevronIcon, MoreIcon } from '@/components/icons';
 import { ConversationRow } from '@/components/ConversationRow';
 import { safeText } from '@/lib/format';
 import { measureWindowRect } from '@/lib/measureWindowRect';
+import { WEB_MENU_TRIGGER_ARIA_PROPS } from '@/lib/webMenuTriggerAria';
 import { DARK_PALETTE, useTheme, type Theme } from '@/lib/Preferences';
 import {
   useSidebarContextMenu,
@@ -40,10 +42,8 @@ export interface ProjectRowProps {
 
 type EditMode = 'none' | 'name' | 'description';
 
-// `aria-haspopup` has no React Native cross-platform equivalent — see
-// ConversationRow's own copy of this constant for the full reasoning.
-const WEB_MENU_TRIGGER_ARIA_PROPS =
-  Platform.OS === 'web' ? ({ 'aria-haspopup': 'menu' } as Record<string, string>) : {};
+// `aria-haspopup` lives in lib/webMenuTriggerAria — shared with
+// ConversationRow's identical three-dot trigger.
 
 /**
  * One project's sidebar row: expand/collapse control, name, conversation
@@ -204,7 +204,11 @@ export function ProjectRow({
           accessibilityLabel={`${expanded ? 'Collapse' : 'Expand'} ${safeText(project.name, 'project')}`}
           accessibilityState={{ expanded }}
         >
-          <Text style={styles.expandIcon}>{expanded ? '▾' : '▸'}</Text>
+          <ChevronIcon
+            size={14}
+            color={dark.faint}
+            style={{ transform: [{ rotate: expanded ? '90deg' : '0deg' }] }}
+          />
         </Pressable>
         <Pressable style={styles.headerMain} onPress={onToggleExpand}>
           <Text numberOfLines={1} style={styles.projectName}>
@@ -217,7 +221,13 @@ export function ProjectRow({
         ) : (
           <View ref={triggerRef} style={styles.menuButton}>
             <Pressable
-              style={styles.menuButtonPressable}
+              style={({ pressed, hovered }) => [
+                styles.menuButtonPressable,
+                {
+                  borderRadius: theme.radius.sm,
+                  backgroundColor: pressed || hovered || isMenuOpen ? dark.border : 'transparent',
+                },
+              ]}
               onPress={handleMenuTriggerPress}
               hitSlop={8}
               accessibilityRole="button"
@@ -226,7 +236,7 @@ export function ProjectRow({
               aria-expanded={isMenuOpen}
               {...WEB_MENU_TRIGGER_ARIA_PROPS}
             >
-              <Text style={styles.menuButtonText}>⋮</Text>
+              <MoreIcon size={16} color={isMenuOpen ? dark.text : dark.faint} />
             </Pressable>
           </View>
         )}

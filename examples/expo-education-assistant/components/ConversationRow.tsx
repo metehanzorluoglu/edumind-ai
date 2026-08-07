@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { forwardRef, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -9,14 +9,21 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { MoreIcon } from '@/components/icons';
 import { focusRef } from '@/lib/focusElement';
 import { safeText } from '@/lib/format';
 import { measureWindowRect } from '@/lib/measureWindowRect';
-import { useTheme } from '@/lib/Preferences';
+import { DARK_PALETTE, useTheme } from '@/lib/Preferences';
 import {
   useSidebarContextMenu,
   type SidebarContextMenuAction,
 } from '@/lib/SidebarContextMenuContext';
+import { WEB_MENU_TRIGGER_ARIA_PROPS } from '@/lib/webMenuTriggerAria';
+
+// This row only ever renders inside the always-dark sidebar rail, so it
+// draws from the dark palette directly (same convention as
+// ConversationSidebar/NavRail) instead of the ambient theme.
+const dark = DARK_PALETTE;
 
 /** Minimal shape both a normal-history ConversationSummary and a
  * project-scoped ProjectConversation can be adapted into — this row
@@ -43,14 +50,6 @@ export interface ConversationRowProps {
   onRemoveFromProject?: (id: string) => void;
   removingFromProject?: boolean;
 }
-
-// `aria-haspopup` has no React Native cross-platform equivalent (it's a
-// web-only ARIA attribute — RN's own accessibility props stop at
-// `accessibilityState.expanded`/`aria-expanded`, both already applied
-// below on every platform) — computed once at module scope since
-// Platform.OS never changes at runtime.
-const WEB_MENU_TRIGGER_ARIA_PROPS =
-  Platform.OS === 'web' ? ({ 'aria-haspopup': 'menu' } as Record<string, string>) : {};
 
 /**
  * One conversation row, shared by the sidebar's normal date-grouped
@@ -241,10 +240,26 @@ export function ConversationRow({
 
   if (renaming) {
     return (
-      <View style={[styles.row, active && styles.rowActive]}>
+      <View
+        style={[
+          styles.row,
+          {
+            backgroundColor: active ? dark.elevated : 'transparent',
+            borderRadius: theme.radius.sm,
+          },
+        ]}
+      >
         <View style={styles.renameWrap}>
           <TextInput
-            style={[styles.renameInput, { fontFamily: theme.fonts.body }]}
+            style={[
+              styles.renameInput,
+              {
+                fontFamily: theme.fonts.body,
+                color: dark.text,
+                backgroundColor: dark.elevated,
+                borderRadius: theme.radius.sm,
+              },
+            ]}
             value={titleInput}
             onChangeText={(text) => {
               setTitleInput(text);
@@ -258,7 +273,7 @@ export function ConversationRow({
           />
           {renameError && (
             <Text
-              style={[styles.renameErrorText, { fontFamily: theme.fonts.body }]}
+              style={[styles.renameErrorText, { fontFamily: theme.fonts.body, color: dark.danger }]}
               accessibilityRole="alert"
             >
               {renameError}
@@ -272,7 +287,7 @@ export function ConversationRow({
   const busy = deleting || removingFromProject;
 
   return (
-    <View style={[styles.row, active && styles.rowActive]}>
+    <RowSurface active={active}>
       <Pressable
         style={styles.rowMain}
         onPress={() => onSelect(item.id)}
@@ -283,62 +298,121 @@ export function ConversationRow({
           numberOfLines={1}
           style={[
             styles.rowTitle,
-            { fontFamily: theme.fonts.body },
-            active && [styles.rowTitleActive, { fontFamily: theme.fonts.bodySemibold }],
+            { fontFamily: theme.fonts.body, color: active ? dark.text : dark.subtext },
+            // fontWeight stays explicit: the sidebar's own test suite
+            // asserts the active row reads bolder, and screen-reader-
+            // adjacent tooling keys off weight, not family.
+            active && { fontFamily: theme.fonts.bodySemibold, fontWeight: '600' },
           ]}
         >
           {safeText(item.title, 'New conversation')}
         </Text>
         {item.lastMessagePreview && (
-          <Text numberOfLines={1} style={[styles.rowPreview, { fontFamily: theme.fonts.body }]}>
+          <Text
+            numberOfLines={1}
+            style={[
+              styles.rowPreview,
+              { fontFamily: theme.fonts.body, color: active ? dark.subtext : dark.faint },
+            ]}
+          >
             {item.lastMessagePreview}
           </Text>
         )}
       </Pressable>
       {busy ? (
-        <ActivityIndicator size="small" style={styles.rowMenuButton} />
+        <ActivityIndicator size="small" color={dark.faint} style={styles.rowMenuButton} />
       ) : (
         <View ref={triggerRef} style={styles.rowMenuButton}>
-          <Pressable
+          <MenuTrigger
             ref={menuButtonRef}
-            style={styles.rowMenuButtonPressable}
             onPress={handleMenuTriggerPress}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel={`Options for ${safeText(item.title, 'this conversation')}`}
-            accessibilityState={{ expanded: isMenuOpen }}
-            aria-expanded={isMenuOpen}
-            {...WEB_MENU_TRIGGER_ARIA_PROPS}
-          >
-            <Text style={styles.rowMenuButtonText}>⋮</Text>
-          </Pressable>
+            isMenuOpen={isMenuOpen}
+            label={`Options for ${safeText(item.title, 'this conversation')}`}
+          />
         </View>
       )}
+    </RowSurface>
+  );
+}
+
+/** The row's hover/active surface — hover tint + keyboard focus ring, so
+ * the sidebar list responds to the pointer and the keyboard the same way
+ * NavRail's buttons do. */
+function RowSurface({ active, children }: { active: boolean; children: React.ReactNode }) {
+  const theme = useTheme();
+  const [hovered, setHovered] = useState(false);
+  return (
+    <View
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => setHovered(false)}
+      style={[
+        styles.row,
+        {
+          borderRadius: theme.radius.sm,
+          backgroundColor: active ? dark.elevated : hovered ? dark.cardPressed : 'transparent',
+        },
+      ]}
+    >
+      {children}
     </View>
   );
 }
+
+/** The three-dot trigger with its own hover/focus feedback — the glyph is
+ * the shared MoreIcon, not a text glyph, so it renders identically on
+ * every platform and takes palette colors. */
+const MenuTrigger = forwardRef<View, { onPress: () => void; isMenuOpen: boolean; label: string }>(
+  function MenuTrigger({ onPress, isMenuOpen, label }, ref) {
+    const theme = useTheme();
+    const [hovered, setHovered] = useState(false);
+    const [focused, setFocused] = useState(false);
+    return (
+      <Pressable
+        ref={ref}
+        style={[
+          styles.rowMenuButtonPressable,
+          {
+            borderRadius: theme.radius.sm,
+            backgroundColor: hovered || isMenuOpen ? dark.border : 'transparent',
+          },
+          focused && { borderColor: dark.focusRing, borderWidth: 2 },
+        ]}
+        onPress={onPress}
+        onHoverIn={() => setHovered(true)}
+        onHoverOut={() => setHovered(false)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        accessibilityState={{ expanded: isMenuOpen }}
+        aria-expanded={isMenuOpen}
+        {...WEB_MENU_TRIGGER_ARIA_PROPS}
+      >
+        <MoreIcon size={16} color={hovered || isMenuOpen ? dark.text : dark.faint} />
+      </Pressable>
+    );
+  }
+);
 
 const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     marginHorizontal: 8,
-    borderRadius: 6,
     position: 'relative',
   },
-  rowActive: { backgroundColor: '#1E293B' },
   rowMain: {
     flex: 1,
     paddingVertical: 8,
-    paddingHorizontal: 8,
-    minHeight: 36,
+    paddingHorizontal: 10,
+    minHeight: 40,
     justifyContent: 'center',
   },
-  rowTitle: { color: '#E2E8F0', fontSize: 13 },
-  rowTitleActive: { color: '#FFFFFF', fontWeight: '600' },
-  rowPreview: { color: '#64748B', fontSize: 11, marginTop: 2 },
+  rowTitle: { fontSize: 13 },
+  rowPreview: { fontSize: 11, marginTop: 2 },
   rowMenuButton: {
-    paddingHorizontal: 8,
+    paddingHorizontal: 6,
     paddingVertical: 8,
     minWidth: 36,
     minHeight: 36,
@@ -346,19 +420,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   rowMenuButtonPressable: {
+    padding: 6,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  rowMenuButtonText: { color: '#94A3B8', fontSize: 16 },
   renameWrap: { flex: 1 },
   renameInput: {
-    color: '#FFFFFF',
     fontSize: 13,
     paddingVertical: 6,
     paddingHorizontal: 8,
-    backgroundColor: '#1E293B',
-    borderRadius: 6,
     minHeight: 36,
   },
-  renameErrorText: { color: '#FCA5A5', fontSize: 11, paddingHorizontal: 8, paddingTop: 2 },
+  renameErrorText: { fontSize: 11, paddingHorizontal: 8, paddingTop: 2 },
 });

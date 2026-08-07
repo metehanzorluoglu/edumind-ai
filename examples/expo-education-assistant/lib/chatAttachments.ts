@@ -78,10 +78,14 @@ export function validateCandidateAttachment(
  * handled locally here, no backend call happens until send).
  *
  * There is no page-range field: a PDF is always analyzed in full,
- * automatically, capped at the backend's configured page limit (see
- * VISION_MAX_PDF_PAGES) — the user never chooses pages here. The user
- * describes what they want in the chat message itself (e.g. "summarize
- * this PDF", "explain the chart on page 3").
+ * automatically — the user never chooses pages here. A short PDF is sent
+ * to the vision model in one call; a longer one is analyzed in
+ * sequential batches with live progress instead of being truncated (see
+ * rag-backend's app/services/vision_batch_orchestrator.py and
+ * DisplayMessage.progressDetail) — there is no page count the app
+ * refuses to fully analyze. The user describes what they want in the
+ * chat message itself (e.g. "summarize this PDF", "explain the chart on
+ * page 3").
  */
 export interface PendingAttachment {
   localId: string;

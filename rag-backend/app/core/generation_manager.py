@@ -47,7 +47,7 @@ import logging
 import threading
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
 from dataclasses import dataclass, field
 
 from sqlalchemy.orm import Session
@@ -55,6 +55,7 @@ from sqlalchemy.orm import Session
 from app.core.citation import Citation
 from app.core.citation_validation import validate_citations
 from app.core.errors import LLMProviderError, VisionServiceError
+from app.core.generation_events import GenerationUpdate, GenProgress, GenToken
 from app.core.request_timing import RequestTimer
 from app.core.retrieval_schemas import RetrievedChunk
 from app.db.conversations_repository import ConversationsRepository
@@ -90,6 +91,17 @@ class GenerationState:
     insufficient_evidence: bool = False
     transparency: dict[str, object] = field(default_factory=dict)
     cancel_event: threading.Event = field(default_factory=threading.Event)
+    # Batched-vision only (see run_batched_vision_generation /
+    # poll_batched_vision) — the latest human-readable status line (e.g.
+    # "Analyzing pages 9-16 of 47…"). Ephemeral like `error_category`
+    # above: never persisted, readable only by a still-live SSE
+    # connection. `progress_seq` is bumped on every change so a poller can
+    # detect "this is new" with a plain integer comparison instead of
+    # string-diffing (a progress line *replaces* the previous one; it
+    # never grows the way `content` does, so `content`'s own
+    # length-based diffing in poll_until_done doesn't apply here).
+    progress: str = ""
+    progress_seq: int = 0
 
     def snapshot(self) -> tuple[str, GenerationStatus]:
         with self.lock:
@@ -277,6 +289,91 @@ def start_text_generation(**kwargs: object) -> threading.Thread:
     return thread
 
 
+def _finalize_vision_worker(
+    *,
+    state: GenerationState,
+    session: Session,
+    repository: ConversationsRepository,
+    assistant_message_id: uuid.UUID,
+    consume: Callable[[], Coroutine[object, object, tuple[str, str | None, str | None, str | None]]],
+    retrieved_sources: list[RetrievedChunk],
+    citations: list[Citation],
+    transparency: dict[str, object],
+    timer: RequestTimer,
+    worker_label: str,
+) -> None:
+    """Shared tail for run_vision_generation and
+    run_batched_vision_generation: runs `consume` (each function's own
+    async `_consume` closure, both returning the same (answer,
+    status_override, error_message, error_category) shape) to completion
+    on a private event loop, then persists the outcome and updates the
+    live GenerationState identically either way — cancelled, a
+    VisionServiceError, or a real completion. `worker_label` only affects
+    the unhandled-exception log line, so the two callers' logs stay
+    distinguishable."""
+    try:
+        answer, status_override, error_message, error_category = asyncio.run(consume())
+        if status_override == "cancelled":
+            with state.lock:
+                state.content = answer
+            repository.update_assistant_message(
+                assistant_message_id, content=answer, status="cancelled"
+            )
+            with state.lock:
+                state.status = "cancelled"
+            return
+        if status_override == "error":
+            with state.lock:
+                state.content = answer
+                state.error_message = error_message
+                state.error_category = error_category
+            repository.update_assistant_message(
+                assistant_message_id, content=answer, status="error", error_message=error_message
+            )
+            with state.lock:
+                state.status = "error"
+            timer.log_summary(note="vision_error")
+            return
+
+        validation = validate_citations(answer, citations)
+        with state.lock:
+            state.content = answer
+            state.citations = citations
+            state.citation_warnings = validation.warnings
+            state.sources = retrieved_sources
+            state.transparency = transparency
+        repository.update_assistant_message(
+            assistant_message_id,
+            content=answer,
+            status="complete",
+            citations=citations,
+            citation_warnings=validation.warnings,
+            insufficient_evidence=False,
+            sources=retrieved_sources,
+            transparency=transparency,
+        )
+        with state.lock:
+            state.status = "complete"
+        timer.log_summary()
+    except Exception:
+        logger.exception(
+            "Unhandled error in %s worker for message %s", worker_label, assistant_message_id
+        )
+        with state.lock:
+            content = state.content
+            state.error_message = "Generation failed unexpectedly."
+        repository.update_assistant_message(
+            assistant_message_id,
+            content=content,
+            status="error",
+            error_message="Generation failed unexpectedly.",
+        )
+        with state.lock:
+            state.status = "error"
+    finally:
+        session.close()
+
+
 def run_vision_generation(
     *,
     assistant_message_id: uuid.UUID,
@@ -324,72 +421,96 @@ def run_vision_generation(
             return "".join(answer_parts), "error", str(exc), str(exc.category)
         return "".join(answer_parts), None, None, None
 
-    try:
-        answer, status_override, error_message, error_category = asyncio.run(_consume())
-        if status_override == "cancelled":
-            with state.lock:
-                state.content = answer
-            repository.update_assistant_message(
-                assistant_message_id, content=answer, status="cancelled"
-            )
-            with state.lock:
-                state.status = "cancelled"
-            return
-        if status_override == "error":
-            with state.lock:
-                state.content = answer
-                state.error_message = error_message
-                state.error_category = error_category
-            repository.update_assistant_message(
-                assistant_message_id, content=answer, status="error", error_message=error_message
-            )
-            with state.lock:
-                state.status = "error"
-            timer.log_summary(note="vision_error")
-            return
-
-        validation = validate_citations(answer, citations)
-        with state.lock:
-            state.content = answer
-            state.citations = citations
-            state.citation_warnings = validation.warnings
-            state.sources = retrieved_sources
-            state.transparency = transparency
-        repository.update_assistant_message(
-            assistant_message_id,
-            content=answer,
-            status="complete",
-            citations=citations,
-            citation_warnings=validation.warnings,
-            insufficient_evidence=False,
-            sources=retrieved_sources,
-            transparency=transparency,
-        )
-        with state.lock:
-            state.status = "complete"
-        timer.log_summary()
-    except Exception:
-        logger.exception(
-            "Unhandled error in vision generation worker for message %s", assistant_message_id
-        )
-        with state.lock:
-            content = state.content
-            state.error_message = "Generation failed unexpectedly."
-        repository.update_assistant_message(
-            assistant_message_id,
-            content=content,
-            status="error",
-            error_message="Generation failed unexpectedly.",
-        )
-        with state.lock:
-            state.status = "error"
-    finally:
-        session.close()
+    _finalize_vision_worker(
+        state=state,
+        session=session,
+        repository=repository,
+        assistant_message_id=assistant_message_id,
+        consume=_consume,
+        retrieved_sources=retrieved_sources,
+        citations=citations,
+        transparency=transparency,
+        timer=timer,
+        worker_label="vision generation",
+    )
 
 
 def start_vision_generation(**kwargs: object) -> threading.Thread:
     thread = threading.Thread(
         target=run_vision_generation, kwargs=kwargs, name="vision-generation", daemon=True
+    )
+    thread.start()
+    return thread
+
+
+def run_batched_vision_generation(
+    *,
+    assistant_message_id: uuid.UUID,
+    stream_updates: Callable[[], AsyncIterator[GenerationUpdate]],
+    retrieved_sources: list[RetrievedChunk],
+    citations: list[Citation],
+    transparency: dict[str, object],
+    attachment_storage: AttachmentStorage,
+    timer: RequestTimer,
+    session_factory: Callable[[], Session],
+) -> None:
+    """The batched-vision counterpart to run_vision_generation — same
+    detached-thread contract, but `stream_updates` yields GenerationUpdate
+    items (see app/core/generation_events.py and
+    app/services/vision_batch_orchestrator.py) instead of plain `str`
+    tokens: a GenProgress updates `state.progress`/`state.progress_seq`
+    (ephemeral — like `error_category`, readable only by a still-live SSE
+    connection via poll_batched_vision below, never persisted — there is
+    no schema column for it and no value in persisting a transient status
+    line), while a GenToken is handled exactly like a plain-str token in
+    run_vision_generation (appended to `state.content`, periodically
+    flushed to the database, replayable after a reconnect)."""
+    state = register(assistant_message_id)
+    session = session_factory()
+    repository = ConversationsRepository(session, attachment_storage)
+
+    async def _consume() -> tuple[str, str | None, str | None, str | None]:
+        answer_parts: list[str] = []
+        flushed_len = 0
+        try:
+            async for update in stream_updates():
+                if state.cancel_event.is_set():
+                    return "".join(answer_parts), "cancelled", None, None
+                if isinstance(update, GenProgress):
+                    with state.lock:
+                        state.progress = update.detail
+                        state.progress_seq += 1
+                    continue
+                answer_parts.append(update.text)
+                with state.lock:
+                    state.content += update.text
+                    current_len = len(state.content)
+                if current_len - flushed_len >= 200:
+                    repository.update_assistant_message(
+                        assistant_message_id, content="".join(answer_parts), status="generating"
+                    )
+                    flushed_len = current_len
+        except VisionServiceError as exc:
+            return "".join(answer_parts), "error", str(exc), str(exc.category)
+        return "".join(answer_parts), None, None, None
+
+    _finalize_vision_worker(
+        state=state,
+        session=session,
+        repository=repository,
+        assistant_message_id=assistant_message_id,
+        consume=_consume,
+        retrieved_sources=retrieved_sources,
+        citations=citations,
+        transparency=transparency,
+        timer=timer,
+        worker_label="batched vision generation",
+    )
+
+
+def start_batched_vision_generation(**kwargs: object) -> threading.Thread:
+    thread = threading.Thread(
+        target=run_batched_vision_generation, kwargs=kwargs, name="batched-vision-generation", daemon=True
     )
     thread.start()
     return thread
@@ -412,6 +533,43 @@ def poll_until_done(message_id: uuid.UUID, *, interval_seconds: float = 0.08) ->
         content, status = state.snapshot()
         if len(content) > last_len:
             yield content[last_len:]
+            last_len = len(content)
+        if status != "generating":
+            return
+        time.sleep(interval_seconds)
+
+
+def poll_batched_vision(
+    message_id: uuid.UUID, *, interval_seconds: float = 0.08
+) -> Iterator[GenerationUpdate]:
+    """The batched-vision counterpart to poll_until_done above: yields
+    both new content deltas (as GenToken) and progress-line changes (as
+    GenProgress) for `message_id`'s live GenerationState until it leaves
+    'generating' — same "live stream and reconnect-catch-up are the same
+    loop" contract, and the same "yields nothing further, doesn't raise,
+    once no live state is found" behavior for a reconnect that missed the
+    whole thing.
+
+    Progress is checked via `progress_seq` (see GenerationState's
+    docstring), not by comparing `progress` strings, since two different
+    progress lines could otherwise coincidentally compare equal (e.g. two
+    same-sized batches both reporting "processed") and be missed."""
+    last_len = 0
+    last_progress_seq = 0
+    while True:
+        state = get(message_id)
+        if state is None:
+            return
+        with state.lock:
+            content = state.content
+            status = state.status
+            progress = state.progress
+            progress_seq = state.progress_seq
+        if progress_seq != last_progress_seq:
+            last_progress_seq = progress_seq
+            yield GenProgress(detail=progress)
+        if len(content) > last_len:
+            yield GenToken(text=content[last_len:])
             last_len = len(content)
         if status != "generating":
             return

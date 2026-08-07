@@ -26,6 +26,16 @@ export type ChatStage = 'connected' | 'retrieving' | 'loading_model' | 'processi
 export interface ChatProgressEvent {
   type: 'progress';
   stage: ChatStage;
+  /**
+   * Additive, optional — null/absent everywhere except the batched-PDF
+   * analysis pipeline (a PDF attachment too long for one vision call —
+   * see rag-backend's app/services/vision_batch_orchestrator.py), where
+   * it carries a complete, presentable status line `stage` alone can't
+   * say truthfully, e.g. "Analyzing pages 9-16 of 47…" or "Combining
+   * findings…". A consumer that only reads `stage` is unaffected by its
+   * presence.
+   */
+  detail?: string | null;
 }
 
 export interface ChatTokenEvent {

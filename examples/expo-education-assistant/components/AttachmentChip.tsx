@@ -1,8 +1,8 @@
 import { AuthenticatedAttachmentImage } from '@/components/AuthenticatedAttachmentImage';
+import { CloseIcon } from '@/components/icons';
 import type { AttachmentChipInfo } from '@/lib/chatAttachments';
 import { formatFileSize } from '@/lib/documentUpload';
 import { useTheme } from '@/lib/Preferences';
-import { pdfPageLimitNotice } from '@/lib/visionLimits';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
 export interface AttachmentChipProps {
@@ -33,7 +33,6 @@ export function AttachmentChip({
   onPress,
 }: AttachmentChipProps) {
   const theme = useTheme();
-  const pageLimitNotice = pdfPageLimitNotice(info.pageCount);
   const thumbnail = thumbnailUri ? (
     <Image
       source={{ uri: thumbnailUri }}
@@ -104,14 +103,6 @@ export function AttachmentChip({
             ? ` · pages ${info.pageRangeStart}-${info.pageRangeEnd}`
             : ''}
         </Text>
-        {pageLimitNotice && (
-          <Text
-            style={[styles.pageLimitNotice, { color: theme.warning, fontFamily: theme.fonts.body }]}
-            numberOfLines={2}
-          >
-            {pageLimitNotice}
-          </Text>
-        )}
         {error && (
           <Text
             style={[styles.errorText, { color: theme.danger, fontFamily: theme.fonts.body }]}
@@ -128,14 +119,7 @@ export function AttachmentChip({
           accessibilityRole="button"
           accessibilityLabel={`Remove ${info.filename}`}
         >
-          <Text
-            style={[
-              styles.removeButtonText,
-              { color: theme.subtext, fontFamily: theme.fonts.bodyBold },
-            ]}
-          >
-            ✕
-          </Text>
+          <CloseIcon size={12} color={theme.subtext} strokeWidth={2} />
         </Pressable>
       )}
     </View>
@@ -161,7 +145,6 @@ const styles = StyleSheet.create({
   filename: { fontSize: 12 },
   meta: { fontSize: 10, marginTop: 1 },
   errorText: { fontSize: 10, marginTop: 2 },
-  pageLimitNotice: { fontSize: 10, marginTop: 2 },
   removeButton: {
     width: 22,
     height: 22,
@@ -169,5 +152,4 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  removeButtonText: { fontSize: 11 },
 });

@@ -11,15 +11,19 @@ import {
   ActivityIndicator,
   Alert,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
+import { Badge } from '@/components/ui/Badge';
+import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { FilterChip } from '@/components/ui/FilterChip';
+import { Notice } from '@/components/ui/Notice';
 import { PageHeader } from '@/components/ui/PageHeader';
+import { Skeleton } from '@/components/ui/Skeleton';
+import { TextField } from '@/components/ui/TextField';
 import { DOCUMENT_TYPES, DOCUMENT_TYPE_LABELS, JOURNAL_QUARTILES } from '@/lib/enums';
 import { fileExtension, formatFileSize, validateCandidateFile } from '@/lib/documentUpload';
 import { safeText } from '@/lib/format';
@@ -373,9 +377,13 @@ export default function DocumentsScreen() {
   const isUploading = uploadState.status === 'uploading' || uploadState.status === 'processing';
   const canUpload = selectedFile !== null && !fileError && !isUploading;
   const chooseFileButton = (
-    <Pressable style={styles.secondaryButton} onPress={handlePickFile} disabled={isUploading}>
-      <Text style={styles.secondaryButtonText}>Choose file…</Text>
-    </Pressable>
+    <Button
+      label="Choose file…"
+      variant="secondary"
+      size="sm"
+      onPress={handlePickFile}
+      disabled={isUploading}
+    />
   );
 
   return (
@@ -425,18 +433,17 @@ export default function DocumentsScreen() {
                     {selectedFile.size !== null ? ` · ${formatFileSize(selectedFile.size)}` : ''}
                   </Text>
                 </View>
-                <Pressable
+                <Button
+                  label="Remove"
+                  variant="ghost"
+                  size="sm"
                   onPress={handleClearFile}
-                  style={styles.clearButton}
-                  accessibilityRole="button"
                   accessibilityLabel="Remove selected file"
                   disabled={isUploading}
-                >
-                  <Text style={styles.clearButtonText}>Remove</Text>
-                </Pressable>
+                />
               </View>
             )}
-            {fileError && <Text style={styles.errorText}>{fileError}</Text>}
+            {fileError && <Notice tone="danger" body={fileError} />}
 
             {__DEV__ && (
               <View style={styles.sampleBox}>
@@ -449,29 +456,26 @@ export default function DocumentsScreen() {
                   </Text>{' '}
                   on the backend.
                 </Text>
-                <Pressable
-                  style={styles.secondaryButton}
+                <Button
+                  label="Load sample corpus (dev only)"
+                  variant="secondary"
+                  size="sm"
                   onPress={handleLoadSampleCorpus}
                   disabled={isUploading}
-                >
-                  <Text style={styles.secondaryButtonText}>Load sample corpus (dev only)</Text>
-                </Pressable>
-                {sampleError && <Text style={styles.warning}>{sampleError}</Text>}
+                />
+                {sampleError && <Notice tone="danger" body={sampleError} />}
               </View>
             )}
 
             <Text style={styles.filterLabel}>Document type</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow}>
               {DOCUMENT_TYPES.map((type) => (
-                <Pressable
+                <FilterChip
                   key={type}
-                  style={[styles.chip, documentType === type && styles.chipSelected]}
+                  label={DOCUMENT_TYPE_LABELS[type]}
+                  selected={documentType === type}
                   onPress={() => setDocumentType(type)}
-                >
-                  <Text style={[styles.chipText, documentType === type && styles.chipTextSelected]}>
-                    {DOCUMENT_TYPE_LABELS[type]}
-                  </Text>
-                </Pressable>
+                />
               ))}
             </ScrollView>
 
@@ -484,32 +488,23 @@ export default function DocumentsScreen() {
                   style={styles.chipRow}
                 >
                   {JOURNAL_QUARTILES.map((quartile) => (
-                    <Pressable
+                    <FilterChip
                       key={quartile}
-                      style={[styles.chip, journalQuartile === quartile && styles.chipSelected]}
+                      label={quartile}
+                      selected={journalQuartile === quartile}
                       onPress={() =>
                         setJournalQuartile((current) =>
                           current === quartile ? undefined : quartile
                         )
                       }
-                    >
-                      <Text
-                        style={[
-                          styles.chipText,
-                          journalQuartile === quartile && styles.chipTextSelected,
-                        ]}
-                      >
-                        {quartile}
-                      </Text>
-                    </Pressable>
+                    />
                   ))}
                 </ScrollView>
               </>
             )}
 
-            <TextInput
-              style={styles.input}
-              placeholderTextColor={theme.faint}
+            <TextField
+              label="Title"
               value={title}
               onChangeText={setTitle}
               placeholder="Title (optional)"
@@ -534,43 +529,38 @@ export default function DocumentsScreen() {
                   Review the detected fields below and edit anything that&apos;s wrong before
                   uploading.
                 </Text>
-                <TextInput
-                  style={styles.input}
-                  placeholderTextColor={theme.faint}
+                <TextField
+                  label="Authors"
                   value={authorsText}
                   onChangeText={setAuthorsText}
                   placeholder="Authors, comma-separated (optional)"
                   editable={!isUploading}
                 />
-                <TextInput
-                  style={styles.input}
-                  placeholderTextColor={theme.faint}
+                <TextField
+                  label="Publication year"
                   value={publicationYearText}
                   onChangeText={setPublicationYearText}
                   placeholder="Publication year (optional)"
                   keyboardType="number-pad"
                   editable={!isUploading}
                 />
-                <TextInput
-                  style={styles.input}
-                  placeholderTextColor={theme.faint}
+                <TextField
+                  label="Source venue"
                   value={sourceVenue}
                   onChangeText={setSourceVenue}
                   placeholder="Source venue / journal (optional)"
                   editable={!isUploading}
                 />
-                <TextInput
-                  style={styles.input}
-                  placeholderTextColor={theme.faint}
+                <TextField
+                  label="DOI"
                   value={doi}
                   onChangeText={setDoi}
                   placeholder="DOI (optional)"
                   autoCapitalize="none"
                   editable={!isUploading}
                 />
-                <TextInput
-                  style={styles.input}
-                  placeholderTextColor={theme.faint}
+                <TextField
+                  label="Source URL"
                   value={sourceUrl}
                   onChangeText={setSourceUrl}
                   placeholder="Source URL (optional)"
@@ -581,9 +571,7 @@ export default function DocumentsScreen() {
             )}
 
             {uploadState.status === 'idle' && (
-              <Pressable style={styles.button} onPress={handleUpload} disabled={!canUpload}>
-                <Text style={styles.buttonText}>Upload</Text>
-              </Pressable>
+              <Button label="Upload" onPress={handleUpload} disabled={!canUpload} fullWidth />
             )}
             {uploadState.status === 'uploading' && (
               <View style={styles.centered}>
@@ -603,29 +591,27 @@ export default function DocumentsScreen() {
               </View>
             )}
             {uploadState.status === 'success' && (
-              <View style={styles.successBox}>
-                <Text style={styles.successText}>
-                  Ingested &quot;
-                  {safeText(uploadState.document.title, uploadState.document.source_filename)}&quot;
-                  — {uploadState.document.chunk_count} chunk(s) from{' '}
-                  {uploadState.document.page_count} page(s).
-                </Text>
-                <Pressable style={styles.secondaryButton} onPress={handleUploadDone}>
-                  <Text style={styles.secondaryButtonText}>Done</Text>
-                </Pressable>
-              </View>
+              <Notice
+                tone="ok"
+                body={
+                  `Ingested "${safeText(uploadState.document.title, uploadState.document.source_filename)}"` +
+                  ` — ${uploadState.document.chunk_count} chunk(s) from ${uploadState.document.page_count} page(s).`
+                }
+                actionLabel="Done"
+                onAction={handleUploadDone}
+              />
             )}
             {uploadState.status === 'error' && (
-              <View style={styles.errorBox}>
-                <Text style={styles.errorText}>
-                  {uploadState.error.statusCode !== null
+              <Notice
+                tone="danger"
+                body={
+                  uploadState.error.statusCode !== null
                     ? `HTTP ${uploadState.error.statusCode} — ${uploadState.error.message}`
-                    : uploadState.error.message}
-                </Text>
-                <Pressable style={styles.secondaryButton} onPress={resetUpload}>
-                  <Text style={styles.secondaryButtonText}>Try again</Text>
-                </Pressable>
-              </View>
+                    : uploadState.error.message
+                }
+                actionLabel="Try again"
+                onAction={resetUpload}
+              />
             )}
             {uploadState.status === 'cancelled' && (
               <Text style={styles.hint}>Upload cancelled.</Text>
@@ -635,15 +621,22 @@ export default function DocumentsScreen() {
           <View style={styles.section}>
             <View style={styles.listHeader}>
               <Text style={styles.sectionTitle}>Documents</Text>
-              <Pressable onPress={() => refresh({ limit: 20 })}>
-                <Text style={styles.refreshText}>Refresh</Text>
-              </Pressable>
+              <Button
+                label="Refresh"
+                variant="ghost"
+                size="sm"
+                onPress={() => refresh({ limit: 20 })}
+              />
             </View>
             {listState.status === 'loading' && (
-              <ActivityIndicator style={styles.spinner} color={theme.accent} />
+              <View style={styles.skeletonList}>
+                {[1, 2, 3].map((i) => (
+                  <Skeleton key={i} width="100%" height={56} radius={theme.radius.md} />
+                ))}
+              </View>
             )}
             {listState.status === 'error' && (
-              <Text style={styles.errorText}>{listState.error.message}</Text>
+              <Notice tone="danger" body={listState.error.message} />
             )}
             {listState.status === 'success' && listState.total === 0 && (
               <EmptyState
@@ -666,36 +659,31 @@ export default function DocumentsScreen() {
                               {safeText(doc.title, doc.source_filename)}
                             </Text>
                             {isSampleSource(doc.source_filename) && (
-                              <View style={styles.sampleBadge}>
-                                <Text style={styles.sampleBadgeText}>Sample</Text>
-                              </View>
+                              <Badge label="Sample" tone="warning" />
                             )}
                           </View>
                           <Text style={styles.docMeta}>
                             {DOCUMENT_TYPE_LABELS[doc.document_type]} · {doc.chunk_count} chunk(s)
                           </Text>
                         </View>
-                        <Pressable
+                        <Button
+                          label="Delete"
+                          variant="dangerGhost"
+                          size="sm"
                           accessibilityLabel={`Delete ${safeText(doc.title, doc.source_filename)}`}
-                          style={[styles.deleteButton, isDeleting && styles.deleteButtonDisabled]}
                           onPress={() => handleDeletePress(doc)}
                           disabled={isDeleting}
-                        >
-                          {isDeleting ? (
-                            <ActivityIndicator size="small" color={theme.danger} />
-                          ) : (
-                            <Text style={styles.deleteButtonText}>Delete</Text>
-                          )}
-                        </Pressable>
+                          loading={isDeleting}
+                        />
                       </View>
-                      {isDeleting && <Text style={styles.hint}>Deleting…</Text>}
                       {deleteState?.status === 'error' && (
-                        <View style={styles.deleteErrorRow}>
-                          <Text style={styles.errorText}>{deleteState.error.message}</Text>
-                          <Pressable onPress={() => resetDeleteState(doc.document_id)}>
-                            <Text style={styles.refreshText}>Dismiss</Text>
-                          </Pressable>
-                        </View>
+                        <Notice
+                          tone="danger"
+                          body={deleteState.error.message}
+                          actionLabel="Dismiss"
+                          onAction={() => resetDeleteState(doc.document_id)}
+                          style={styles.deleteErrorNotice}
+                        />
                       )}
                     </View>
                   );
@@ -730,66 +718,10 @@ function buildStyles(theme: Theme) {
       marginTop: 4,
     },
     chipRow: { flexDirection: 'row' },
-    chip: {
-      borderWidth: StyleSheet.hairlineWidth * 2,
-      borderColor: theme.border,
-      borderRadius: theme.radius.pill,
-      paddingHorizontal: 12,
-      paddingVertical: 6,
-      marginRight: 6,
-    },
-    chipSelected: { backgroundColor: theme.accent, borderColor: theme.accent },
-    chipText: { fontSize: 12, color: theme.text, fontFamily: theme.fonts.body },
-    chipTextSelected: { color: theme.accentContrast, fontFamily: theme.fonts.bodySemibold },
-    input: {
-      borderWidth: StyleSheet.hairlineWidth * 2,
-      borderColor: theme.border,
-      borderRadius: theme.radius.md,
-      paddingHorizontal: 12,
-      paddingVertical: 10,
-      backgroundColor: theme.card,
-      color: theme.text,
-      fontFamily: theme.fonts.body,
-    },
-    button: {
-      backgroundColor: theme.accent,
-      borderRadius: theme.radius.md,
-      paddingVertical: 12,
-      alignItems: 'center',
-      minHeight: 44,
-      justifyContent: 'center',
-    },
-    buttonText: { color: theme.accentContrast, fontFamily: theme.fonts.bodySemibold },
-    secondaryButton: {
-      borderWidth: StyleSheet.hairlineWidth * 2,
-      borderColor: theme.accent,
-      borderRadius: theme.radius.md,
-      paddingVertical: 10,
-      paddingHorizontal: 16,
-      alignItems: 'center',
-      minHeight: 44,
-      justifyContent: 'center',
-    },
-    secondaryButtonText: { color: theme.accent, fontFamily: theme.fonts.bodySemibold },
     centered: { alignItems: 'center', gap: 8 },
     metadataReview: { gap: 8 },
-    successBox: {
-      backgroundColor: theme.warningSoft,
-      borderRadius: theme.radius.md,
-      padding: 12,
-      gap: 8,
-    },
-    successText: { color: theme.ok, fontSize: 13, fontFamily: theme.fonts.body },
-    errorBox: {
-      backgroundColor: theme.dangerSoft,
-      borderRadius: theme.radius.md,
-      padding: 12,
-      gap: 8,
-    },
-    errorText: { color: theme.danger, fontSize: 13, fontFamily: theme.fonts.body },
     listHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-    refreshText: { color: theme.accent, fontFamily: theme.fonts.bodySemibold, fontSize: 13 },
-    spinner: { marginTop: 12 },
+    skeletonList: { gap: 8, marginTop: 4 },
     dropZone: {
       borderWidth: 2,
       borderColor: theme.border,
@@ -822,14 +754,6 @@ function buildStyles(theme: Theme) {
     },
     selectedFileMain: { flex: 1, minWidth: 0 },
     selectedFileName: { fontSize: 13, color: theme.text, fontFamily: theme.fonts.bodySemibold },
-    clearButton: {
-      borderWidth: StyleSheet.hairlineWidth * 2,
-      borderColor: theme.border,
-      borderRadius: theme.radius.sm,
-      paddingHorizontal: 10,
-      paddingVertical: 6,
-    },
-    clearButtonText: { color: theme.subtext, fontSize: 12, fontFamily: theme.fonts.bodySemibold },
     docCard: {
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: theme.border,
@@ -848,26 +772,7 @@ function buildStyles(theme: Theme) {
       fontFamily: theme.fonts.bodySemibold,
     },
     docMeta: { fontSize: 12, color: theme.subtext, marginTop: 2, fontFamily: theme.fonts.body },
-    deleteButton: {
-      backgroundColor: theme.dangerSoft,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: theme.danger,
-      borderRadius: theme.radius.sm,
-      paddingHorizontal: 10,
-      paddingVertical: 6,
-      minWidth: 64,
-      minHeight: 36,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    deleteButtonDisabled: { opacity: 0.6 },
-    deleteButtonText: { color: theme.danger, fontSize: 12, fontFamily: theme.fonts.bodySemibold },
-    deleteErrorRow: {
-      flexDirection: 'row',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      marginTop: 4,
-    },
+    deleteErrorNotice: { marginTop: 6 },
     sampleBox: {
       backgroundColor: theme.warningSoft,
       borderRadius: theme.radius.md,
@@ -877,12 +782,5 @@ function buildStyles(theme: Theme) {
     },
     sampleBoxText: { fontSize: 12, color: theme.warning, fontFamily: theme.fonts.body },
     sampleBoxCode: { fontFamily: theme.fonts.mono, fontSize: 11 },
-    sampleBadge: {
-      backgroundColor: theme.warningSoft,
-      borderRadius: theme.radius.sm,
-      paddingHorizontal: 6,
-      paddingVertical: 2,
-    },
-    sampleBadgeText: { fontSize: 10, color: theme.warning, fontFamily: theme.fonts.bodyBold },
   });
 }

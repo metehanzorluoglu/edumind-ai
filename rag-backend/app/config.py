@@ -195,6 +195,50 @@ class Settings(BaseSettings):
     # window without this.
     vision_num_predict: int = Field(default=512, ge=1)
 
+    # --- Batched PDF analysis (see app/services/pdf_batch_planner.py and
+    # app/services/vision_batch_orchestrator.py). Only used for a PDF
+    # attachment with no explicit page range whose page count doesn't fit
+    # in a single vision call — see _handle_conversation_message in
+    # app/api/routes_conversations.py for the "batch or single-call"
+    # decision. A document that fits in one batch is entirely unaffected
+    # by this block and keeps using the older single-call
+    # render_attachments_to_images path (vision_max_pdf_pages/
+    # vision_max_images_per_message above), so today's latency/UX for an
+    # ordinary short attachment doesn't change.
+    #
+    # Pages per batch — clamped at request time to
+    # min(vision_batch_pages_per_batch, vision_max_images_per_message) so
+    # a vision-mode batch can never exceed the one hard ceiling that
+    # actually matters for a single Ollama vision call (how many images it
+    # may take at once); a text-mode batch (no images at all — see the
+    # planner's docstring) doesn't strictly need this cap but shares it
+    # for one predictable batch size either way.
+    vision_batch_pages_per_batch: int = Field(default=8, ge=1, le=20)
+    # Safety ceiling on how many of a document's pages are ever analyzed
+    # for one message — NOT a rejection threshold (see
+    # chat_attachment_max_pdf_pages below for the separate upload-time
+    # limit): a document longer than this is still accepted and processed,
+    # just truncated to its first N pages, with that fact surfaced
+    # honestly in the final answer (see build_reduce_prompt's
+    # `truncated_at_page`) rather than silently ignored. Sized well above
+    # a typical book/dissertation/report's length; an operator processing
+    # routinely longer documents may raise it.
+    vision_batch_max_pages: int = Field(default=500, ge=1, le=5000)
+    # Extra attempts for one batch's analysis call after its first
+    # attempt fails (a transient Ollama timeout/overload) — retries only
+    # that batch, never the whole document (see
+    # vision_batch_orchestrator.py's module docstring). 0 disables retrying
+    # entirely (fail a batch on its first error).
+    vision_batch_max_retries: int = Field(default=2, ge=0, le=5)
+    # A page needs at least this many extracted characters (and no
+    # embedded image) to be analyzed as plain text instead of being
+    # rendered and sent to the vision model — see
+    # pdf_batch_planner.PageClassification's docstring for the full
+    # text-vs-vision decision. Low enough to accept a short paragraph or
+    # caption-only page as text, high enough to not mistake a page number
+    # or running header for real body content.
+    vision_batch_text_min_chars: int = Field(default=40, ge=1)
+
     # --- Image generation (Ollama x/flux2-klein by default) — writes new
     # images from a text prompt, the opposite direction of vision_enabled
     # above (qwen2.5vl reads an uploaded image; this generates a fresh one).
@@ -236,7 +280,17 @@ class Settings(BaseSettings):
     chat_attachments_dir: str = "./data/chat-attachments"
     chat_attachment_max_bytes: int = Field(default=10_485_760, ge=1024)
     chat_attachment_max_files_per_message: int = Field(default=5, ge=1, le=20)
-    chat_attachment_max_pdf_pages: int = Field(default=50, ge=1, le=500)
+    # Upload-time acceptance limit only — how many pages a PDF may have to
+    # be attached at all, checked once by validate_attachment before it's
+    # ever stored. Deliberately generous (a full book/dissertation/report
+    # fits comfortably): this app no longer rejects a long PDF outright
+    # for being long — see app/services/pdf_batch_planner.py and
+    # vision_batch_max_pages above for the *separate* ceiling on how many
+    # of those pages actually get analyzed once the message is sent. Was
+    # 50 before the batched-analysis pipeline existed, back when this was
+    # also the effective analysis limit; raised now that analysis itself
+    # scales past whatever a single vision call could hold.
+    chat_attachment_max_pdf_pages: int = Field(default=2000, ge=1, le=5000)
     # HEIC is explicitly optional per the milestone spec, and pymupdf (this
     # project's only imaging dependency) cannot decode it — it can only be
     # validated by file signature, and its EXIF cannot practically be

@@ -124,6 +124,17 @@ export interface ThinkingPlaceholderProps {
    * answer, so placeholder and streamed text never coexist.
    */
   visible: boolean;
+  /**
+   * A real, live status line from the backend (DisplayMessage.progressDetail
+   * — currently only the batched-PDF analysis pipeline sends one, e.g.
+   * "Analyzing pages 9-16 of 47…" or "Combining findings…"), shown verbatim
+   * in place of the generic rotating `thinkingStatuses()` text below when
+   * present — unlike those fixed, advisory statuses, this is genuinely
+   * truthful about what's happening right now, so it takes priority. null
+   * for every ordinary turn, which is the common case and behaves exactly
+   * as before.
+   */
+  progressDetail?: string | null;
 }
 
 /**
@@ -141,6 +152,7 @@ export interface ThinkingPlaceholderProps {
 export const ThinkingPlaceholder = memo(function ThinkingPlaceholder({
   context,
   visible,
+  progressDetail = null,
 }: ThinkingPlaceholderProps) {
   const theme = useTheme();
   // Keyed on primitives (not the context object's identity, which changes
@@ -170,6 +182,11 @@ export const ThinkingPlaceholder = memo(function ThinkingPlaceholder({
 
   const displayIndex = Math.min(index, lastIndex);
   const status = statuses[displayIndex]!;
+  // A real backend-reported line always wins over the generic rotation —
+  // see progressDetail's own docs above. Already a complete, presentable
+  // string (its own trailing "…"/punctuation, if any) — never suffixed
+  // with the canned statuses' literal "..." below.
+  const displayText = progressDetail ?? `${status}...`;
 
   // Enter/exit fade. Starts at 0 so the first mount always fades in; when
   // `visible` flips to false the parent holds us mounted long enough for
@@ -191,13 +208,13 @@ export const ThinkingPlaceholder = memo(function ThinkingPlaceholder({
     <Animated.View
       style={{ opacity: fade }}
       accessibilityRole="text"
-      accessibilityLabel={`${TITLE} ${status}...`}
+      accessibilityLabel={`${TITLE} ${displayText}`}
     >
       <Text style={[styles.title, { fontFamily: theme.fonts.body }]}>{TITLE}</Text>
       <View style={[styles.box, { borderRadius: theme.radius.md }]} testID="thinking-shadow-box">
         <View style={styles.boxRow}>
           <AnimatedDots />
-          <Text style={[styles.boxText, { fontFamily: theme.fonts.body }]}>{`${status}...`}</Text>
+          <Text style={[styles.boxText, { fontFamily: theme.fonts.body }]}>{displayText}</Text>
         </View>
       </View>
     </Animated.View>

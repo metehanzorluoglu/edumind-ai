@@ -73,12 +73,26 @@ function findPressableByText(root: ReactTestInstance, text: string): ReactTestIn
   );
 }
 
-function findAllPressablesByText(root: ReactTestInstance, text: string): ReactTestInstance[] {
-  return root.findAll(
-    (node) =>
-      typeof node.props.onPress === 'function' &&
-      node.findAll((n) => String(n.type) === 'Text' && n.children.includes(text)).length > 0
+// The row/project three-dot triggers are icon-only buttons — selected by
+// their stable accessibility label ("Options for …"), never by glyph.
+function isMenuTrigger(node: ReactTestInstance): boolean {
+  return (
+    typeof node.props.onPress === 'function' &&
+    String(node.props.accessibilityLabel ?? '').startsWith('Options for')
   );
+}
+
+function findMenuTrigger(root: ReactTestInstance): ReactTestInstance {
+  return root.find(isMenuTrigger);
+}
+
+function findAllMenuTriggers(root: ReactTestInstance): ReactTestInstance[] {
+  return root.findAll(isMenuTrigger);
+}
+
+function queryMenuTrigger(root: ReactTestInstance): ReactTestInstance | null {
+  const matches = root.findAll(isMenuTrigger);
+  return matches[0] ?? null;
 }
 
 function makeSummary(overrides: Partial<ConversationSummary> = {}): ConversationSummary {
@@ -216,7 +230,7 @@ describe('ConversationSidebar', () => {
     });
 
     act(() => {
-      findPressableByText(renderer.root, '⋮').props.onPress();
+      findMenuTrigger(renderer.root).props.onPress();
     });
     await act(async () => {
       findPressableByText(renderer.root, 'Rename').props.onPress();
@@ -338,7 +352,7 @@ describe('ConversationSidebar', () => {
       });
 
       act(() => {
-        findPressableByText(renderer.root, '⋮').props.onPress();
+        findMenuTrigger(renderer.root).props.onPress();
       });
       act(() => {
         findPressableByText(renderer.root, 'Delete').props.onPress();
@@ -368,7 +382,7 @@ describe('ConversationSidebar', () => {
     });
 
     act(() => {
-      findAllPressablesByText(renderer.root, '⋮')[0]!.props.onPress();
+      findAllMenuTriggers(renderer.root)[0]!.props.onPress();
     });
 
     const flatList = renderer.root.findByType(FlatList);
@@ -383,7 +397,7 @@ describe('ConversationSidebar', () => {
     const renderer = await renderSidebar();
 
     act(() => {
-      findPressableByText(renderer.root, '⋮').props.onPress();
+      findMenuTrigger(renderer.root).props.onPress();
     });
     expect(findByText(renderer.root, 'Rename')).toBeTruthy();
 
@@ -404,7 +418,7 @@ describe('ConversationSidebar', () => {
       }),
     });
 
-    expect(queryByText(renderer.root, '⋮')).toBeNull();
+    expect(queryMenuTrigger(renderer.root)).toBeNull();
   });
 
   it('does not call refresh() while auth restoration has not completed', async () => {
@@ -738,7 +752,7 @@ describe('ConversationSidebar Projects section', () => {
     // project-conversation row's menu, and the normal-history row's menu
     // (same conversation, different context) — open the nested one (the
     // only one offering "Remove from project") and remove it there.
-    const menuButtons = findAllPressablesByText(renderer.root, '⋮');
+    const menuButtons = findAllMenuTriggers(renderer.root);
     expect(menuButtons).toHaveLength(3);
     act(() => {
       menuButtons[1]!.props.onPress();
@@ -768,7 +782,7 @@ describe('ConversationSidebar Projects section', () => {
       }),
     });
 
-    const menuButtons = findAllPressablesByText(renderer.root, '⋮');
+    const menuButtons = findAllMenuTriggers(renderer.root);
     act(() => {
       menuButtons[0]!.props.onPress();
     });
@@ -815,7 +829,7 @@ describe('ConversationSidebar Projects section', () => {
         }),
       });
 
-      const menuButtons = findAllPressablesByText(renderer.root, '⋮');
+      const menuButtons = findAllMenuTriggers(renderer.root);
       act(() => {
         menuButtons[0]!.props.onPress();
       });
@@ -850,7 +864,7 @@ describe('ConversationSidebar Projects section', () => {
     });
 
     act(() => {
-      findAllPressablesByText(renderer.root, '⋮')[0]!.props.onPress();
+      findAllMenuTriggers(renderer.root)[0]!.props.onPress();
     });
     expect(findByText(renderer.root, 'Delete project')).toBeTruthy();
 
@@ -869,7 +883,7 @@ describe('ConversationSidebar Projects section', () => {
     });
 
     act(() => {
-      findAllPressablesByText(renderer.root, '⋮')[0]!.props.onPress();
+      findAllMenuTriggers(renderer.root)[0]!.props.onPress();
     });
     expect(findByText(renderer.root, 'Delete project')).toBeTruthy();
 
@@ -889,7 +903,7 @@ describe('ConversationSidebar Projects section', () => {
     });
 
     act(() => {
-      findAllPressablesByText(renderer.root, '⋮')[0]!.props.onPress();
+      findAllMenuTriggers(renderer.root)[0]!.props.onPress();
     });
     expect(findByText(renderer.root, 'Delete project')).toBeTruthy();
 
@@ -913,7 +927,7 @@ describe('ConversationSidebar Projects section', () => {
       }),
     });
 
-    const menuButtons = findAllPressablesByText(renderer.root, '⋮');
+    const menuButtons = findAllMenuTriggers(renderer.root);
     expect(menuButtons).toHaveLength(2); // the project's own menu, then the history row's
 
     act(() => {
@@ -942,7 +956,7 @@ describe('ConversationSidebar Projects section', () => {
     // Two "⋮" buttons exist: the project's own menu, and the (single,
     // default) history conversation row's menu — the second is the one
     // under test here.
-    const menuButtons = findAllPressablesByText(renderer.root, '⋮');
+    const menuButtons = findAllMenuTriggers(renderer.root);
     expect(menuButtons).toHaveLength(2);
     act(() => {
       menuButtons[1]!.props.onPress();
@@ -970,7 +984,7 @@ describe('ConversationSidebar Projects section', () => {
         }),
       });
 
-      const menuButtons = findAllPressablesByText(renderer.root, '⋮');
+      const menuButtons = findAllMenuTriggers(renderer.root);
       act(() => {
         menuButtons[1]!.props.onPress();
       });
@@ -1015,7 +1029,7 @@ describe('ConversationSidebar Projects section', () => {
       }),
     });
 
-    const menuButtons = findAllPressablesByText(renderer.root, '⋮');
+    const menuButtons = findAllMenuTriggers(renderer.root);
     act(() => {
       menuButtons[1]!.props.onPress();
     });

@@ -127,6 +127,19 @@ export interface DisplayMessage {
    */
   stage: ChatStage | null;
   /**
+   * The most recent ChatProgressEvent.detail string, when the backend sent
+   * one — currently only the batched-PDF analysis pipeline does (a PDF
+   * attachment too long for one vision call; see rag-backend's
+   * app/services/vision_batch_orchestrator.py), e.g. "Analyzing pages
+   * 9-16 of 47…" or "Combining findings…". Unlike `stage` above, this is
+   * genuinely truthful live status text (not a fixed advisory ordering),
+   * so the thinking placeholder shows it verbatim when present instead of
+   * its own generic rotating statuses. null whenever no such event has
+   * arrived — the common case — and cleared back to null by the first
+   * token alongside `stage`.
+   */
+  progressDetail: string | null;
+  /**
    * The turn's pre-first-token lifecycle state (see ThinkingState) — while
    * non-null the UI shows a muted "thinking preview" placeholder inside the
    * assistant message bubble. Set to 'connecting' the moment the optimistic
@@ -222,6 +235,7 @@ function toDisplayMessages(conversation: ConversationDetail): DisplayMessage[] {
     streaming: false,
     error: null,
     stage: null,
+    progressDetail: null,
     thinking: null,
     thinkingContext: null,
     attachments: m.attachments ?? [],
@@ -316,6 +330,7 @@ export function useConversationMessages(
         streaming: false,
         error: null,
         stage: null,
+        progressDetail: null,
         thinking: null,
         thinkingContext: null,
         attachments: [],
@@ -335,6 +350,7 @@ export function useConversationMessages(
         streaming: true,
         error: null,
         stage: null,
+        progressDetail: null,
         // The UI's thinking placeholder shows from this moment (before any
         // network round-trip completes) until the first token — see
         // ThinkingState. The context is captured here, not derived from the
@@ -394,14 +410,22 @@ export function useConversationMessages(
                 // The stream is established, so the turn has moved past
                 // 'connecting' — every exit path below that ends the wait
                 // clears `thinking` back to null (never left dangling).
-                patchAssistant({ stage: event.stage, thinking: 'waiting_for_first_token' });
+                // `event.detail` is only ever present for the batched-PDF
+                // pipeline (see DisplayMessage.progressDetail's docs) —
+                // `?? null` normalizes both "field absent" and an explicit
+                // `null` to the same value for every other progress event.
+                patchAssistant({
+                  stage: event.stage,
+                  progressDetail: event.detail ?? null,
+                  thinking: 'waiting_for_first_token',
+                });
                 break;
               case 'token':
                 content += event.content;
                 // `thinking` clears in this same patch as `content` lands:
                 // one state update swaps the placeholder for the real text,
                 // so the two can never render at once (or in two bubbles).
-                patchAssistant({ content, stage: null, thinking: null });
+                patchAssistant({ content, stage: null, progressDetail: null, thinking: null });
                 break;
               case 'sources':
                 patchAssistant({ sources: event.sources.map(displaySourceFromRetrievedChunk) });

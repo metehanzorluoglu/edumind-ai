@@ -24,7 +24,9 @@ from app.core.document_scoping import (
 )
 from app.core.errors import AttachmentValidationError, LLMProviderError, VisionServiceError
 from app.core import generation_manager
+from app.core.generation_events import GenerationUpdate, GenProgress
 from app.core.intent_detection import is_instructional_design_request
+from app.core.llm_provider import LLMProvider
 from app.core.model_routing import ModelRoute, choose_model
 from app.core.project_context import format_project_context
 from app.core.prompt_builder import NO_EVIDENCE_ANSWER
@@ -55,6 +57,7 @@ from app.deps import (
     ChatRateLimiterDep,
     ConversationScopeRepositoryDep,
     ConversationsRepositoryDep,
+    LLMProviderDep,
     ProjectKnowledgeRepositoryDep,
     ProjectProfileRepositoryDep,
     ProjectsRepositoryDep,
@@ -95,6 +98,8 @@ from app.services.attachment_storage import (
     ValidatedAttachment,
     validate_attachment,
 )
+from app.services.pdf_batch_planner import BatchPlan, plan_pdf_batches
+from app.services.vision_batch_orchestrator import stream_batched_pdf_analysis
 from app.services.vision_service import (
     AttachmentForVision,
     VisionService,
@@ -472,6 +477,22 @@ class ParsedMessageRequest:
     # PostConversationMessageRequest.use_corpus.
     use_corpus: bool = False
     attachments: list[ParsedAttachmentUpload] = field(default_factory=list)
+
+
+@dataclass
+class BatchedPdfRequest:
+    """Bundles what _stream_vision_reply needs to run the batched-PDF
+    pipeline (see app/services/vision_batch_orchestrator.py) instead of
+    the older single-call render_attachments_to_images path — only ever
+    constructed by _handle_conversation_message when a lone PDF
+    attachment's page count doesn't fit in one batch (see
+    BatchPlan.needs_batching). `pdf_data` is the validated PDF's raw
+    bytes — rendering happens one batch at a time inside the
+    orchestrator, never eagerly here, which is what keeps this pipeline's
+    memory use roughly constant regardless of document length."""
+
+    pdf_data: bytes
+    plan: BatchPlan
 
 
 def _coerce_optional_int(value: object) -> int | None:
@@ -880,6 +901,8 @@ def _stream_vision_reply(
     attach_only: bool,
     attachment_storage: AttachmentStorage,
     session_factory: Callable[[], Session],
+    batched_pdf: BatchedPdfRequest | None = None,
+    llm_provider: LLMProvider | None = None,
 ) -> StreamingResponse:
     """The vision-routed counterpart to _stream_text_reply — see that
     function's docstring for the shared recovery design (QA finding
@@ -894,7 +917,19 @@ def _stream_vision_reply(
     event loop — this function's own event_stream() stays a plain sync
     generator (like the text path's), unlike the pre-recovery-redesign
     version of this function, since polling a GenerationState needs
-    nothing async at all."""
+    nothing async at all.
+
+    `batched_pdf`, when given (see _handle_conversation_message), routes
+    this call through the batched-PDF pipeline instead
+    (app/services/vision_batch_orchestrator.py) — sequential per-batch
+    analysis calls reported as ChatProgressEvent.detail lines, followed by
+    one final synthesis streamed as ordinary tokens — instead of the
+    single vision_service.stream_chat call below (`images` is unused in
+    that case). `llm_provider` is only required together with
+    `batched_pdf`: the batched pipeline's text-mode batches and its final
+    synthesis both use the fast text model, never the vision model, once
+    a document's images have already been distilled into per-batch
+    findings — see that module's docstring for why."""
     if route.use_retrieval:
         evidence = retrieve_and_cite(
             retriever,
@@ -916,29 +951,51 @@ def _stream_vision_reply(
     else:
         evidence = CorpusEvidence(sources=[], citations=[])
 
-    system_prompt, user_prompt = build_vision_prompt(
-        parsed.query, evidence.sources, project_context=project_context
-    )
-
-    prompt_chars = len(system_prompt) + len(user_prompt)
-    if prompt_chars > settings.vision_max_prompt_chars:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"This message's combined prompt is {prompt_chars} characters, exceeds the "
-                f"{settings.vision_max_prompt_chars}-character limit for a vision request — "
-                "try a shorter question, disabling 'use my research corpus' for this message, "
-                "or a conversation with fewer approved Project Memory items."
-            ),
+    # The batched pipeline builds its own, smaller per-batch/reduce
+    # prompts lazily (see vision_batch_orchestrator.py) rather than one
+    # big single-shot prompt up front, so there is nothing to size-check
+    # here for that case — vision_max_prompt_chars only ever bounded the
+    # single-call prompt built below.
+    prompt_chars: int | None = None
+    system_prompt = user_prompt = ""
+    if batched_pdf is None:
+        system_prompt, user_prompt = build_vision_prompt(
+            parsed.query, evidence.sources, project_context=project_context
         )
+        prompt_chars = len(system_prompt) + len(user_prompt)
+        if prompt_chars > settings.vision_max_prompt_chars:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"This message's combined prompt is {prompt_chars} characters, exceeds the "
+                    f"{settings.vision_max_prompt_chars}-character limit for a vision request — "
+                    "try a shorter question, disabling 'use my research corpus' for this message, "
+                    "or a conversation with fewer approved Project Memory items."
+                ),
+            )
 
     def event_stream() -> Iterator[str]:
+        def _drain_batched_updates() -> Iterator[str]:
+            """poll_batched_vision's tagged updates, translated to SSE —
+            shared by the attach_only reconnect branch below and the
+            normal first-connection path, so the two can never drift on
+            how a GenProgress/GenToken becomes a ChatProgressEvent/
+            ChatTokenEvent."""
+            for update in generation_manager.poll_batched_vision(assistant_message.id):
+                if isinstance(update, GenProgress):
+                    yield _sse(ChatProgressEvent(stage="generating", detail=update.detail))
+                else:
+                    yield _sse(ChatTokenEvent(content=update.text))
+
         yield _sse(ChatProgressEvent(stage="connected"))
 
         if attach_only:
             yield _sse(ChatProgressEvent(stage="generating"))
-            for delta in generation_manager.poll_until_done(assistant_message.id):
-                yield _sse(ChatTokenEvent(content=delta))
+            if batched_pdf is not None:
+                yield from _drain_batched_updates()
+            else:
+                for delta in generation_manager.poll_until_done(assistant_message.id):
+                    yield _sse(ChatTokenEvent(content=delta))
             yield from _final_reply_events(repository, assistant_message.id, timer)
             return
 
@@ -946,7 +1003,7 @@ def _stream_vision_reply(
             yield _sse(ChatProgressEvent(stage="retrieving"))
         yield _sse(ChatProgressEvent(stage="processing_context"))
 
-        if timer.enabled:
+        if prompt_chars is not None and timer.enabled:
             timer.record_metric("estimated_prompt_tokens", round(prompt_chars / 4))
 
         transparency = transparency_to_dict(
@@ -964,25 +1021,54 @@ def _stream_vision_reply(
         yield _sse(ChatProgressEvent(stage="loading_model"))
         yield _sse(ChatProgressEvent(stage="generating"))
 
-        def _stream_chat() -> AsyncIterator[str]:
-            raw = vision_service.stream_chat(
-                system_prompt=system_prompt, prompt=user_prompt, images=images, timer=timer
+        if batched_pdf is not None:
+            assert llm_provider is not None  # always passed together with batched_pdf
+
+            def _stream_updates() -> AsyncIterator[GenerationUpdate]:
+                return stream_batched_pdf_analysis(
+                    pdf_data=batched_pdf.pdf_data,
+                    plan=batched_pdf.plan,
+                    query=parsed.query,
+                    sources=evidence.sources,
+                    project_context=project_context,
+                    vision_service=vision_service,
+                    text_provider=llm_provider,
+                    max_retries=settings.vision_batch_max_retries,
+                    timer=timer,
+                )
+
+            generation_manager.start_batched_vision_generation(
+                assistant_message_id=assistant_message.id,
+                stream_updates=_stream_updates,
+                retrieved_sources=evidence.sources,
+                citations=evidence.citations,
+                transparency=transparency,
+                attachment_storage=attachment_storage,
+                timer=timer,
+                session_factory=session_factory,
             )
-            return _timed_async_token_stream(raw, timer) if timer.enabled else raw
+            yield from _drain_batched_updates()
+        else:
 
-        generation_manager.start_vision_generation(
-            assistant_message_id=assistant_message.id,
-            stream_chat=_stream_chat,
-            retrieved_sources=evidence.sources,
-            citations=evidence.citations,
-            transparency=transparency,
-            attachment_storage=attachment_storage,
-            timer=timer,
-            session_factory=session_factory,
-        )
+            def _stream_chat() -> AsyncIterator[str]:
+                raw = vision_service.stream_chat(
+                    system_prompt=system_prompt, prompt=user_prompt, images=images, timer=timer
+                )
+                return _timed_async_token_stream(raw, timer) if timer.enabled else raw
 
-        for delta in generation_manager.poll_until_done(assistant_message.id):
-            yield _sse(ChatTokenEvent(content=delta))
+            generation_manager.start_vision_generation(
+                assistant_message_id=assistant_message.id,
+                stream_chat=_stream_chat,
+                retrieved_sources=evidence.sources,
+                citations=evidence.citations,
+                transparency=transparency,
+                attachment_storage=attachment_storage,
+                timer=timer,
+                session_factory=session_factory,
+            )
+
+            for delta in generation_manager.poll_until_done(assistant_message.id):
+                yield _sse(ChatTokenEvent(content=delta))
 
         if timer.enabled:
             timer.record_metric("vision_total_ms", timer.total_ms())
@@ -1027,6 +1113,7 @@ def _handle_conversation_message(
     conversation_scope_repository: ConversationScopeRepository,
     timer: RequestTimer,
     session_factory: Callable[[], Session],
+    llm_provider: LLMProvider,
 ) -> StreamingResponse:
     # Checked before any DB/validation work (milestone V4 — see
     # app/core/rate_limiter.py): the cheapest possible rejection for a
@@ -1141,58 +1228,98 @@ def _handle_conversation_message(
     )
 
     vision_images: list[bytes] = []
+    batched_pdf: BatchedPdfRequest | None = None
     if route.is_vision:
-        try:
-            vision_images = render_attachments_to_images(
-                [
-                    AttachmentForVision(
-                        mime=result.mime,
-                        data=result.data,
-                        page_range_start=upload.page_range_start,
-                        page_range_end=upload.page_range_end,
-                    )
-                    for upload, result in zip(parsed.attachments, validated, strict=True)
-                ],
-                max_images=settings.vision_max_images_per_message,
-                max_pdf_pages=settings.vision_max_pdf_pages,
-                max_image_dimension=settings.vision_max_image_dimension,
-                max_image_pixels=settings.vision_max_image_pixels,
-                max_total_pixels=settings.vision_max_total_pixels,
-            )
-        except VisionServiceError as exc:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        # A lone PDF attachment with no explicit, user-chosen page range
+        # is the only case the batched pipeline (see
+        # app/services/pdf_batch_planner.py) ever applies to — planning is
+        # cheap (no rendering, no model calls) so it's always attempted
+        # first; a plan with 0 or 1 batches falls straight through to the
+        # older single-call render_attachments_to_images path below,
+        # completely unchanged, same as a bare image attachment or a PDF
+        # with an explicit range always has.
+        single_pdf = (
+            validated[0]
+            if len(validated) == 1
+            and validated[0].mime == "application/pdf"
+            and parsed.attachments[0].page_range_start is None
+            else None
+        )
+        plan = None
+        if single_pdf is not None:
+            try:
+                plan = plan_pdf_batches(
+                    single_pdf.data,
+                    batch_size=min(
+                        settings.vision_batch_pages_per_batch, settings.vision_max_images_per_message
+                    ),
+                    max_pages=settings.vision_batch_max_pages,
+                    text_min_chars=settings.vision_batch_text_min_chars,
+                )
+            except VisionServiceError as exc:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-        if timer.enabled:
-            timer.record_metric("attachment_count", len(parsed.attachments))
-            timer.record_metric(
-                "pdf_page_count",
-                sum(r.page_count or 0 for r in validated if r.mime == "application/pdf"),
-            )
-            timer.record_metric(
-                "original_attachment_bytes", sum(len(r.data) for r in validated)
-            )
-            timer.record_metric(
-                "processed_attachment_bytes", sum(len(image) for image in vision_images)
-            )
-            # "dimensions" (plural, per-image) don't fit RequestTimer's
-            # flat name->float metric namespace (see
-            # app/core/request_timing.py) — recorded as two numeric
-            # summaries instead: the largest single side and the summed
-            # pixel count, for both the original (image attachments
-            # only — a PDF has no "dimensions" before it's rendered) and
-            # the fully processed (rendered + resized) sets. Every
-            # per-image WxH pair is still visible in full via the
-            # existing max_pixels/max_total_pixels VisionServiceError
-            # messages when a limit is actually hit; this is a summary
-            # for the *normal*, non-error case.
-            original_max_dim, original_total_px = _image_dimension_summary(
-                [r.data for r in validated if r.mime != "application/pdf"]
-            )
-            processed_max_dim, processed_total_px = _image_dimension_summary(vision_images)
-            timer.record_metric("original_image_max_dimension_px", original_max_dim)
-            timer.record_metric("original_image_total_pixels", original_total_px)
-            timer.record_metric("processed_image_max_dimension_px", processed_max_dim)
-            timer.record_metric("processed_image_total_pixels", processed_total_px)
+        if plan is not None and plan.needs_batching:
+            batched_pdf = BatchedPdfRequest(pdf_data=single_pdf.data, plan=plan)  # type: ignore[union-attr]
+            if timer.enabled:
+                timer.record_metric("attachment_count", len(parsed.attachments))
+                timer.record_metric("pdf_page_count", plan.total_page_count)
+                timer.record_metric("vision_batch_planned_count", len(plan.batches))
+                timer.record_metric(
+                    "vision_batch_skipped_blank_pages", len(plan.skipped_blank_pages)
+                )
+        else:
+            try:
+                vision_images = render_attachments_to_images(
+                    [
+                        AttachmentForVision(
+                            mime=result.mime,
+                            data=result.data,
+                            page_range_start=upload.page_range_start,
+                            page_range_end=upload.page_range_end,
+                        )
+                        for upload, result in zip(parsed.attachments, validated, strict=True)
+                    ],
+                    max_images=settings.vision_max_images_per_message,
+                    max_pdf_pages=settings.vision_max_pdf_pages,
+                    max_image_dimension=settings.vision_max_image_dimension,
+                    max_image_pixels=settings.vision_max_image_pixels,
+                    max_total_pixels=settings.vision_max_total_pixels,
+                )
+            except VisionServiceError as exc:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+            if timer.enabled:
+                timer.record_metric("attachment_count", len(parsed.attachments))
+                timer.record_metric(
+                    "pdf_page_count",
+                    sum(r.page_count or 0 for r in validated if r.mime == "application/pdf"),
+                )
+                timer.record_metric(
+                    "original_attachment_bytes", sum(len(r.data) for r in validated)
+                )
+                timer.record_metric(
+                    "processed_attachment_bytes", sum(len(image) for image in vision_images)
+                )
+                # "dimensions" (plural, per-image) don't fit RequestTimer's
+                # flat name->float metric namespace (see
+                # app/core/request_timing.py) — recorded as two numeric
+                # summaries instead: the largest single side and the summed
+                # pixel count, for both the original (image attachments
+                # only — a PDF has no "dimensions" before it's rendered) and
+                # the fully processed (rendered + resized) sets. Every
+                # per-image WxH pair is still visible in full via the
+                # existing max_pixels/max_total_pixels VisionServiceError
+                # messages when a limit is actually hit; this is a summary
+                # for the *normal*, non-error case.
+                original_max_dim, original_total_px = _image_dimension_summary(
+                    [r.data for r in validated if r.mime != "application/pdf"]
+                )
+                processed_max_dim, processed_total_px = _image_dimension_summary(vision_images)
+                timer.record_metric("original_image_max_dimension_px", original_max_dim)
+                timer.record_metric("original_image_total_pixels", original_total_px)
+                timer.record_metric("processed_image_max_dimension_px", processed_max_dim)
+                timer.record_metric("processed_image_total_pixels", processed_total_px)
 
     is_first_message = repository.get_messages(user.id, conversation_id) == []
     message = repository.add_user_message(
@@ -1275,6 +1402,8 @@ def _handle_conversation_message(
             attach_only=attach_only,
             attachment_storage=attachment_storage,
             session_factory=session_factory,
+            batched_pdf=batched_pdf,
+            llm_provider=llm_provider,
         )
     return _stream_text_reply(
         conversation_id,
@@ -1314,6 +1443,7 @@ async def post_conversation_message(
     conversation_scope_repository: ConversationScopeRepositoryDep,
     request_timer: RequestTimerDep,
     session_factory: SessionFactoryDep,
+    llm_provider: LLMProviderDep,
 ) -> StreamingResponse:
     """Accepts either `application/json` (the original, text-only shape —
     see PostConversationMessageRequest) or `multipart/form-data` (adds
@@ -1361,6 +1491,7 @@ async def post_conversation_message(
         conversation_scope_repository,
         request_timer,
         session_factory,
+        llm_provider,
     )
 
 

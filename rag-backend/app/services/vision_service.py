@@ -220,6 +220,52 @@ def render_pdf_pages(
         ]
 
 
+def render_pdf_page_list(
+    data: bytes, page_numbers: list[int], *, dpi: int = DEFAULT_RENDER_DPI
+) -> list[bytes]:
+    """Renders exactly the given 1-indexed page numbers (in the order
+    given) to PNG images — the batched-vision counterpart to
+    render_pdf_pages above, which only ever renders one *contiguous*
+    range. A page batch (see app/services/pdf_batch_planner.py) can have
+    gaps in it — a blank page in the middle of a labeled "pages 4-9"
+    batch is deliberately excluded from what actually gets rendered — so
+    render_pdf_pages' first_page/last_page range shape cannot express
+    what a batch needs to render; this can. Raises VisionServiceError for
+    the same reasons render_pdf_pages does (unreadable data, an empty
+    document, an out-of-range page number) — never silently drops or
+    reorders a requested page."""
+    if not page_numbers:
+        raise VisionServiceError(
+            "At least one page number is required", category=VisionErrorCategory.PREPROCESSING_FAILURE
+        )
+    try:
+        document = pymupdf.open(stream=data, filetype="pdf")  # type: ignore[no-untyped-call]
+    except Exception as exc:
+        raise VisionServiceError(
+            f"Could not read PDF data: {exc}", category=VisionErrorCategory.PREPROCESSING_FAILURE
+        ) from exc
+
+    with document:
+        page_count = document.page_count
+        for page_number in page_numbers:
+            if page_number < 1 or page_number > page_count:
+                raise VisionServiceError(
+                    f"Page {page_number} is out of range for a {page_count}-page document",
+                    category=VisionErrorCategory.PREPROCESSING_FAILURE,
+                )
+
+        zoom = dpi / 72  # a PDF's native unit is 72 DPI
+        matrix = pymupdf.Matrix(zoom, zoom)  # type: ignore[no-untyped-call]
+        return [
+            bytes(
+                document[page_number - 1]  # type: ignore[no-untyped-call]
+                .get_pixmap(matrix=matrix)
+                .tobytes("png")
+            )
+            for page_number in page_numbers
+        ]
+
+
 @dataclass
 class AttachmentForVision:
     """One chat attachment's validated bytes (milestone V2's

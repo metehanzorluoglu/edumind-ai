@@ -291,7 +291,7 @@ describe('GeneratedImageGallery', () => {
 
     expect(
       renderer.root.findAll(
-        (n) => String(n.type) === 'Text' && n.children.includes('★ Saved to project')
+        (n) => String(n.type) === 'Text' && n.children.includes('Saved to project')
       ).length
     ).toBe(1);
   });

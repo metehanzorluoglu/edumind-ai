@@ -139,8 +139,10 @@ const monospaceFont = Platform.select({ ios: 'Menlo', android: 'monospace', defa
 
 function buildCodeBlockStyles(theme: Theme) {
   return StyleSheet.create({
+    // Always-dark contrast surface, same in both themes — see
+    // Preferences.tsx's codeSurface/codeText docs.
     scroll: {
-      backgroundColor: theme.effective === 'dark' ? theme.background : '#14161F',
+      backgroundColor: theme.codeSurface,
       borderRadius: theme.radius.md,
       marginVertical: 8,
     },
@@ -151,7 +153,7 @@ function buildCodeBlockStyles(theme: Theme) {
       fontFamily: theme.fonts.mono !== 'monospace' ? theme.fonts.mono : monospaceFont,
       fontSize: 13,
       lineHeight: 18,
-      color: '#E2E8F0',
+      color: theme.codeText,
     },
   });
 }

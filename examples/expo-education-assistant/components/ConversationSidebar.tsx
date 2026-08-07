@@ -9,6 +9,7 @@ import { AddToProjectPicker } from '@/components/AddToProjectPicker';
 import { EduM8Symbol } from '@/components/EduM8Logo';
 import { ConversationRow, type ConversationRowItem } from '@/components/ConversationRow';
 import { ProjectsSection } from '@/components/ProjectsSection';
+import { Skeleton } from '@/components/ui/Skeleton';
 import { useAuth } from '@/lib/AuthProvider';
 import { useClient } from '@/lib/ClientProvider';
 import { DARK_PALETTE, useTheme } from '@/lib/Preferences';
@@ -243,11 +244,7 @@ export function ConversationSidebar({
                     deletingConversationIds={deletingConversationIds}
                   />
 
-                  {listState.status === 'loading' && (
-                    <View style={styles.centered}>
-                      <ActivityIndicator color={dark.faint} />
-                    </View>
-                  )}
+                  {listState.status === 'loading' && <SidebarSkeletons />}
 
                   {listState.status === 'error' && (
                     <View style={styles.centered}>
@@ -330,6 +327,30 @@ export function ConversationSidebar({
   );
 }
 
+/** Three pulsing placeholder rows while the conversation list loads —
+ * communicates "your history is coming" with the same shape that history
+ * will arrive in, instead of a spinner floating in empty space. */
+function SidebarSkeletons() {
+  return (
+    <View style={styles.skeletonWrap}>
+      {[64, 44, 56].map((widthPct, i) => (
+        <View key={i} style={styles.skeletonRow}>
+          <Skeleton width={`${widthPct}%`} height={12} radius={6} color={dark.cardPressed} />
+        </View>
+      ))}
+      {/* Keep a quiet spinner for screen readers' sake — the skeletons are
+          decorative (importantForAccessibility="no") and something still
+          needs to announce the loading state. */}
+      <ActivityIndicator
+        size="small"
+        color={dark.faint}
+        style={styles.skeletonSpinner}
+        accessibilityLabel="Loading conversations"
+      />
+    </View>
+  );
+}
+
 /** Local, not the shared Button component — this rail is deliberately
  * always-dark (see `dark` above), independent of the ambient theme
  * Button.tsx reads via useTheme(). Same hover/focus pattern as Button. */
@@ -387,6 +408,9 @@ const styles = StyleSheet.create({
   newChatButtonText: { fontWeight: '600' },
   list: { flex: 1 },
   centered: { alignItems: 'center', gap: 8, padding: 16 },
+  skeletonWrap: { paddingHorizontal: 16, paddingVertical: 8, gap: 14 },
+  skeletonRow: { paddingVertical: 4 },
+  skeletonSpinner: { marginTop: 8 },
   errorText: { fontSize: 12, textAlign: 'center' },
   retryButton: { paddingVertical: 6, paddingHorizontal: 12 },
   retryButtonText: { fontSize: 12, fontWeight: '600' },

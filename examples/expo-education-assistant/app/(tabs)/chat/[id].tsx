@@ -11,14 +11,16 @@ import {
   Pressable,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { AttachmentButton } from '@/components/AttachmentButton';
 import { AttachmentPreviewRow } from '@/components/AttachmentPreviewRow';
+import { ChatComposer } from '@/components/ChatComposer';
 import { ConversationTurnCard } from '@/components/ConversationTurnCard';
 import { CorpusToggle } from '@/components/CorpusToggle';
+import { EduM8Symbol } from '@/components/EduM8Logo';
 import { ImageGenerateButton } from '@/components/ImageGenerateButton';
+import { Notice } from '@/components/ui/Notice';
 import {
   ImageGenerationModal,
   type ImageGenerationContext,
@@ -284,7 +286,7 @@ function ChatConversationScreen({ conversationId }: { conversationId: string }) 
 
   const renderTurn = useCallback(
     ({ item: turn }: ListRenderItemInfo<RenderTurn>) => (
-      <View style={styles.turnWrap}>
+      <View style={styles.turnWrap} testID="chat-turn-wrap">
         <ConversationTurnCard
           userContent={turn.userContent}
           assistant={turn.assistant}
@@ -321,77 +323,54 @@ function ChatConversationScreen({ conversationId }: { conversationId: string }) 
   }
 
   const composerBody = (
-    <View style={styles.composerOuter}>
-      <View style={styles.composerInner}>
+    <View>
+      <ChatComposer
+        value={query}
+        onChangeText={setQuery}
+        placeholder={conversation ? `Ask ${conversation.title}…` : 'Ask about the corpus…'}
+        inputAccessibilityLabel="Ask a question"
+        editable={!isBusy}
+        canSubmit={Boolean(query.trim()) && !hasAttachmentErrors}
+        onSubmit={handleAsk}
+        busy={isBusy}
+        onCancel={cancelSend}
+        leadingActions={
+          <>
+            <AttachmentButton onPress={pickAttachment} disabled={isBusy} />
+            {imageGeneratorEnabled && (
+              <ImageGenerateButton
+                onPress={() => {
+                  setImageModalInitialValues(undefined);
+                  setImageModalKey((k) => k + 1);
+                  setImageModalOpen(true);
+                }}
+                disabled={isBusy}
+              />
+            )}
+          </>
+        }
+      >
         <AttachmentPreviewRow attachments={attachments} onRemove={removeAttachment} />
         {attachments.length > 0 && (
           <CorpusToggle value={useCorpus} onValueChange={setUseCorpus} disabled={isBusy} />
         )}
-        <View style={styles.inputRow}>
-          <AttachmentButton onPress={pickAttachment} disabled={isBusy} />
-          {imageGeneratorEnabled && (
-            <ImageGenerateButton
-              onPress={() => {
-                setImageModalInitialValues(undefined);
-                setImageModalKey((k) => k + 1);
-                setImageModalOpen(true);
-              }}
-              disabled={isBusy}
-            />
-          )}
-          <TextInput
-            style={styles.input}
-            value={query}
-            onChangeText={setQuery}
-            placeholder={conversation ? `Ask ${conversation.title}…` : 'Ask about the corpus…'}
-            placeholderTextColor={theme.faint}
-            editable={!isBusy}
-            onSubmitEditing={handleAsk}
-            returnKeyType="send"
-            accessibilityLabel="Ask a question"
+      </ChatComposer>
+      {sendState.status === 'error' && (
+        <View style={styles.retryRow}>
+          <Notice
+            tone="danger"
+            body={describeApiError(
+              'POST',
+              baseUrl,
+              `/conversations/${conversationId}/messages`,
+              sendState.error
+            )}
+            actionLabel="Retry"
+            onAction={handleRetry}
+            style={styles.retryNotice}
           />
-          {isBusy ? (
-            <Pressable
-              style={[styles.button, styles.cancelButton]}
-              onPress={cancelSend}
-              accessibilityRole="button"
-              accessibilityLabel="Cancel"
-            >
-              <Text style={styles.buttonText}>Cancel</Text>
-            </Pressable>
-          ) : (
-            <Pressable
-              style={styles.button}
-              onPress={handleAsk}
-              disabled={!query.trim() || hasAttachmentErrors}
-              accessibilityRole="button"
-              accessibilityLabel="Ask"
-            >
-              <Text style={styles.buttonText}>Ask</Text>
-            </Pressable>
-          )}
         </View>
-        {sendState.status === 'error' && (
-          <View style={styles.retryRow}>
-            <Text style={styles.retryHint}>
-              {describeApiError(
-                'POST',
-                baseUrl,
-                `/conversations/${conversationId}/messages`,
-                sendState.error
-              )}
-            </Text>
-            <Pressable
-              style={styles.retryButton}
-              onPress={handleRetry}
-              accessibilityRole="button"
-              accessibilityLabel="Retry"
-            >
-              <Text style={styles.buttonText}>Retry</Text>
-            </Pressable>
-          </View>
-        )}
-      </View>
+      )}
     </View>
   );
 
@@ -414,33 +393,33 @@ function ChatConversationScreen({ conversationId }: { conversationId: string }) 
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      testID="chat-container"
     >
       {!hasStreamingCapability() && (
-        <View style={styles.banner}>
-          <Text style={styles.bannerText}>
-            Incremental streaming isn&apos;t available in this runtime — answers arrive all at once
-            instead.
-          </Text>
+        <View style={styles.topBannerOuter}>
+          <View style={styles.topBannerInner}>
+            <Notice
+              tone="warning"
+              body="Incremental streaming isn't available in this runtime — answers arrive all at once instead."
+            />
+          </View>
         </View>
       )}
 
       {isResumingGeneration && resumingMessageId && (
-        <View style={styles.resumingBanner}>
-          <Text style={styles.resumingBannerText}>
-            Picking up a response that was still being generated…
-          </Text>
-          <Pressable
-            style={styles.resumingCancelButton}
-            onPress={() => cancelPersistedGeneration(resumingMessageId)}
-            accessibilityRole="button"
-            accessibilityLabel="Cancel"
-          >
-            <Text style={styles.resumingCancelText}>Cancel</Text>
-          </Pressable>
+        <View style={styles.topBannerOuter} testID="chat-recovery-banner-outer">
+          <View style={styles.topBannerInner} testID="chat-recovery-banner">
+            <Notice
+              tone="info"
+              body="Picking up a response that was still being generated…"
+              actionLabel="Cancel"
+              onAction={() => cancelPersistedGeneration(resumingMessageId)}
+            />
+          </View>
         </View>
       )}
 
-      <View style={styles.listWrap}>
+      <View style={styles.listWrap} testID="chat-list-wrap">
         <FlatList
           ref={listRef}
           style={styles.list}
@@ -453,7 +432,19 @@ function ChatConversationScreen({ conversationId }: { conversationId: string }) 
           scrollEventThrottle={16}
           keyboardShouldPersistTaps="handled"
           onScrollToIndexFailed={handleScrollToIndexFailed}
-          ListEmptyComponent={<Text style={styles.hint}>Ask a question about the corpus.</Text>}
+          ListEmptyComponent={
+            <View style={styles.emptyConversation}>
+              <EduM8Symbol size={28} style={styles.emptyConversationMark} />
+              <Text
+                style={[
+                  styles.emptyConversationText,
+                  { color: theme.subtext, fontFamily: theme.fonts.body },
+                ]}
+              >
+                Ask a question about the corpus.
+              </Text>
+            </View>
+          }
           ListFooterComponent={<View style={styles.listFooterSpacer} />}
         />
         {showJumpToLatest && (
@@ -500,109 +491,68 @@ function buildStyles(theme: Theme) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: theme.background },
     composerDragOver: { backgroundColor: theme.accentSoft },
-    banner: { backgroundColor: theme.warningSoft, padding: 8 },
-    bannerText: {
-      fontSize: 12,
-      color: theme.warning,
-      textAlign: 'center',
-      fontFamily: theme.fonts.bodyMedium,
-    },
-    resumingBanner: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      backgroundColor: theme.accentSoft,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: theme.border,
-      paddingVertical: 8,
-      paddingHorizontal: 12,
-      gap: 8,
-    },
-    resumingBannerText: {
-      fontSize: 12,
-      color: theme.accent,
-      flexShrink: 1,
-      fontFamily: theme.fonts.body,
-    },
-    resumingCancelButton: { paddingVertical: 4, paddingHorizontal: 10 },
-    resumingCancelText: { fontSize: 12, color: theme.danger, fontFamily: theme.fonts.bodySemibold },
+    // Same two-layer width discipline as the message column (listContent's
+    // padding + turnWrap's maxWidth) and the composer (ChatComposer's own
+    // outer/inner split): an edge-inset OUTER wrapper (full width, 16px
+    // horizontal padding) around a width-capped, centered INNER one. A
+    // banner above the conversation is still part of "the chat canvas" —
+    // giving it a *different* width rule (the old version just used
+    // marginHorizontal, no maxWidth) is what made it visually mismatched
+    // against the narrower reading column beneath it on any viewport wider
+    // than 720px+32px, reading as "the chat shrank" by contrast even
+    // though the message column/composer/sidebar never actually changed
+    // size. Purely a width fix — this never wraps listWrap/the composer
+    // themselves, and never changes their own flex/width.
+    topBannerOuter: { paddingHorizontal: 16, paddingTop: 8 },
+    topBannerInner: { width: '100%', maxWidth: 720, alignSelf: 'center' },
     listWrap: { flex: 1 },
     list: { flex: 1 },
-    // alignItems: 'center' + a maxWidth wrapper on each turn (see turnWrap)
-    // is what gives the reading canvas its "research notebook" feel —
-    // comfortable line length on wide screens, full-bleed on narrow ones
-    // (maxWidth simply never binds below 720px).
-    listContent: { padding: 16, flexGrow: 1, alignItems: 'center' },
-    turnWrap: { width: '100%', maxWidth: 720 },
+    // Deliberately NOT `alignItems: 'center'` here — see turnWrap's own
+    // comment for why that combination is exactly what caused the
+    // "chat shrinks while the thinking placeholder/recovery banner is
+    // showing" bug: `alignItems: 'center'` stops FlatList's per-row
+    // wrapper from stretching to this container's width, which leaves
+    // turnWrap's own `width: '100%'` resolving against an *indeterminate*
+    // (content-fitted) parent instead of a fixed one — so turnWrap's
+    // rendered width silently tracked whatever was inside it (a full
+    // answer vs. an empty/compact thinking placeholder) rather than
+    // staying a stable reading-column width. Default `alignItems: 'stretch'`
+    // makes every row (and therefore turnWrap's immediate parent) always
+    // span this container's full width, giving turnWrap's own
+    // `width: '100%'` a real, content-independent value to resolve against.
+    listContent: { padding: 16, flexGrow: 1 },
+    // The centered "research notebook" reading column: `alignSelf: 'center'`
+    // does the centering directly on this element (the same technique
+    // ChatComposer's own `inner` style already uses successfully — see
+    // that component), rather than depending on an ancestor's
+    // `alignItems: 'center'`, which is what made this element's own
+    // `width: '100%'` unreliable (see listContent's comment above).
+    turnWrap: { width: '100%', maxWidth: 720, alignSelf: 'center' },
     listFooterSpacer: { height: 8 },
-    hint: {
-      color: theme.subtext,
-      textAlign: 'center',
-      marginTop: 24,
-      fontFamily: theme.fonts.body,
-    },
+    emptyConversation: { alignItems: 'center', gap: 8, marginTop: 32, padding: 16 },
+    emptyConversationMark: { opacity: 0.5 },
+    emptyConversationText: { fontSize: theme.scale(14), textAlign: 'center' },
     centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 24 },
     errorText: { color: theme.danger, marginTop: 4, fontFamily: theme.fonts.body },
+    // Inverted-ink pill: theme.text on theme.background flips correctly in
+    // both modes (near-black chip on light, near-white chip on dark) —
+    // maximum contrast against the canvas it floats over, zero hardcoded
+    // hexes.
     jumpButton: {
       position: 'absolute',
       bottom: 12,
       alignSelf: 'center',
-      backgroundColor: theme.effective === 'dark' ? theme.card : '#14161F',
+      backgroundColor: theme.text,
       borderRadius: theme.radius.pill,
       paddingHorizontal: 14,
       paddingVertical: 8,
     },
-    jumpButtonText: { color: '#FFFFFF', fontSize: 13, fontFamily: theme.fonts.bodySemibold },
-    // The whole composer (attachments/toggle/input/retry) sits on the
-    // page background, not theme.card — that's what lets inputRow read as
-    // a floating card rather than a docked toolbar (brief: "floating
-    // input composer"). composerInner caps line length to match turnWrap
-    // so the input never drifts wider than the text above it.
-    composerOuter: { backgroundColor: theme.background, paddingHorizontal: 16, paddingBottom: 12 },
-    composerInner: { width: '100%', maxWidth: 720, alignSelf: 'center' },
-    inputRow: {
-      flexDirection: 'row',
-      padding: 10,
-      gap: 8,
-      marginTop: 8,
-      borderWidth: StyleSheet.hairlineWidth * 2,
-      borderColor: theme.border,
-      borderRadius: theme.radius.lg,
-      backgroundColor: theme.card,
+    jumpButtonText: {
+      color: theme.background,
+      fontSize: 13,
+      fontFamily: theme.fonts.bodySemibold,
     },
-    input: {
-      flex: 1,
-      borderWidth: StyleSheet.hairlineWidth * 2,
-      borderColor: theme.border,
-      borderRadius: theme.radius.md,
-      paddingHorizontal: 12,
-      paddingVertical: 10,
-      backgroundColor: theme.background,
-      color: theme.text,
-      fontFamily: theme.fonts.body,
-    },
-    button: {
-      backgroundColor: theme.accent,
-      borderRadius: theme.radius.md,
-      paddingHorizontal: 16,
-      justifyContent: 'center',
-    },
-    cancelButton: { backgroundColor: theme.danger },
-    buttonText: { color: theme.accentContrast, fontFamily: theme.fonts.bodySemibold },
-    retryRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      paddingHorizontal: 12,
-      paddingBottom: 12,
-      gap: 8,
-    },
-    retryHint: { fontSize: 12, color: theme.danger, flexShrink: 1, fontFamily: theme.fonts.body },
-    retryButton: {
-      backgroundColor: theme.accent,
-      borderRadius: theme.radius.md,
-      paddingHorizontal: 16,
-      paddingVertical: 8,
-    },
+    retryRow: { alignItems: 'center', paddingHorizontal: 16, paddingBottom: 12 },
+    retryNotice: { width: '100%', maxWidth: 720 },
   });
 }

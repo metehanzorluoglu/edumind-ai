@@ -30,6 +30,16 @@ class ChatProgressEvent(BaseModel):
 
     type: Literal["progress"] = "progress"
     stage: ChatStage
+    # Additive, optional (None everywhere except the batched-PDF pipeline —
+    # see app/services/vision_batch_orchestrator.py and
+    # app/core/generation_manager.py's GenerationState.progress): a
+    # complete, presentable status line for when `stage` alone ("generating")
+    # can't say anything more specific truthfully, e.g. "Analyzing pages
+    # 9-16 of 47…" or "Combining findings…". A client that only reads
+    # `stage` (every consumer as of this field's addition) is entirely
+    # unaffected by its presence, same convention as ChatErrorEvent's
+    # `error_category`.
+    detail: str | None = None
 
 
 class ChatTokenEvent(BaseModel):

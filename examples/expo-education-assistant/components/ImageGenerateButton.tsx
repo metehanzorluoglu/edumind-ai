@@ -1,4 +1,5 @@
-import { Pressable, StyleSheet, Text } from 'react-native';
+import { ImageIcon } from '@/components/icons';
+import { IconButton } from '@/components/ui/IconButton';
 import { useTheme } from '@/lib/Preferences';
 
 export interface ImageGenerateButtonProps {
@@ -6,38 +7,19 @@ export interface ImageGenerateButtonProps {
   disabled?: boolean;
 }
 
-/** Sits beside AttachmentButton in the composer's input row — opens ImageGenerationModal. Mirrors AttachmentButton's exact shape/sizing so the two read as a pair. */
+/** Composer action: open the image generation dialog. Thin wrapper over
+ * the shared IconButton — identical treatment to the AttachmentButton it
+ * sits beside, so the pair reads as one family. */
 export function ImageGenerateButton({ onPress, disabled = false }: ImageGenerateButtonProps) {
   const theme = useTheme();
   return (
-    <Pressable
-      style={[
-        styles.button,
-        {
-          borderColor: theme.border,
-          backgroundColor: theme.card,
-          borderRadius: theme.radius.md,
-        },
-        disabled && styles.buttonDisabled,
-      ]}
+    <IconButton
+      label="Generate an image"
       onPress={onPress}
       disabled={disabled}
-      accessibilityRole="button"
-      accessibilityLabel="Generate an image"
-    >
-      <Text style={styles.icon}>🎨</Text>
-    </Pressable>
+      variant="outline"
+      size="sm"
+      icon={<ImageIcon size={17} color={theme.subtext} />}
+    />
   );
 }
-
-const styles = StyleSheet.create({
-  button: {
-    width: 44,
-    minHeight: 44,
-    borderWidth: StyleSheet.hairlineWidth * 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  buttonDisabled: { opacity: 0.5 },
-  icon: { fontSize: 18 },
-});

@@ -101,7 +101,15 @@ async function renderRow(
  * this flushes that timer before returning. */
 async function openRename(renderer: ReactTestRenderer): Promise<void> {
   act(() => {
-    findPressableByText(renderer.root, '⋮').props.onPress();
+    // The trigger is an icon-only button — select it by its stable
+    // accessibility label, not its (no longer textual) glyph.
+    renderer.root
+      .find(
+        (node) =>
+          typeof node.props.onPress === 'function' &&
+          String(node.props.accessibilityLabel ?? '').startsWith('Options for')
+      )
+      .props.onPress();
   });
   await act(async () => {
     findPressableByText(renderer.root, 'Rename').props.onPress();

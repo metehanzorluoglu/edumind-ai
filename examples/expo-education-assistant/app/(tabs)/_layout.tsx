@@ -13,7 +13,9 @@ import {
 import { AppDrawer } from '@/components/AppDrawer';
 import { BottomNav } from '@/components/BottomNav';
 import { EduM8Symbol } from '@/components/EduM8Logo';
+import { MenuIcon, PlusIcon } from '@/components/icons';
 import { NavRail, type NavSection } from '@/components/NavRail';
+import { IconButton } from '@/components/ui/IconButton';
 import { useAuth } from '@/lib/AuthProvider';
 import { ChatConversationsProvider } from '@/lib/ChatConversationsContext';
 import { useClient } from '@/lib/ClientProvider';
@@ -142,15 +144,11 @@ export default function TabsLayout() {
                 { backgroundColor: theme.card, borderBottomColor: theme.border },
               ]}
             >
-              <Pressable
-                style={styles.hamburgerButton}
+              <IconButton
+                label="Open conversation list"
                 onPress={() => setDrawerOpen(true)}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel="Open conversation list"
-              >
-                <Text style={[styles.hamburgerIcon, { color: theme.text }]}>☰</Text>
-              </Pressable>
+                icon={<MenuIcon size={20} color={theme.text} />}
+              />
               <View style={styles.topBarBrand}>
                 <EduM8Symbol size={18} />
                 <Text
@@ -163,15 +161,11 @@ export default function TabsLayout() {
                 </Text>
               </View>
               {activeSection === 'chat' ? (
-                <Pressable
-                  style={styles.hamburgerButton}
+                <IconButton
+                  label="New chat"
                   onPress={handleNewChat}
-                  hitSlop={8}
-                  accessibilityRole="button"
-                  accessibilityLabel="New chat"
-                >
-                  <Text style={[styles.newChatIcon, { color: theme.accent }]}>+</Text>
-                </Pressable>
+                  icon={<PlusIcon size={20} color={theme.accent} />}
+                />
               ) : (
                 <View style={styles.hamburgerButton} />
               )}
@@ -229,8 +223,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  hamburgerIcon: { fontSize: 20 },
-  newChatIcon: { fontSize: 22, fontWeight: '600' },
   topBarBrand: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   topBarTitle: { fontSize: 16, fontWeight: '600' },
   overlay: { ...StyleSheet.absoluteFillObject, flexDirection: 'row', zIndex: 20 },

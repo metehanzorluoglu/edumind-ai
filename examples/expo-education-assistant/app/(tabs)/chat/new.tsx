@@ -14,18 +14,22 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { AttachmentButton } from '@/components/AttachmentButton';
 import { AttachmentPreviewRow } from '@/components/AttachmentPreviewRow';
+import { ChatComposer } from '@/components/ChatComposer';
 import { ConversationTurnCard } from '@/components/ConversationTurnCard';
 import { CorpusToggle } from '@/components/CorpusToggle';
+import { EduM8Symbol } from '@/components/EduM8Logo';
 import { ImageGenerateButton } from '@/components/ImageGenerateButton';
+import { FilterChip } from '@/components/ui/FilterChip';
+import { Button } from '@/components/ui/Button';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { Notice } from '@/components/ui/Notice';
 import {
   ImageGenerationModal,
   type ImageGenerationContext,
@@ -51,6 +55,15 @@ import { SAMPLE_DOCUMENT_TITLE, buildSampleUploadFile } from '@/lib/sampleDocume
  * any navigation, rather than being handed off to chat/[id].tsx. */
 type Phase = 'idle' | 'creating' | 'sending' | 'error';
 
+/** Clickable first-question starters on the empty composer — concise,
+ * educator-shaped examples of what the corpus can answer. Pressing one
+ * puts it in the input for review rather than sending immediately. */
+const SUGGESTED_FIRST_QUESTIONS = [
+  'Summarize the key ideas of my most recent upload',
+  'Compare findings across my journal articles',
+  'Draft a classroom activity from my curriculum documents',
+];
+
 function pendingAssistantTurn(
   messageAttachments: PendingAttachment[],
   messageUseCorpus: boolean
@@ -67,6 +80,7 @@ function pendingAssistantTurn(
     streaming: true,
     error: null,
     stage: null,
+    progressDetail: null,
     // The thinking placeholder shows from this moment — before the
     // conversation is even created — until the first token arrives (or the
     // attempt fails/is cancelled; fail() clears it). The context mirrors
@@ -243,13 +257,17 @@ export default function NewChatScreen() {
       })) {
         switch (event.type) {
           case 'progress':
-            patchAssistantTurn({ stage: event.stage, thinking: 'waiting_for_first_token' });
+            patchAssistantTurn({
+              stage: event.stage,
+              progressDetail: event.detail ?? null,
+              thinking: 'waiting_for_first_token',
+            });
             break;
           case 'token':
             content += event.content;
             // Same patch as the content lands — the placeholder swaps for
             // the real answer in one render, never two.
-            patchAssistantTurn({ content, stage: null, thinking: null });
+            patchAssistantTurn({ content, stage: null, progressDetail: null, thinking: null });
             break;
           case 'sources':
             patchAssistantTurn({ sources: event.sources.map(displaySourceFromRetrievedChunk) });
@@ -448,13 +466,18 @@ export default function NewChatScreen() {
   }
 
   const composerBody = (
-    <View style={styles.composerOuter}>
-      <View style={styles.composerInner}>
-        <AttachmentPreviewRow attachments={attachments} onRemove={removeAttachment} />
-        {attachments.length > 0 && (
-          <CorpusToggle value={useCorpus} onValueChange={setUseCorpus} disabled={isBusy} />
-        )}
-        <View style={styles.inputRow}>
+    <ChatComposer
+      value={query}
+      onChangeText={setQuery}
+      placeholder="Ask about the corpus…"
+      inputAccessibilityLabel="Ask about the corpus"
+      editable={phase === 'idle'}
+      canSubmit={Boolean(query.trim()) && !hasAttachmentErrors}
+      onSubmit={handleAsk}
+      busy={isBusy}
+      onCancel={handleCancel}
+      leadingActions={
+        <>
           <AttachmentButton onPress={pickAttachment} disabled={phase !== 'idle'} />
           {imageGeneratorEnabled && (
             <ImageGenerateButton
@@ -466,40 +489,14 @@ export default function NewChatScreen() {
               disabled={phase !== 'idle'}
             />
           )}
-          <TextInput
-            style={styles.input}
-            value={query}
-            onChangeText={setQuery}
-            placeholder="Ask about the corpus…"
-            placeholderTextColor={theme.faint}
-            editable={phase === 'idle'}
-            onSubmitEditing={handleAsk}
-            returnKeyType="send"
-            accessibilityLabel="Ask about the corpus"
-          />
-          {isBusy ? (
-            <Pressable
-              style={[styles.button, styles.cancelButton]}
-              onPress={handleCancel}
-              accessibilityRole="button"
-              accessibilityLabel="Cancel"
-            >
-              <Text style={styles.buttonText}>Cancel</Text>
-            </Pressable>
-          ) : (
-            <Pressable
-              style={styles.button}
-              onPress={handleAsk}
-              disabled={!query.trim() || hasAttachmentErrors}
-              accessibilityRole="button"
-              accessibilityLabel="Ask"
-            >
-              <Text style={styles.buttonText}>Ask</Text>
-            </Pressable>
-          )}
-        </View>
-      </View>
-    </View>
+        </>
+      }
+    >
+      <AttachmentPreviewRow attachments={attachments} onRemove={removeAttachment} />
+      {attachments.length > 0 && (
+        <CorpusToggle value={useCorpus} onValueChange={setUseCorpus} disabled={isBusy} />
+      )}
+    </ChatComposer>
   );
 
   // See chat/[id].tsx's identical composer/dropZoneRefCallback split for
@@ -533,14 +530,13 @@ export default function NewChatScreen() {
               />
               {phase === 'error' && (
                 <View style={styles.retryBox}>
-                  <Pressable
-                    style={styles.button}
+                  <Button
+                    label="Retry"
+                    variant="secondary"
+                    size="sm"
                     onPress={handleRetry}
-                    accessibilityRole="button"
                     accessibilityLabel="Retry"
-                  >
-                    <Text style={styles.buttonText}>Retry</Text>
-                  </Pressable>
+                  />
                 </View>
               )}
             </View>
@@ -549,33 +545,55 @@ export default function NewChatScreen() {
           <View style={styles.hintBody}>
             {isEmptyCorpus ? (
               <View style={styles.emptyCorpusBox}>
-                <Text style={styles.emptyCorpusText}>
-                  No research documents have been indexed yet.{'\n'}
-                  Add documents from the Documents screen or load the development sample corpus.
-                </Text>
-                {__DEV__ && (
-                  <Pressable
-                    style={[styles.button, styles.secondaryButton]}
-                    onPress={handleLoadSampleCorpus}
-                    disabled={sampleUploadState.status === 'uploading'}
-                    accessibilityRole="button"
-                    accessibilityLabel="Load sample corpus"
-                  >
-                    <Text style={styles.buttonText}>
-                      {sampleUploadState.status === 'uploading'
-                        ? 'Loading sample corpus…'
-                        : 'Load sample corpus (dev only)'}
-                    </Text>
-                  </Pressable>
-                )}
+                <EmptyState
+                  title="No documents yet"
+                  description={
+                    'No research documents have been indexed yet.\n' +
+                    'Add documents from the Documents screen or load the development sample corpus.'
+                  }
+                  actionLabel={__DEV__ ? 'Load sample corpus (dev only)' : undefined}
+                  actionLoading={sampleUploadState.status === 'uploading'}
+                  onAction={__DEV__ ? handleLoadSampleCorpus : undefined}
+                />
                 {sampleUploadState.status === 'error' && (
-                  <Text style={styles.error}>{sampleUploadState.error.message}</Text>
+                  <Notice tone="danger" body={sampleUploadState.error.message} />
                 )}
               </View>
             ) : (
-              <Text style={styles.hint}>Ask a question about the ingested corpus.</Text>
+              <View style={styles.welcome}>
+                <EduM8Symbol size={40} style={styles.welcomeMark} />
+                <Text
+                  style={[
+                    styles.welcomeTitle,
+                    { color: theme.text, fontFamily: theme.fonts.display },
+                  ]}
+                >
+                  What should we explore?
+                </Text>
+                <Text
+                  style={[
+                    styles.welcomeDescription,
+                    { color: theme.subtext, fontFamily: theme.fonts.body },
+                  ]}
+                >
+                  Ask a question about the ingested corpus.
+                </Text>
+                <View style={styles.suggestions}>
+                  {SUGGESTED_FIRST_QUESTIONS.map((suggestion) => (
+                    <FilterChip
+                      key={suggestion}
+                      label={suggestion}
+                      selected={false}
+                      disabled={phase !== 'idle'}
+                      onPress={() => setQuery(suggestion)}
+                    />
+                  ))}
+                </View>
+              </View>
             )}
-            {errorMessage && <Text style={styles.error}>{errorMessage}</Text>}
+            {errorMessage && (
+              <Notice tone="danger" body={errorMessage} style={styles.errorNotice} />
+            )}
           </View>
         )}
       </View>
@@ -602,56 +620,35 @@ function buildStyles(theme: Theme) {
     centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
     body: { flex: 1 },
     hintBody: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 16 },
-    hint: { color: theme.subtext, textAlign: 'center', fontFamily: theme.fonts.body },
-    // See chat/[id].tsx's identical listContent/turnWrap pair — same
-    // reading-column treatment, kept consistent between the two screens.
-    turnScrollContent: { padding: 16, flexGrow: 1, alignItems: 'center' },
-    turnWrap: { width: '100%', maxWidth: 720 },
-    emptyCorpusBox: { alignItems: 'center', gap: 12, paddingHorizontal: 16 },
-    emptyCorpusText: {
-      color: theme.text,
-      textAlign: 'center',
-      fontSize: 14,
+    // The empty composer's welcome state — brand mark, serif headline,
+    // one-line guidance, then tappable starters. Centered, calm, and the
+    // first thing a new user sees, so it carries the product's voice.
+    welcome: { alignItems: 'center', gap: 8, paddingHorizontal: 24, maxWidth: 620 },
+    welcomeMark: { opacity: 0.9, marginBottom: 8 },
+    welcomeTitle: { fontSize: theme.scale(26), letterSpacing: -0.4, textAlign: 'center' },
+    welcomeDescription: {
+      fontSize: theme.scale(14),
       lineHeight: 20,
-      fontFamily: theme.fonts.body,
+      textAlign: 'center',
     },
-    secondaryButton: { backgroundColor: theme.subtext },
-    retryBox: { alignItems: 'center', gap: 8, marginTop: 12 },
-    error: { fontSize: 12, color: theme.danger, textAlign: 'center', fontFamily: theme.fonts.body },
-    // See chat/[id].tsx's identical composerOuter/composerInner pair —
-    // same floating-composer treatment, kept consistent between screens.
-    composerOuter: { backgroundColor: theme.background, paddingHorizontal: 16, paddingBottom: 12 },
-    composerInner: { width: '100%', maxWidth: 720, alignSelf: 'center' },
-    inputRow: {
+    suggestions: {
       flexDirection: 'row',
-      padding: 10,
-      gap: 8,
-      marginTop: 8,
-      borderWidth: StyleSheet.hairlineWidth * 2,
-      borderColor: theme.border,
-      borderRadius: theme.radius.lg,
-      backgroundColor: theme.card,
-    },
-    input: {
-      flex: 1,
-      borderWidth: StyleSheet.hairlineWidth * 2,
-      borderColor: theme.border,
-      borderRadius: theme.radius.md,
-      paddingHorizontal: 12,
-      paddingVertical: 10,
-      backgroundColor: theme.background,
-      color: theme.text,
-      fontFamily: theme.fonts.body,
-    },
-    button: {
-      backgroundColor: theme.accent,
-      borderRadius: theme.radius.md,
-      paddingHorizontal: 16,
+      flexWrap: 'wrap',
       justifyContent: 'center',
-      alignItems: 'center',
-      minWidth: 64,
+      marginTop: 12,
     },
-    buttonText: { color: theme.accentContrast, fontFamily: theme.fonts.bodySemibold },
-    cancelButton: { backgroundColor: theme.danger },
+    emptyCorpusBox: { alignItems: 'center', gap: 12, paddingHorizontal: 16, maxWidth: 560 },
+    retryBox: { alignItems: 'center', gap: 8, marginTop: 12 },
+    errorNotice: { marginTop: 12, width: '100%', maxWidth: 560 },
+    // See chat/[id].tsx's identical listContent/turnWrap pair — same
+    // reading-column treatment, kept consistent between the two screens,
+    // including the `alignItems: 'center'` -> `alignSelf: 'center'` fix
+    // (that file's own comments have the full root-cause explanation): an
+    // ancestor `alignItems: 'center'` leaves turnWrap's `width: '100%'`
+    // resolving against an indeterminate parent size, so its rendered
+    // width silently tracked its content (full answer vs. an empty/
+    // compact thinking placeholder) instead of staying stable.
+    turnScrollContent: { padding: 16, flexGrow: 1 },
+    turnWrap: { width: '100%', maxWidth: 720, alignSelf: 'center' },
   });
 }

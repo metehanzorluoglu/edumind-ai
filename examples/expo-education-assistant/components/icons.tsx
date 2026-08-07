@@ -1,3 +1,4 @@
+import type { StyleProp, ViewStyle } from 'react-native';
 import Svg, { Circle, Line, Path, Rect } from 'react-native-svg';
 
 /**
@@ -7,14 +8,16 @@ import Svg, { Circle, Line, Path, Rect } from 'react-native-svg';
  * other brand assets), so this adds zero new packages and stays legible
  * at the small sizes the nav rail/drawer actually use (18–22px).
  *
- * Every icon takes the same three props so call sites never have to think
+ * Every icon takes the same props so call sites never have to think
  * about which icon they're placing — size and color always come from the
- * caller's theme, never hardcoded here.
+ * caller's theme, never hardcoded here. `style` is the escape hatch for
+ * transforms (e.g. a rotated chevron).
  */
 export interface IconProps {
   size?: number;
   color: string;
   strokeWidth?: number;
+  style?: StyleProp<ViewStyle>;
 }
 
 const VIEWBOX = '0 0 24 24';
@@ -139,9 +142,9 @@ export function PanelIcon({
 }
 
 /** Plain chevron, rotate via `style` at the call site (used for expand/collapse affordances that aren't the drawer itself). */
-export function ChevronIcon({ size = 16, color, strokeWidth = 1.75 }: IconProps) {
+export function ChevronIcon({ size = 16, color, strokeWidth = 1.75, style }: IconProps) {
   return (
-    <Svg width={size} height={size} viewBox={VIEWBOX} fill="none">
+    <Svg width={size} height={size} viewBox={VIEWBOX} fill="none" style={style}>
       <Path
         d="M9 6l6 6-6 6"
         stroke={color}
@@ -221,6 +224,179 @@ export function EyeOffIcon({ size = 16, color, strokeWidth = 1.75 }: IconProps) 
         strokeWidth={strokeWidth}
         strokeLinecap="round"
         strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
+
+/** Three horizontal bars — open a drawer/overlay menu (narrow top bar). */
+export function MenuIcon({ size = 20, color, strokeWidth = 1.75 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox={VIEWBOX} fill="none">
+      {[6.5, 12, 17.5].map((y) => (
+        <Line
+          key={y}
+          x1={4}
+          y1={y}
+          x2={20}
+          y2={y}
+          stroke={color}
+          strokeWidth={strokeWidth}
+          strokeLinecap="round"
+        />
+      ))}
+    </Svg>
+  );
+}
+
+/** Three dots in a row — overflow/context menu trigger. */
+export function MoreIcon({ size = 16, color }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox={VIEWBOX} fill="none">
+      {[5.5, 12, 18.5].map((x) => (
+        <Circle key={x} cx={x} cy={12} r={1.6} fill={color} />
+      ))}
+    </Svg>
+  );
+}
+
+/** Paperclip — attach a file to the composer. */
+export function PaperclipIcon({ size = 18, color, strokeWidth = 1.75 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox={VIEWBOX} fill="none">
+      <Path
+        d="M8.5 11.5 15 5a3.2 3.2 0 0 1 4.5 4.5l-8.8 8.8a5 5 0 0 1-7-7l8.7-8.7"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
+
+/** Framed picture with a spark — image generation in the composer. */
+export function ImageIcon({ size = 18, color, strokeWidth = 1.75 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox={VIEWBOX} fill="none">
+      <Rect
+        x={3.5}
+        y={4.5}
+        width={17}
+        height={15}
+        rx={2.5}
+        stroke={color}
+        strokeWidth={strokeWidth}
+      />
+      <Circle cx={9} cy={9.5} r={1.8} stroke={color} strokeWidth={strokeWidth} />
+      <Path
+        d="M4.5 17.5 10 12l4 4 3-3 3.5 3.5"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
+
+/** Tray with an up arrow — upload actions. */
+export function UploadIcon({ size = 18, color, strokeWidth = 1.75 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox={VIEWBOX} fill="none">
+      <Path
+        d="M12 14V4.5M8.5 8 12 4.5 15.5 8"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <Path
+        d="M4.5 14v3.5A2 2 0 0 0 6.5 19.5h11a2 2 0 0 0 2-2V14"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+      />
+    </Svg>
+  );
+}
+
+/** Checkmark — checked state (project-membership checkboxes, password
+ * requirement rows). */
+export function CheckIcon({ size = 14, color, strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox={VIEWBOX} fill="none">
+      <Path
+        d="M4.5 12.5l5 5 10-11"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
+
+/** Tray with a down arrow — download an attachment/generated image. */
+export function DownloadIcon({ size = 14, color, strokeWidth = 1.75 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox={VIEWBOX} fill="none">
+      <Path
+        d="M12 4.5V14M8.5 10.5 12 14l3.5-3.5"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <Path
+        d="M4.5 14v3.5A2 2 0 0 0 6.5 19.5h11a2 2 0 0 0 2-2V14"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+      />
+    </Svg>
+  );
+}
+
+/** Circular arrow — regenerate a response/image. */
+export function RefreshIcon({ size = 14, color, strokeWidth = 1.75 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox={VIEWBOX} fill="none">
+      <Path
+        d="M19 6.5v4.5h-4.5M5 17.5V13h4.5"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <Path
+        d="M6 9.5A7 7 0 0 1 18.7 8M18 14.5A7 7 0 0 1 5.3 16"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+      />
+    </Svg>
+  );
+}
+
+/** Five-point star — "save to project" bookmark; `filled` mirrors the
+ * saved/unsaved state (solid vs. outline), the standard favoriting idiom. */
+export function StarIcon({
+  size = 14,
+  color,
+  strokeWidth = 1.75,
+  filled = false,
+}: IconProps & { filled?: boolean }) {
+  const path =
+    'M12 4l2.35 4.9 5.35.75-3.9 3.75.95 5.35L12 16.2l-4.75 2.55.95-5.35-3.9-3.75 5.35-.75L12 4Z';
+  return (
+    <Svg width={size} height={size} viewBox={VIEWBOX} fill="none">
+      <Path
+        d={path}
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinejoin="round"
+        fill={filled ? color : 'none'}
       />
     </Svg>
   );

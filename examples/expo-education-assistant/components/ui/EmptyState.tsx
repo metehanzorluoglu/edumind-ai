@@ -8,6 +8,9 @@ export interface EmptyStateProps {
   description?: string;
   actionLabel?: string;
   onAction?: () => void;
+  /** Shows the action button's spinner and blocks presses while a
+   * follow-up load (e.g. a dev sample upload) is in flight. */
+  actionLoading?: boolean;
   /** Swaps the brand symbol for a different glyph — an error state
    * showing the symbol would misread as "this is normal," so error
    * empty-states pass their own icon (or none). */
@@ -22,7 +25,14 @@ export interface EmptyStateProps {
  * not a mascot, so it sits quietly rather than trying to be cute about
  * having nothing to show yet.
  */
-export function EmptyState({ title, description, actionLabel, onAction, icon }: EmptyStateProps) {
+export function EmptyState({
+  title,
+  description,
+  actionLabel,
+  onAction,
+  actionLoading = false,
+  icon,
+}: EmptyStateProps) {
   const theme = useTheme();
   return (
     <View style={styles.container}>
@@ -49,6 +59,7 @@ export function EmptyState({ title, description, actionLabel, onAction, icon }: 
         <Button
           label={actionLabel}
           onPress={onAction}
+          loading={actionLoading}
           variant="secondary"
           size="sm"
           style={styles.action}

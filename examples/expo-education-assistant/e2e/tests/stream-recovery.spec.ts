@@ -180,4 +180,132 @@ test.describe('stream-disconnect recovery (mocked network)', () => {
     await page.waitForTimeout(300);
     expect(cancelCalled).toBe(true);
   });
+
+  /**
+   * Bounding-box regression for the "chat canvas visibly shrinks while the
+   * recovery banner is showing" bug: the message column (turnWrap) and the
+   * composer must render at the *identical* x-position and width whether
+   * or not the resuming-generation banner is present — jest/
+   * react-test-renderer (see [id].test.tsx's own style-prop tests) cannot
+   * catch this class of bug at all, since it never runs a real flexbox
+   * layout; only a real browser can. The banner's own height is the one,
+   * deliberate exception (see `heightDelta` below).
+   *
+   * Root cause this guards against: `listContent`'s old `alignItems:
+   * 'center'` stopped FlatList's per-row wrapper from stretching to the
+   * list's own width, which left turnWrap's `width: '100%'` resolving
+   * against an indeterminate (content-fitted) parent instead of a fixed
+   * one — so turnWrap's rendered width silently tracked whatever was
+   * inside it (a full answer vs. an empty/compact thinking placeholder)
+   * rather than staying a stable reading-column width. Fixed by moving
+   * the centering onto turnWrap itself (`alignSelf: 'center'`) and letting
+   * `listContent` stretch (the same technique ChatComposer's own `inner`
+   * style already used successfully).
+   */
+  test('the message column and composer render at identical position/width whether or not the recovery banner is showing', async ({
+    page,
+  }) => {
+    await login(page, TEST_EMAIL(), TEST_PASSWORD());
+
+    const normalId = 'e2e-mock-conversation-layout-normal';
+    const recoveringId = 'e2e-mock-conversation-layout-recovering';
+
+    function conversationBody(id: string, status: 'complete' | 'generating') {
+      const generating = status === 'generating';
+      return {
+        id,
+        title: 'Layout comparison',
+        title_is_custom: true,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        messages: [
+          {
+            id: 'user-msg-1',
+            role: 'user',
+            content: 'Does peer tutoring help learning outcomes in secondary school?',
+            citations: [],
+            citation_warnings: [],
+            insufficient_evidence: false,
+            created_at: new Date().toISOString(),
+            sources: [],
+            attachments: [],
+            status: 'complete',
+            error_message: null,
+          },
+          {
+            id: 'assistant-msg-1',
+            role: 'assistant',
+            content: generating
+              ? ''
+              : 'Yes — several meta-analyses report a small-to-moderate positive effect.',
+            citations: [],
+            citation_warnings: [],
+            insufficient_evidence: false,
+            created_at: new Date().toISOString(),
+            sources: [],
+            attachments: [],
+            status,
+            error_message: null,
+          },
+        ],
+      };
+    }
+
+    await page.route(`**/conversations/${normalId}`, async (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(conversationBody(normalId, 'complete')),
+      });
+    });
+    await page.route(`**/conversations/${recoveringId}`, async (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(conversationBody(recoveringId, 'generating')),
+      });
+    });
+
+    await page.goto(`/chat/${normalId}`, { waitUntil: 'load' });
+    await expect(page.locator('[data-testid="chat-turn-wrap"]').first()).toBeVisible();
+    const normalTurnWrap = await page.locator('[data-testid="chat-turn-wrap"]').first().boundingBox();
+    const normalComposer = await page.locator('[data-testid="chat-composer-inner"]').first().boundingBox();
+    const normalListWrap = await page.locator('[data-testid="chat-list-wrap"]').first().boundingBox();
+    expect(normalTurnWrap).toBeTruthy();
+    expect(normalComposer).toBeTruthy();
+    expect(normalListWrap).toBeTruthy();
+
+    await page.goto(`/chat/${recoveringId}`, { waitUntil: 'load' });
+    await expect(page.locator('text=Picking up a response that was still being generated')).toBeVisible({
+      timeout: 10_000,
+    });
+    // The outer wrapper's full box (including its own top padding) is the
+    // banner's *entire* vertical footprint — comparing against just the
+    // inner Notice's own height would under-count by that padding.
+    const banner = await page.locator('[data-testid="chat-recovery-banner-outer"]').first().boundingBox();
+    const recoveringTurnWrap = await page.locator('[data-testid="chat-turn-wrap"]').first().boundingBox();
+    const recoveringComposer = await page.locator('[data-testid="chat-composer-inner"]').first().boundingBox();
+    const recoveringListWrap = await page.locator('[data-testid="chat-list-wrap"]').first().boundingBox();
+    expect(banner).toBeTruthy();
+    expect(recoveringTurnWrap).toBeTruthy();
+    expect(recoveringComposer).toBeTruthy();
+    expect(recoveringListWrap).toBeTruthy();
+
+    // The core assertion: identical x-position and width for the message
+    // column and the composer, banner or no banner.
+    expect(recoveringTurnWrap!.x).toBeCloseTo(normalTurnWrap!.x, 0);
+    expect(recoveringTurnWrap!.width).toBeCloseTo(normalTurnWrap!.width, 0);
+    expect(recoveringComposer!.x).toBeCloseTo(normalComposer!.x, 0);
+    expect(recoveringComposer!.width).toBeCloseTo(normalComposer!.width, 0);
+
+    // The one permitted difference: the list area's top edge (and the
+    // banner-inclusive space above it) moves down by exactly the banner's
+    // own rendered height — never more, never less, and the list's width
+    // is unaffected either way.
+    expect(recoveringListWrap!.width).toBeCloseTo(normalListWrap!.width, 0);
+    const heightDelta = recoveringListWrap!.y - normalListWrap!.y;
+    expect(heightDelta).toBeCloseTo(banner!.height, 0);
+  });
 });

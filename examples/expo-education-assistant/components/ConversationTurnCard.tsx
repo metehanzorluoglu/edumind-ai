@@ -219,6 +219,7 @@ export function ConversationTurnCard({
               <ThinkingPlaceholder
                 context={assistant?.thinkingContext ?? null}
                 visible={thinkingActive || (isResumingGeneration && answer.length === 0)}
+                progressDetail={assistant?.progressDetail ?? null}
               />
             )}
 

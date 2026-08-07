@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { useTheme } from '@/lib/Preferences';
 
-export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
+export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'dangerGhost';
 export type ButtonSize = 'md' | 'sm';
 
 export interface ButtonProps {
@@ -152,6 +152,18 @@ function variantPalette(theme: ReturnType<typeof useTheme>, variant: ButtonVaria
         backgroundHover: theme.danger,
         backgroundActive: theme.danger,
         text: '#FFFFFF',
+        borderWidth: 0,
+        borderColor: 'transparent',
+      };
+    case 'dangerGhost':
+      // Destructive row actions (delete a document, remove a file) — the
+      // quiet counterpart to `danger`: red text on a red-tinted hover, not
+      // a filled red slab next to ordinary content.
+      return {
+        background: 'transparent',
+        backgroundHover: theme.dangerSoft,
+        backgroundActive: theme.dangerSoft,
+        text: theme.danger,
         borderWidth: 0,
         borderColor: 'transparent',
       };

@@ -17,6 +17,7 @@ import {
   AuthenticatedAttachmentImage,
   type AttachmentImageLoadStatus,
 } from '@/components/AuthenticatedAttachmentImage';
+import { CloseIcon } from '@/components/icons';
 import type { AttachmentChipInfo } from '@/lib/chatAttachments';
 import { DARK_PALETTE, useTheme } from '@/lib/Preferences';
 
@@ -257,14 +258,7 @@ export function AttachmentLightbox({
             accessibilityRole="button"
             accessibilityLabel="Close preview"
           >
-            <Text
-              style={[
-                styles.closeButtonText,
-                { color: dark.text, fontFamily: theme.fonts.bodyBold },
-              ]}
-            >
-              ✕
-            </Text>
+            <CloseIcon size={16} color={dark.text} strokeWidth={2} />
           </Pressable>
         </View>
 
@@ -315,7 +309,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: 'rgba(255,255,255,0.12)',
   },
-  closeButtonText: { fontSize: 16 },
   // flex:1 — without a bounded height the horizontal list collapses to 0px
   // under the top bar, and everything inside it (the page, the zoom
   // wrapper, the image) collapses with it (the dark-overlay-no-image bug).

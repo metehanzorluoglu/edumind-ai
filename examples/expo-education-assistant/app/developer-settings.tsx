@@ -48,10 +48,10 @@ function useStatusInfo(client: EducationAssistantClient): StatusResponse | null 
 
 function StatusDot({ label, ok }: { label: string; ok: boolean | null }) {
   const theme = useTheme();
-  const emoji = ok === null ? '⚪' : ok ? '🟢' : '🔴';
+  const dotColor = ok === null ? theme.faint : ok ? theme.ok : theme.danger;
   return (
     <View style={styles.statusItem}>
-      <Text style={styles.statusEmoji}>{emoji}</Text>
+      <View style={[styles.statusDot, { backgroundColor: dotColor }]} />
       <Text style={[styles.statusLabel, { color: theme.subtext }]}>{label}</Text>
     </View>
   );
@@ -266,7 +266,7 @@ const styles = StyleSheet.create({
   unavailableText: { fontSize: 14, textAlign: 'center', lineHeight: 20 },
   statusGrid: { flexDirection: 'row', gap: 20, paddingHorizontal: 16, paddingVertical: 14 },
   statusItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  statusEmoji: { fontSize: 14 },
+  statusDot: { width: 8, height: 8, borderRadius: 4 },
   statusLabel: { fontSize: 13 },
   infoRow: {
     flexDirection: 'row',

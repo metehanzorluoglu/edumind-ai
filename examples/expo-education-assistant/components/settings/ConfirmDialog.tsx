@@ -1,14 +1,7 @@
 import { useEffect, useState } from 'react';
-import {
-  ActivityIndicator,
-  Modal,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { Modal, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Button } from '@/components/ui/Button';
+import { TextField } from '@/components/ui/TextField';
 import { useTheme } from '@/lib/Preferences';
 
 /**
@@ -103,17 +96,8 @@ export function ConfirmDialog({
                   </Text>{' '}
                   to confirm.
                 </Text>
-                <TextInput
-                  style={[
-                    styles.strongInput,
-                    {
-                      color: theme.text,
-                      borderColor: theme.border,
-                      backgroundColor: theme.background,
-                      borderRadius: theme.radius.sm,
-                      fontFamily: theme.fonts.mono,
-                    },
-                  ]}
+                <TextField
+                  label="Confirmation"
                   value={typed}
                   onChangeText={setTyped}
                   autoCapitalize="characters"
@@ -125,52 +109,21 @@ export function ConfirmDialog({
             ) : null}
 
             <View style={styles.buttons}>
-              <Pressable
-                style={({ pressed }) => [
-                  styles.button,
-                  styles.cancelButton,
-                  {
-                    borderColor: theme.border,
-                    backgroundColor: pressed ? theme.cardPressed : theme.card,
-                  },
-                ]}
+              <Button
+                label="Cancel"
+                variant="secondary"
                 onPress={onCancel}
                 disabled={busy}
-                accessibilityRole="button"
-                accessibilityLabel="Cancel"
-              >
-                <Text
-                  style={[
-                    styles.cancelText,
-                    { color: theme.text, fontFamily: theme.fonts.bodySemibold },
-                  ]}
-                >
-                  Cancel
-                </Text>
-              </Pressable>
-              <Pressable
-                style={({ pressed }) => [
-                  styles.button,
-                  styles.confirmButton,
-                  {
-                    backgroundColor: theme.danger,
-                    borderRadius: theme.radius.md,
-                    opacity: !strongSatisfied || busy ? 0.45 : pressed ? 0.85 : 1,
-                  },
-                ]}
+                style={styles.button}
+              />
+              <Button
+                label={confirmLabel}
+                variant="danger"
                 onPress={onConfirm}
                 disabled={!strongSatisfied || busy}
-                accessibilityRole="button"
-                accessibilityLabel={confirmLabel}
-              >
-                {busy ? (
-                  <ActivityIndicator color="#FFFFFF" />
-                ) : (
-                  <Text style={[styles.confirmText, { fontFamily: theme.fonts.bodyBold }]}>
-                    {confirmLabel}
-                  </Text>
-                )}
-              </Pressable>
+                loading={busy}
+                style={styles.button}
+              />
             </View>
           </ScrollView>
         </View>
@@ -198,24 +151,6 @@ const styles = StyleSheet.create({
   strongBlock: { gap: 6, marginTop: 2 },
   strongHint: { lineHeight: 18 },
   strongWord: { fontWeight: '800' },
-  strongInput: {
-    borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: 14,
-  },
   buttons: { flexDirection: 'row', gap: 10, marginTop: 6 },
-  button: {
-    flex: 1,
-    borderRadius: 9,
-    paddingVertical: 11,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 42,
-  },
-  cancelButton: { borderWidth: 1 },
-  cancelText: { fontWeight: '600', fontSize: 14 },
-  confirmButton: {},
-  confirmText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14 },
+  button: { flex: 1 },
 });

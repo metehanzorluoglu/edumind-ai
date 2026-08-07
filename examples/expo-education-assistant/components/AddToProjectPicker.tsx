@@ -12,6 +12,7 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
+import { CheckIcon } from '@/components/icons';
 import { useClient } from '@/lib/ClientProvider';
 import { describeApiError } from '@/lib/errorDisplay';
 import { safeText } from '@/lib/format';
@@ -215,7 +216,19 @@ export function AddToProjectPicker({
                     accessibilityState={{ checked: Boolean(isMember) }}
                     accessibilityLabel={`${isMember ? 'Remove from' : 'Add to'} ${project.name}`}
                   >
-                    <Text style={styles.checkbox}>{isMember ? '☑' : '☐'}</Text>
+                    <View
+                      style={[
+                        styles.checkbox,
+                        {
+                          backgroundColor: isMember ? dark.accent : 'transparent',
+                          borderColor: isMember ? dark.accent : dark.border,
+                        },
+                      ]}
+                    >
+                      {isMember && (
+                        <CheckIcon size={11} color={dark.background} strokeWidth={2.5} />
+                      )}
+                    </View>
                     <Text style={styles.projectRowText} numberOfLines={2} ellipsizeMode="tail">
                       {project.name}
                     </Text>
@@ -328,7 +341,14 @@ function buildStyles(theme: Theme) {
       paddingVertical: 8,
       minHeight: 36,
     },
-    checkbox: { color: dark.accent, fontSize: 16 },
+    checkbox: {
+      width: 16,
+      height: 16,
+      borderRadius: 4,
+      borderWidth: StyleSheet.hairlineWidth * 2,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
     projectRowText: { color: dark.text, fontSize: 13, flex: 1, fontFamily: theme.fonts.body },
     divider: { height: StyleSheet.hairlineWidth, backgroundColor: dark.divider, marginVertical: 4 },
     newProjectButton: { paddingVertical: 8, minHeight: 36, justifyContent: 'center' },

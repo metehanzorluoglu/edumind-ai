@@ -10,6 +10,7 @@ import { RowDivider, SettingsRow } from '@/components/settings/SettingsRow';
 import { SettingsSection } from '@/components/settings/SettingsSection';
 import { SettingsToggleRow } from '@/components/settings/SettingsToggleRow';
 import { InfoDialog } from '@/components/ui/InfoDialog';
+import { Notice } from '@/components/ui/Notice';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { useAuth } from '@/lib/AuthProvider';
 import { useRefreshConversations } from '@/lib/ChatConversationsContext';
@@ -263,56 +264,9 @@ export default function SettingsScreen() {
       <PageHeader title="Settings" />
       <ScrollView>
         <View style={styles.content}>
-          {serviceProblem ? (
-            <View
-              style={[
-                styles.banner,
-                { backgroundColor: theme.warningSoft, borderColor: theme.border },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.bannerText,
-                  {
-                    color: theme.warning,
-                    fontSize: theme.scale(13),
-                    fontFamily: theme.fonts.bodySemibold,
-                  },
-                ]}
-              >
-                {serviceProblem}
-              </Text>
-            </View>
-          ) : null}
-
-          {notice ? (
-            <Text
-              style={[
-                styles.feedbackOk,
-                {
-                  color: theme.ok,
-                  fontSize: theme.scale(13),
-                  fontFamily: theme.fonts.bodySemibold,
-                },
-              ]}
-            >
-              {notice}
-            </Text>
-          ) : null}
-          {actionError ? (
-            <Text
-              style={[
-                styles.feedbackError,
-                {
-                  color: theme.danger,
-                  fontSize: theme.scale(13),
-                  fontFamily: theme.fonts.bodySemibold,
-                },
-              ]}
-            >
-              {actionError}
-            </Text>
-          ) : null}
+          {serviceProblem ? <Notice tone="warning" body={serviceProblem} /> : null}
+          {notice ? <Notice tone="ok" body={notice} /> : null}
+          {actionError ? <Notice tone="danger" body={actionError} /> : null}
 
           <SettingsSection title="Account">
             <View style={[styles.profileRow, { backgroundColor: theme.card }]}>
@@ -568,15 +522,6 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
   },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  banner: {
-    borderRadius: 12,
-    borderWidth: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-  },
-  bannerText: { lineHeight: 18, fontWeight: '600' },
-  feedbackOk: { fontWeight: '600', paddingHorizontal: 4 },
-  feedbackError: { fontWeight: '600', paddingHorizontal: 4 },
   profileRow: {
     flexDirection: 'row',
     alignItems: 'center',

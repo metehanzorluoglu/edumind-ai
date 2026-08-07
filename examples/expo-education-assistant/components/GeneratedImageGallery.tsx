@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { AttachmentLightbox } from '@/components/AttachmentLightbox';
 import { AuthenticatedAttachmentImage } from '@/components/AuthenticatedAttachmentImage';
+import { DownloadIcon, PaperclipIcon, RefreshIcon, StarIcon } from '@/components/icons';
 import { SaveImageToProjectPicker } from '@/components/SaveImageToProjectPicker';
 import {
   attachmentChipFromPersisted,
@@ -143,7 +144,8 @@ export function GeneratedImageGallery({
                 accessibilityRole="button"
                 accessibilityLabel="Download image"
               >
-                <Text style={styles.actionText}>⬇ Download</Text>
+                <DownloadIcon size={13} color={theme.subtext} />
+                <Text style={styles.actionText}>Download</Text>
               </Pressable>
               {imageGeneratorEnabled && (
                 <Pressable
@@ -171,7 +173,8 @@ export function GeneratedImageGallery({
                   accessibilityRole="button"
                   accessibilityLabel="Regenerate image"
                 >
-                  <Text style={styles.actionText}>↻ Regenerate</Text>
+                  <RefreshIcon size={13} color={theme.subtext} />
+                  <Text style={styles.actionText}>Regenerate</Text>
                 </Pressable>
               )}
               <Pressable
@@ -181,7 +184,8 @@ export function GeneratedImageGallery({
                 accessibilityRole="button"
                 accessibilityLabel="Use as attachment"
               >
-                <Text style={styles.actionText}>📎 Use as attachment</Text>
+                <PaperclipIcon size={13} color={theme.subtext} />
+                <Text style={styles.actionText}>Use as attachment</Text>
               </Pressable>
               <Pressable
                 style={styles.actionButton}
@@ -190,8 +194,15 @@ export function GeneratedImageGallery({
                 accessibilityRole="button"
                 accessibilityLabel="Save to project"
               >
-                <Text style={styles.actionText}>
-                  {savedProjectFor(image) ? '★ Saved to project' : '☆ Save to project'}
+                <StarIcon
+                  size={13}
+                  color={savedProjectFor(image) ? theme.accent : theme.subtext}
+                  filled={Boolean(savedProjectFor(image))}
+                />
+                <Text
+                  style={[styles.actionText, savedProjectFor(image) && { color: theme.accent }]}
+                >
+                  {savedProjectFor(image) ? 'Saved to project' : 'Save to project'}
                 </Text>
               </Pressable>
             </View>
@@ -234,6 +245,9 @@ function buildStyles(theme: Theme) {
     },
     actionsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 },
     actionButton: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 5,
       borderWidth: StyleSheet.hairlineWidth * 2,
       borderColor: theme.border,
       borderRadius: theme.radius.sm,

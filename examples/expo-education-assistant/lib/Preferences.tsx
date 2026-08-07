@@ -231,6 +231,16 @@ export interface ThemePalette {
   ok: string;
   warning: string;
   warningSoft: string;
+  /** One step above `card` for floating dark UI (context menus, the active
+   * conversation row) — the value the sidebar's popup menus have always
+   * used, promoted to a token so rows/menus/other elevated dark surfaces
+   * can't drift apart. */
+  elevated: string;
+  /** Code blocks are deliberately always-dark (a contrast surface even in
+   * light mode, like most documentation sites) — these two tokens are the
+   * pair, instead of hardcoded hexes at the call site. */
+  codeSurface: string;
+  codeText: string;
   overlay: string;
   /** Focus ring for keyboard navigation — visible against both card and
    * background in this theme, distinct enough from `accent` to remain
@@ -258,6 +268,9 @@ const LIGHT_PALETTE: ThemePalette = {
   ok: '#166534',
   warning: '#B45309',
   warningSoft: '#FEF3C7',
+  elevated: '#FFFFFF',
+  codeSurface: '#14161F',
+  codeText: '#E2E8F0',
   overlay: 'rgba(20, 22, 31, 0.5)',
   focusRing: '#2F5FE0',
 };
@@ -288,6 +301,9 @@ export const DARK_PALETTE: ThemePalette = {
   ok: '#4ADE80',
   warning: '#FBBF24',
   warningSoft: '#3B2F14',
+  elevated: '#1E293B',
+  codeSurface: '#14161F',
+  codeText: '#E2E8F0',
   overlay: 'rgba(2, 6, 23, 0.6)',
   focusRing: '#B5C4FF',
 };

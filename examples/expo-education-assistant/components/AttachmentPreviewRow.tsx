@@ -10,8 +10,9 @@ export interface AttachmentPreviewRowProps {
 /**
  * The pre-send attachment preview strip: thumbnail, filename, filesize,
  * remove. A PDF's page range is never chosen here — the backend analyzes
- * the whole document automatically (capped at its configured page limit;
- * see rag-backend's VISION_MAX_PDF_PAGES), so this row has nothing
+ * the whole document automatically, batching a long one into sequential
+ * chunks with live progress rather than truncating it (see rag-backend's
+ * app/services/vision_batch_orchestrator.py), so this row has nothing
  * PDF-specific to show before send.
  */
 export function AttachmentPreviewRow({ attachments, onRemove }: AttachmentPreviewRowProps) {

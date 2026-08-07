@@ -48,6 +48,7 @@ export function NavRail({ active, onNavigate, drawerCollapsed, onToggleDrawer }:
   return (
     <View
       style={[styles.rail, { backgroundColor: dark.background, borderRightColor: dark.divider }]}
+      testID="nav-rail"
     >
       <View style={styles.brandMark}>
         <EduM8Symbol size={22} />

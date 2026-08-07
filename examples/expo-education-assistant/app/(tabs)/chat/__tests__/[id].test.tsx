@@ -1,5 +1,5 @@
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
-import { Alert } from 'react-native';
+import { Alert, FlatList } from 'react-native';
 import { ConversationTurnCard } from '@/components/ConversationTurnCard';
 import { AuthProvider } from '@/lib/AuthProvider';
 import { ChatConversationsProvider } from '@/lib/ChatConversationsContext';
@@ -60,6 +60,47 @@ function queryByText(root: ReactTestInstance, text: string): ReactTestInstance |
     (node) => String(node.type) === 'Text' && node.children.includes(text)
   );
   return matches[0] ?? null;
+}
+
+/** Merges a React Native style prop (a single object, or a nested array of
+ * objects/falsy values — exactly what a `style={[a, b, c]}` prop resolves
+ * to) into one plain object, later entries winning — the same semantics
+ * RN itself applies when flattening a style array for layout. */
+function flattenStyle(style: unknown): Record<string, unknown> {
+  if (!style) return {};
+  if (Array.isArray(style)) {
+    return style.reduce(
+      (acc: Record<string, unknown>, entry) => ({ ...acc, ...flattenStyle(entry) }),
+      {}
+    );
+  }
+  return style as Record<string, unknown>;
+}
+
+/** The width/maxWidth/alignSelf triple that governs how wide a "canvas"
+ * element (the message column, the composer, a top banner) actually
+ * renders — the exact properties the recovery-banner regression test
+ * below compares between the normal and recovering states. */
+function widthConfigOf(node: ReactTestInstance): {
+  width: unknown;
+  maxWidth: unknown;
+  alignSelf: unknown;
+} {
+  const flat = flattenStyle(node.props.style);
+  return { width: flat.width, maxWidth: flat.maxWidth, alignSelf: flat.alignSelf };
+}
+
+/** Walks up from `node` to the nearest ancestor (inclusive) whose own
+ * style sets `maxWidth` — i.e. the width-capped "inner content" wrapper
+ * around it (turnWrap, the composer's inner View, or a top banner's inner
+ * View), regardless of how many plain layout Views sit in between. */
+function ancestorWithMaxWidth(node: ReactTestInstance): ReactTestInstance {
+  let current: ReactTestInstance | null = node;
+  while (current) {
+    if (flattenStyle(current.props.style).maxWidth !== undefined) return current;
+    current = current.parent;
+  }
+  throw new Error('No ancestor with a maxWidth style was found');
 }
 
 function findPressableByText(root: ReactTestInstance, text: string): ReactTestInstance {
@@ -894,5 +935,193 @@ describe('ChatConversationRoute ([id])', () => {
       (node) => node.props.accessibilityLabel === 'Image prompt'
     );
     expect(promptInput.props.value).toBe('a red apple on a table');
+  });
+
+  /**
+   * Regression coverage for the "chat canvas visibly shrinks while the
+   * recovery banner is showing" bug.
+   *
+   * The real root cause was NOT the banner's own styling (an earlier,
+   * incomplete fix addressed only that): `listContent`'s `alignItems:
+   * 'center'` stopped FlatList's per-row wrapper from stretching to the
+   * list's own width, which left turnWrap's `width: '100%'` resolving
+   * against an *indeterminate* (content-fitted) parent instead of a fixed
+   * one — so turnWrap's actual rendered width silently tracked whatever
+   * was inside it (a full streamed answer vs. an empty/compact thinking
+   * placeholder, which is exactly what a resuming-generation turn shows)
+   * rather than staying a stable reading-column width. Fixed by moving
+   * the centering onto turnWrap itself (`alignSelf: 'center'`, the same
+   * technique ChatComposer's own `inner` style already used successfully)
+   * and letting `listContent` stretch.
+   *
+   * The tests below only check style *props* — react-test-renderer never
+   * runs a real flexbox layout, so they cannot see the actual bug (the
+   * style objects here were identical between states even while the bug
+   * was live). The real, rendered-layout regression guard is the
+   * bounding-box test in e2e/tests/stream-recovery.spec.ts ("the message
+   * column and composer render at identical position/width..."), which
+   * runs in a real browser.
+   */
+  describe('recovery banner layout regression', () => {
+    const RECOVERY_BANNER_TEXT = 'Picking up a response that was still being generated…';
+
+    function baseMessages(assistantStatus: 'complete' | 'generating'): unknown[] {
+      return [
+        {
+          id: 'm1',
+          role: 'user',
+          content: 'Does peer tutoring help?',
+          citations: [],
+          citation_warnings: [],
+          insufficient_evidence: false,
+          created_at: '2026-01-01T00:00:00Z',
+          sources: [],
+        },
+        {
+          id: 'm2',
+          role: 'assistant',
+          content:
+            assistantStatus === 'complete' ? 'Yes, according to the research.' : 'Partial answer',
+          citations: [],
+          citation_warnings: [],
+          insufficient_evidence: false,
+          created_at: '2026-01-01T00:00:01Z',
+          sources: [],
+          status: assistantStatus,
+        },
+      ];
+    }
+
+    function mockFetchFor(id: string, messages: unknown[]): typeof fetch {
+      return jest.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/auth/refresh')) {
+          return new Response(JSON.stringify({ detail: 'none' }), { status: 401 });
+        }
+        if (url.includes('/auth/providers')) {
+          return new Response(JSON.stringify({ providers: [], dev_login_enabled: false }), {
+            status: 200,
+          });
+        }
+        if (url.endsWith(`/conversations/${id}`)) {
+          return conversationDetail(id, messages);
+        }
+        throw new Error(`Unexpected fetch call to ${url} in this test`);
+      }) as unknown as typeof fetch;
+    }
+
+    /** The three "canvas" width landmarks the recovery banner must never
+     * move: the message column's own wrapper (turnWrap), the composer's
+     * width-capped inner View, and the scrollable list area's flex
+     * container (the FlatList's direct parent). */
+    function canvasLandmarks(renderer: ReactTestRenderer) {
+      const turnWrap = ancestorWithMaxWidth(findByText(renderer.root, 'Does peer tutoring help?'));
+      const composerInner = ancestorWithMaxWidth(
+        renderer.root.find((node) => node.props.accessibilityLabel === 'Ask a question')
+      );
+      const listWrap = renderer.root.findByType(FlatList).parent!;
+      return { turnWrap, composerInner, listWrap };
+    }
+
+    it('renders no recovery banner and a normal-width canvas for a normal conversation', async () => {
+      mockParams.id = 'c-normal';
+      global.fetch = mockFetchFor('c-normal', baseMessages('complete'));
+      const renderer = await renderChat();
+
+      expect(queryByText(renderer.root, RECOVERY_BANNER_TEXT)).toBeNull();
+      const { turnWrap, composerInner } = canvasLandmarks(renderer);
+      // `alignSelf: 'center'` (not an ancestor's `alignItems: 'center'`) is
+      // what does turnWrap's centering — see listContent's own style
+      // assertion below for why that distinction is the actual fix, not
+      // just a style-name difference.
+      expect(widthConfigOf(turnWrap)).toEqual({
+        width: '100%',
+        maxWidth: 720,
+        alignSelf: 'center',
+      });
+      expect(widthConfigOf(composerInner).maxWidth).toBe(720);
+    });
+
+    it("never reintroduces alignItems on listContent — that is what made turnWrap's width content-dependent", async () => {
+      // This is a narrow, jest-catchable guard on the exact style-level
+      // regression (see this describe block's own top-of-file docs for
+      // the full root-cause explanation) — it is NOT a substitute for a
+      // real rendered-layout check: react-test-renderer never runs an
+      // actual flexbox layout, so it cannot see turnWrap's width silently
+      // tracking its content the way a real browser does. The
+      // bounding-box regression test in
+      // e2e/tests/stream-recovery.spec.ts ("the message column and
+      // composer render at identical position/width...") is what
+      // actually caught the original bug and is what continues to guard
+      // against it; this test only stops someone from casually
+      // reintroducing the exact style that caused it.
+      mockParams.id = 'c-normal';
+      global.fetch = mockFetchFor('c-normal', baseMessages('complete'));
+      const renderer = await renderChat();
+
+      const flatList = renderer.root.findByType(FlatList);
+      const contentContainerStyle = flattenStyle(flatList.props.contentContainerStyle);
+      expect(contentContainerStyle.alignItems).not.toBe('center');
+    });
+
+    it('keeps the message column, composer, and list-area flex identical whether or not the recovery banner is showing', async () => {
+      mockParams.id = 'c-normal';
+      global.fetch = mockFetchFor('c-normal', baseMessages('complete'));
+      const normalRenderer = await renderChat();
+      const normal = canvasLandmarks(normalRenderer);
+      const normalWidths = {
+        turnWrap: widthConfigOf(normal.turnWrap),
+        composerInner: widthConfigOf(normal.composerInner),
+        listWrapFlex: flattenStyle(normal.listWrap.props.style).flex,
+      };
+
+      mockParams.id = 'c-recovering';
+      global.fetch = mockFetchFor('c-recovering', baseMessages('generating'));
+      const recoveringRenderer = await renderChat();
+
+      // Sanity: this render actually is the recovery state under test.
+      expect(queryByText(recoveringRenderer.root, RECOVERY_BANNER_TEXT)).toBeTruthy();
+
+      const recovering = canvasLandmarks(recoveringRenderer);
+      // Style-prop-level guard only (see the "never reintroduces
+      // alignItems on listContent" test above and
+      // e2e/tests/stream-recovery.spec.ts for the real, rendered-layout
+      // guard against the actual bug — the message/composer *style
+      // objects* here were already identical between states even while
+      // the real bug was live, since the divergence only happened during
+      // an actual browser's flex resolution, which react-test-renderer
+      // never runs). Kept as a cheap sanity check that a future change
+      // doesn't make the banner wrap or restyle turnWrap/the composer
+      // directly (e.g. by reusing turnWrap's container instead of adding
+      // a sibling).
+      expect(widthConfigOf(recovering.turnWrap)).toEqual(normalWidths.turnWrap);
+      expect(widthConfigOf(recovering.composerInner)).toEqual(normalWidths.composerInner);
+      expect(flattenStyle(recovering.listWrap.props.style).flex).toBe(normalWidths.listWrapFlex);
+    });
+
+    it('gives the recovery banner the same inner content width as the message column and composer — it must never render edge-to-edge', async () => {
+      mockParams.id = 'c-recovering';
+      global.fetch = mockFetchFor('c-recovering', baseMessages('generating'));
+      const renderer = await renderChat();
+
+      const bannerInner = ancestorWithMaxWidth(findByText(renderer.root, RECOVERY_BANNER_TEXT));
+      const { turnWrap, composerInner } = canvasLandmarks(renderer);
+
+      // The banner has no centering ancestor of its own (unlike turnWrap,
+      // which is centered by listContent's alignItems: 'center'), so it
+      // self-centers exactly the way the composer's own inner View
+      // does — same mechanism, same resulting width — rather than relying
+      // on turnWrap's specific (ancestor-driven) centering technique.
+      expect(widthConfigOf(bannerInner)).toEqual(widthConfigOf(composerInner));
+      expect(widthConfigOf(bannerInner).maxWidth).toBe(widthConfigOf(turnWrap).maxWidth);
+    });
+
+    it('still renders the Cancel action, wired to cancelPersistedGeneration', async () => {
+      mockParams.id = 'c-recovering';
+      global.fetch = mockFetchFor('c-recovering', baseMessages('generating'));
+      const renderer = await renderChat();
+
+      expect(findPressableByText(renderer.root, 'Cancel')).toBeTruthy();
+    });
   });
 });
