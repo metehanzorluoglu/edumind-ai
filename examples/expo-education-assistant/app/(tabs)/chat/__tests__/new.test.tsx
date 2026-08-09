@@ -933,4 +933,460 @@ describe('NewChatScreen', () => {
       renderer.unmount();
     });
   });
+
+  describe('Chat Sources (Milestone 3) — new-conversation lifecycle', () => {
+    // See [id].test.tsx's identical helper: `Selected ({n})` compiles to
+    // multiple Text children, so exact single-child matching can't find it.
+    function findByTextIncluding(root: ReactTestInstance, substring: string): ReactTestInstance {
+      const matches = root.findAll((node) => {
+        if (String(node.type) !== 'Text') return false;
+        const joined = node.children.filter((c): c is string => typeof c === 'string').join('');
+        return joined.includes(substring);
+      });
+      if (matches.length === 0) {
+        throw new Error(`No Text node found containing ${JSON.stringify(substring)}`);
+      }
+      return matches[0]!;
+    }
+
+    it(
+      'selecting sources before the first message persists them (PUT) BEFORE the message ' +
+        "is sent — §7's critical test: the first message must not silently ignore the " +
+        'selected Scope',
+      async () => {
+        const callOrder: string[] = [];
+        let putBody: unknown = null;
+
+        global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = typeof input === 'string' ? input : input.toString();
+          const method = (init?.method ?? 'GET').toUpperCase();
+          const authResponse = AUTH_ROUTES(url);
+          if (authResponse) return authResponse;
+          if (method === 'GET' && url.includes('/folders/contents')) {
+            return new Response(
+              JSON.stringify({
+                folder: null,
+                breadcrumbs: [],
+                folders: [],
+                documents: [
+                  {
+                    document_id: 'doc-a',
+                    source_filename: 'a.pdf',
+                    title: 'AI Education',
+                    folder_id: null,
+                    document_type: 'report',
+                    chunk_count: 1,
+                    ingested_at: '2026-01-01T00:00:00Z',
+                  },
+                ],
+                documents_total: 1,
+              }),
+              { status: 200 }
+            );
+          }
+          if (method === 'POST' && url.endsWith('/conversations')) {
+            callOrder.push('create-conversation');
+            return conversationCreatedResponse();
+          }
+          if (method === 'PUT' && url.endsWith('/conversations/new-conversation-id/documents')) {
+            callOrder.push('put-scope');
+            putBody = JSON.parse(String(init?.body));
+            return new Response(JSON.stringify({ documents: [], total: 1 }), { status: 200 });
+          }
+          if (method === 'POST' && url.endsWith('/conversations/new-conversation-id/messages')) {
+            callOrder.push('send-message');
+            return new Response(
+              new ReadableStream({
+                start(controller) {
+                  const encoder = new TextEncoder();
+                  controller.enqueue(
+                    encoder.encode(`data: ${JSON.stringify({ type: 'token', content: 'Hi' })}\n\n`)
+                  );
+                  controller.enqueue(
+                    encoder.encode(
+                      `data: ${JSON.stringify({
+                        type: 'done',
+                        citations: [],
+                        citation_warnings: [],
+                        insufficient_evidence: false,
+                      })}\n\n`
+                    )
+                  );
+                  controller.close();
+                },
+              }),
+              { status: 200, headers: { 'content-type': 'text/event-stream' } }
+            );
+          }
+          throw new Error(`Unexpected fetch call to ${url} in this test`);
+        }) as unknown as typeof fetch;
+
+        const renderer = await renderNewChat();
+
+        // Open the Sources picker and select "AI Education".
+        await act(async () => {
+          findPressableByText(renderer.root, 'Add sources').props.onPress();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        await act(async () => {
+          const checkbox = renderer.root.find(
+            (node) =>
+              typeof node.props.onPress === 'function' &&
+              node.props.accessibilityLabel === 'Add AI Education'
+          );
+          checkbox.props.onPress();
+        });
+        expect(findByTextIncluding(renderer.root, 'Selected (1)')).toBeTruthy();
+        await act(async () => {
+          findPressableByText(renderer.root, 'Save').props.onPress();
+        });
+
+        // The composer badge now reflects the LOCAL pending selection —
+        // no network call has happened yet (no conversation exists to PUT to).
+        expect(findByTextIncluding(renderer.root, '1 source')).toBeTruthy();
+        expect(callOrder).toEqual([]);
+
+        const input = renderer.root.find((node) => String(node.type) === 'TextInput');
+        act(() => {
+          input.props.onChangeText('What does AI Education say?');
+        });
+        await act(async () => {
+          findPressableByText(renderer.root, 'Ask').props.onPress();
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+
+        // The critical assertion: scope was persisted (PUT) strictly
+        // BEFORE the message was sent — so that first message's own
+        // retrieval already sees the selected document(s).
+        expect(callOrder).toEqual(['create-conversation', 'put-scope', 'send-message']);
+        expect(putBody).toEqual({ document_ids: ['doc-a'] });
+      }
+    );
+
+    it('sending with zero selected sources never calls the scope-replace endpoint', async () => {
+      let putCalled = false;
+      global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        const method = (init?.method ?? 'GET').toUpperCase();
+        const authResponse = AUTH_ROUTES(url);
+        if (authResponse) return authResponse;
+        if (method === 'POST' && url.endsWith('/conversations')) {
+          return conversationCreatedResponse();
+        }
+        if (method === 'PUT' && url.includes('/documents')) {
+          putCalled = true;
+          return new Response(JSON.stringify({ documents: [], total: 0 }), { status: 200 });
+        }
+        if (method === 'POST' && url.endsWith('/conversations/new-conversation-id/messages')) {
+          return controllableSseResponse().response;
+        }
+        throw new Error(`Unexpected fetch call to ${url} in this test`);
+      }) as unknown as typeof fetch;
+
+      const renderer = await renderNewChat();
+      const input = renderer.root.find((node) => String(node.type) === 'TextInput');
+      act(() => {
+        input.props.onChangeText('A question with no sources selected');
+      });
+      await act(async () => {
+        findPressableByText(renderer.root, 'Ask').props.onPress();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(putCalled).toBe(false);
+    });
+
+    it('the Sources control is hidden when conversationScope is disabled', async () => {
+      global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        const authResponse = AUTH_ROUTES(url);
+        if (authResponse) return authResponse;
+        if (url.endsWith('/status')) {
+          return new Response(
+            JSON.stringify({ image_generation_enabled: true, conversation_scope_enabled: false }),
+            { status: 200 }
+          );
+        }
+        if (url.includes('/documents')) {
+          return new Response(JSON.stringify({ documents: [], total: 0 }), { status: 200 });
+        }
+        throw new Error(`Unexpected fetch call to ${url} in this test`);
+      }) as unknown as typeof fetch;
+
+      const renderer = await renderNewChat();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(queryByText(renderer.root, 'Add sources')).toBeNull();
+    });
+  });
+
+  // Milestone 4: Zoom-In / strict selected-source mode — new-conversation
+  // lifecycle ordering extends Milestone 3's exact pattern above: mode is
+  // persisted (PATCH .../scope) immediately after the sources (PUT
+  // .../documents), still strictly before the first message is sent.
+  describe('Zoom-In (Milestone 4) — new-conversation lifecycle', () => {
+    function findByTextIncluding(root: ReactTestInstance, substring: string): ReactTestInstance {
+      const matches = root.findAll((node) => {
+        if (String(node.type) !== 'Text') return false;
+        const joined = node.children.filter((c): c is string => typeof c === 'string').join('');
+        return joined.includes(substring);
+      });
+      if (matches.length === 0) {
+        throw new Error(`No Text node found containing ${JSON.stringify(substring)}`);
+      }
+      return matches[0]!;
+    }
+
+    it(
+      'selecting Zoom-In persists documents (PUT) THEN mode (PATCH), both before the message ' +
+        'is sent',
+      async () => {
+        const callOrder: string[] = [];
+        let patchBody: unknown = null;
+
+        global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = typeof input === 'string' ? input : input.toString();
+          const method = (init?.method ?? 'GET').toUpperCase();
+          const authResponse = AUTH_ROUTES(url);
+          if (authResponse) return authResponse;
+          if (method === 'GET' && url.includes('/folders/contents')) {
+            return new Response(
+              JSON.stringify({
+                folder: null,
+                breadcrumbs: [],
+                folders: [],
+                documents: [
+                  {
+                    document_id: 'doc-a',
+                    source_filename: 'a.pdf',
+                    title: 'AI Education',
+                    folder_id: null,
+                    document_type: 'report',
+                    chunk_count: 1,
+                    ingested_at: '2026-01-01T00:00:00Z',
+                  },
+                ],
+                documents_total: 1,
+              }),
+              { status: 200 }
+            );
+          }
+          if (method === 'POST' && url.endsWith('/conversations')) {
+            callOrder.push('create-conversation');
+            return conversationCreatedResponse();
+          }
+          if (method === 'PUT' && url.endsWith('/conversations/new-conversation-id/documents')) {
+            callOrder.push('put-documents');
+            return new Response(JSON.stringify({ documents: [], total: 1 }), { status: 200 });
+          }
+          if (method === 'PATCH' && url.endsWith('/conversations/new-conversation-id/scope')) {
+            callOrder.push('patch-scope');
+            patchBody = JSON.parse(String(init?.body));
+            return new Response(
+              JSON.stringify({
+                chat_enabled: true,
+                project_enabled: true,
+                general_enabled: true,
+                include_other_project_summaries: false,
+                zoom_in_mode: true,
+              }),
+              { status: 200 }
+            );
+          }
+          if (method === 'POST' && url.endsWith('/conversations/new-conversation-id/messages')) {
+            callOrder.push('send-message');
+            return new Response(
+              new ReadableStream({
+                start(controller) {
+                  const encoder = new TextEncoder();
+                  controller.enqueue(
+                    encoder.encode(`data: ${JSON.stringify({ type: 'token', content: 'Hi' })}\n\n`)
+                  );
+                  controller.enqueue(
+                    encoder.encode(
+                      `data: ${JSON.stringify({
+                        type: 'done',
+                        citations: [],
+                        citation_warnings: [],
+                        insufficient_evidence: false,
+                      })}\n\n`
+                    )
+                  );
+                  controller.close();
+                },
+              }),
+              { status: 200, headers: { 'content-type': 'text/event-stream' } }
+            );
+          }
+          throw new Error(`Unexpected fetch call to ${url} in this test`);
+        }) as unknown as typeof fetch;
+
+        const renderer = await renderNewChat();
+
+        await act(async () => {
+          findPressableByText(renderer.root, 'Add sources').props.onPress();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        await act(async () => {
+          const checkbox = renderer.root.find(
+            (node) =>
+              typeof node.props.onPress === 'function' &&
+              node.props.accessibilityLabel === 'Add AI Education'
+          );
+          checkbox.props.onPress();
+        });
+        await act(async () => {
+          findPressableByText(renderer.root, 'Zoom-In').props.onPress();
+        });
+        await act(async () => {
+          findPressableByText(renderer.root, 'Save').props.onPress();
+        });
+
+        // The composer badge reflects the local pending Zoom-In selection.
+        expect(findByTextIncluding(renderer.root, 'Zoom-In · 1')).toBeTruthy();
+        expect(callOrder).toEqual([]);
+
+        const input = renderer.root.find((node) => String(node.type) === 'TextInput');
+        act(() => {
+          input.props.onChangeText('What does AI Education say?');
+        });
+        await act(async () => {
+          findPressableByText(renderer.root, 'Ask').props.onPress();
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+
+        expect(callOrder).toEqual([
+          'create-conversation',
+          'put-documents',
+          'patch-scope',
+          'send-message',
+        ]);
+        expect(patchBody).toEqual({ zoom_in_mode: true });
+      }
+    );
+
+    it(
+      'a scope PATCH failure blocks the message from ever being sent, and Retry resends the ' +
+        'exact same PUT+PATCH sequence',
+      async () => {
+        const callOrder: string[] = [];
+        let patchAttempts = 0;
+
+        global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = typeof input === 'string' ? input : input.toString();
+          const method = (init?.method ?? 'GET').toUpperCase();
+          const authResponse = AUTH_ROUTES(url);
+          if (authResponse) return authResponse;
+          if (method === 'GET' && url.includes('/folders/contents')) {
+            return new Response(
+              JSON.stringify({
+                folder: null,
+                breadcrumbs: [],
+                folders: [],
+                documents: [
+                  {
+                    document_id: 'doc-a',
+                    source_filename: 'a.pdf',
+                    title: 'AI Education',
+                    folder_id: null,
+                    document_type: 'report',
+                    chunk_count: 1,
+                    ingested_at: '2026-01-01T00:00:00Z',
+                  },
+                ],
+                documents_total: 1,
+              }),
+              { status: 200 }
+            );
+          }
+          if (method === 'POST' && url.endsWith('/conversations')) {
+            callOrder.push('create-conversation');
+            return conversationCreatedResponse();
+          }
+          if (method === 'PUT' && url.endsWith('/conversations/new-conversation-id/documents')) {
+            callOrder.push('put-documents');
+            return new Response(JSON.stringify({ documents: [], total: 1 }), { status: 200 });
+          }
+          if (method === 'PATCH' && url.endsWith('/conversations/new-conversation-id/scope')) {
+            callOrder.push('patch-scope');
+            patchAttempts += 1;
+            return new Response(JSON.stringify({ detail: 'boom' }), { status: 500 });
+          }
+          if (method === 'POST' && url.endsWith('/conversations/new-conversation-id/messages')) {
+            callOrder.push('send-message');
+            throw new Error('must never be reached — the scope PATCH failed');
+          }
+          throw new Error(`Unexpected fetch call to ${url} in this test`);
+        }) as unknown as typeof fetch;
+
+        const renderer = await renderNewChat();
+
+        await act(async () => {
+          findPressableByText(renderer.root, 'Add sources').props.onPress();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        await act(async () => {
+          const checkbox = renderer.root.find(
+            (node) =>
+              typeof node.props.onPress === 'function' &&
+              node.props.accessibilityLabel === 'Add AI Education'
+          );
+          checkbox.props.onPress();
+        });
+        await act(async () => {
+          findPressableByText(renderer.root, 'Zoom-In').props.onPress();
+        });
+        await act(async () => {
+          findPressableByText(renderer.root, 'Save').props.onPress();
+        });
+
+        const input = renderer.root.find((node) => String(node.type) === 'TextInput');
+        act(() => {
+          input.props.onChangeText('What does AI Education say?');
+        });
+        await act(async () => {
+          findPressableByText(renderer.root, 'Ask').props.onPress();
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+
+        expect(callOrder).toEqual(['create-conversation', 'put-documents', 'patch-scope']);
+        expect(patchAttempts).toBe(1);
+        expect(queryByText(renderer.root, 'Retry')).toBeTruthy();
+
+        await act(async () => {
+          findPressableByText(renderer.root, 'Retry').props.onPress();
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+
+        // Retry re-attempts the exact same sequence — never skips straight
+        // to sending with a broader (non-Zoom-In) scope than was chosen.
+        expect(callOrder).toEqual([
+          'create-conversation',
+          'put-documents',
+          'patch-scope',
+          'put-documents',
+          'patch-scope',
+        ]);
+        expect(patchAttempts).toBe(2);
+      }
+    );
+  });
 });

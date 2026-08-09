@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from app.db.models_conversations import Conversation, MessageAttachment
@@ -173,6 +173,28 @@ class ScopesRepository:
             .where(ConversationDocument.document_id == document_id, Conversation.user_id == user_id)
         )
         return [str(cid) for cid in self._db.execute(stmt).scalars().all()]
+
+    def count_conversation_documents(self, user_id: uuid.UUID, conversation_id: uuid.UUID) -> int:
+        """Milestone 2 (conversation document scope) observability: how
+        many documents are currently associated with this conversation —
+        recorded as the `selected_document_count` metric (see
+        app/api/routes_conversations.py's _handle_conversation_message),
+        never returned to the client directly. Returns 0 (not an error)
+        for a conversation that doesn't exist / isn't the caller's — the
+        route has already verified ownership by the time this is called,
+        so a bad conversation_id here can only mean "nothing associated,"
+        never "hide whether it exists" (unlike the get-shaped methods
+        above, which deliberately conflate not-found and wrong-owner)."""
+        stmt = (
+            select(func.count())
+            .select_from(ConversationDocument)
+            .join(Conversation, Conversation.id == ConversationDocument.conversation_id)
+            .where(
+                ConversationDocument.conversation_id == conversation_id,
+                Conversation.user_id == user_id,
+            )
+        )
+        return self._db.execute(stmt).scalar_one()
 
     # --- project <-> document -------------------------------------------
 

@@ -1,7 +1,8 @@
-import { useEducationDocuments } from 'education-assistant-client';
+import { useEducationDocuments, useFolderLibrary } from 'education-assistant-client';
 import type {
   DocumentSummary,
   DocumentType,
+  FolderResponse,
   JournalQuartile,
   UploadableFile,
 } from 'education-assistant-client';
@@ -24,10 +25,14 @@ import { Notice } from '@/components/ui/Notice';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { TextField } from '@/components/ui/TextField';
+import { Breadcrumbs } from '@/components/Breadcrumbs';
+import { FolderRow } from '@/components/FolderRow';
+import { MoveToFolderDialog } from '@/components/MoveToFolderDialog';
 import { DOCUMENT_TYPES, DOCUMENT_TYPE_LABELS, JOURNAL_QUARTILES } from '@/lib/enums';
 import { fileExtension, formatFileSize, validateCandidateFile } from '@/lib/documentUpload';
 import { safeText } from '@/lib/format';
 import { useClient } from '@/lib/ClientProvider';
+import { useFeatureFlags } from '@/lib/FeatureFlags';
 import { useTheme, type Theme } from '@/lib/Preferences';
 import {
   SAMPLE_DOCUMENT_FILENAME,
@@ -89,6 +94,7 @@ export default function DocumentsScreen() {
   const theme = useTheme();
   const styles = useMemo(() => buildStyles(theme), [theme]);
   const { client, hydrated } = useClient();
+  const featureFlags = useFeatureFlags();
   const {
     listState,
     refresh,
@@ -102,6 +108,27 @@ export default function DocumentsScreen() {
     deleteDocument,
     resetDeleteState,
   } = useEducationDocuments(client);
+  // Milestone 1 (Document Library / Folder Management) — the folder-aware
+  // listing/navigation data source, used instead of `listState` above
+  // whenever featureFlags.folderLibrary is true (see
+  // FeatureFlags.tsx's docs: false falls back to the exact pre-Milestone-1
+  // flat list, unaffected by anything below).
+  const folderLibrary = useFolderLibrary(client);
+  const [newFolderFormOpen, setNewFolderFormOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [createFolderError, setCreateFolderError] = useState<string | null>(null);
+  const [movingDocument, setMovingDocument] = useState<DocumentSummary | null>(null);
+  const [movingFolder, setMovingFolder] = useState<FolderResponse | null>(null);
+  const [deletingFolderIds, setDeletingFolderIds] = useState<ReadonlySet<string>>(new Set());
+  const [folderActionError, setFolderActionError] = useState<string | null>(null);
+  // Folder-library document rows manage their own delete state directly
+  // through the client (rather than useEducationDocuments' deleteStates,
+  // which optimistically mutates `listState` — the flat list this view
+  // doesn't render) so a deletion here reliably refreshes the *folder*
+  // listing it actually affects.
+  const [deletingDocumentIds, setDeletingDocumentIds] = useState<ReadonlySet<string>>(new Set());
+  const [documentActionError, setDocumentActionError] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [sampleError, setSampleError] = useState<string | null>(null);
@@ -132,9 +159,17 @@ export default function DocumentsScreen() {
     // token" error on first mount that never automatically retries (this
     // effect only runs once baseUrl/token are known, not on every render).
     if (!hydrated) return;
-    refresh({ limit: 20 });
+    if (featureFlags.folderLibrary) {
+      folderLibrary.navigate(null);
+    } else {
+      refresh({ limit: 20 });
+    }
+    // Re-fires if the flag itself flips (e.g. an admin disables it and
+    // GET /status's next foreground-focus refresh picks that up — see
+    // FeatureFlagsProvider) so this screen switches data source live
+    // rather than only at the very first mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated]);
+  }, [hydrated, featureFlags.folderLibrary]);
 
   function resetMetadataFields(): void {
     setTitle('');
@@ -305,6 +340,15 @@ export default function DocumentsScreen() {
       sourceVenue: sourceVenue.trim() || undefined,
       doi: doi.trim() || undefined,
       sourceUrl: sourceUrl.trim() || undefined,
+      // Milestone 1 (Document Library / Folder Management): uploads land
+      // directly in whichever folder is currently open (undefined at root,
+      // matching the pre-Milestone-1 "always root" behavior) — see
+      // requirement #6 (folder upload). No-op when the flag is off:
+      // folderLibrary.currentFolderId never leaves null in that case since
+      // navigate() is never called (see the load effect above).
+      folderId: featureFlags.folderLibrary
+        ? (folderLibrary.currentFolderId ?? undefined)
+        : undefined,
     });
   }
 
@@ -346,7 +390,11 @@ export default function DocumentsScreen() {
   function handleUploadDone(): void {
     resetUpload();
     handleClearFile();
-    refresh({ limit: 20 });
+    if (featureFlags.folderLibrary) {
+      folderLibrary.refresh();
+    } else {
+      refresh({ limit: 20 });
+    }
   }
 
   function handleDeletePress(doc: DocumentSummary): void {
@@ -363,6 +411,97 @@ export default function DocumentsScreen() {
     Alert.alert('Delete document', message, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: () => deleteDocument(doc.document_id) },
+    ]);
+  }
+
+  // --- Milestone 1 (Document Library / Folder Management) handlers -------
+
+  function handleFolderDeleteDocument(doc: DocumentSummary): void {
+    const label = safeText(doc.title, doc.source_filename);
+    const message = `Delete "${label}"? This removes the document and all its indexed chunks. This cannot be undone.`;
+    const run = (): void => {
+      setDeletingDocumentIds((prev) => new Set(prev).add(doc.document_id));
+      setDocumentActionError(null);
+      client
+        .deleteDocument(doc.document_id)
+        .then(() => folderLibrary.refresh())
+        .catch((error: unknown) => {
+          setDocumentActionError(error instanceof Error ? error.message : String(error));
+        })
+        .finally(() => {
+          setDeletingDocumentIds((prev) => {
+            const next = new Set(prev);
+            next.delete(doc.document_id);
+            return next;
+          });
+        });
+    };
+
+    if (Platform.OS === 'web') {
+      if (window.confirm(message)) run();
+      return;
+    }
+    Alert.alert('Delete document', message, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: run },
+    ]);
+  }
+
+  async function handleCreateFolder(): Promise<void> {
+    const name = newFolderName.trim();
+    if (!name || creatingFolder) return;
+    setCreatingFolder(true);
+    setCreateFolderError(null);
+    try {
+      await folderLibrary.createFolder(name);
+      setNewFolderFormOpen(false);
+      setNewFolderName('');
+    } catch (error) {
+      setCreateFolderError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCreatingFolder(false);
+    }
+  }
+
+  function handleFolderDelete(folder: FolderResponse): void {
+    const isEmpty = folder.folder_count === 0 && folder.document_count === 0;
+    const run = (moveContentsToRoot: boolean): void => {
+      setDeletingFolderIds((prev) => new Set(prev).add(folder.id));
+      setFolderActionError(null);
+      folderLibrary
+        .deleteFolder(folder.id, { moveContentsToRoot })
+        .catch((error: unknown) => {
+          setFolderActionError(error instanceof Error ? error.message : String(error));
+        })
+        .finally(() => {
+          setDeletingFolderIds((prev) => {
+            const next = new Set(prev);
+            next.delete(folder.id);
+            return next;
+          });
+        });
+    };
+
+    // FolderRow already confirmed a plain delete for an empty folder (see
+    // its own handleDeletePress) — this only ever runs for a non-empty
+    // folder, where the least-destructive path is asking explicitly rather
+    // than either silently deleting contents or refusing outright with no
+    // recourse (see the milestone's "least destructive" requirement).
+    if (isEmpty) {
+      run(false);
+      return;
+    }
+    const label = safeText(folder.name, 'this folder');
+    const message =
+      `"${label}" contains ${folder.folder_count} folder(s) and ${folder.document_count} ` +
+      'document(s). Move them to My Library and delete this folder? Nothing inside will be deleted.';
+    if (Platform.OS === 'web') {
+      if (window.confirm(message)) run(true);
+      return;
+    }
+    Alert.alert('Folder is not empty', message, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Move contents & delete', style: 'destructive', onPress: () => run(true) },
     ]);
   }
 
@@ -396,6 +535,10 @@ export default function DocumentsScreen() {
             <Text style={styles.hint}>
               Parsing and duplicate checks happen immediately; embedding and indexing run in the
               background afterward and can take a while on this hardware — progress is shown below.
+              {featureFlags.folderLibrary &&
+                folderLibrary.contentsState.status === 'success' &&
+                folderLibrary.contentsState.contents.folder &&
+                ` Uploads land in "${folderLibrary.contentsState.contents.folder.name}".`}
             </Text>
 
             {Platform.OS === 'web'
@@ -618,81 +761,268 @@ export default function DocumentsScreen() {
             )}
           </View>
 
-          <View style={styles.section}>
-            <View style={styles.listHeader}>
-              <Text style={styles.sectionTitle}>Documents</Text>
-              <Button
-                label="Refresh"
-                variant="ghost"
-                size="sm"
-                onPress={() => refresh({ limit: 20 })}
-              />
-            </View>
-            {listState.status === 'loading' && (
-              <View style={styles.skeletonList}>
-                {[1, 2, 3].map((i) => (
-                  <Skeleton key={i} width="100%" height={56} radius={theme.radius.md} />
-                ))}
+          {!featureFlags.folderLibrary && (
+            <View style={styles.section}>
+              <View style={styles.listHeader}>
+                <Text style={styles.sectionTitle}>Documents</Text>
+                <Button
+                  label="Refresh"
+                  variant="ghost"
+                  size="sm"
+                  onPress={() => refresh({ limit: 20 })}
+                />
               </View>
-            )}
-            {listState.status === 'error' && (
-              <Notice tone="danger" body={listState.error.message} />
-            )}
-            {listState.status === 'success' && listState.total === 0 && (
-              <EmptyState
-                title="No documents yet"
-                description="Upload a PDF, DOCX, TXT, or HTML file above to start building your research corpus."
-              />
-            )}
-            {listState.status === 'success' && listState.total > 0 && (
-              <>
-                <Text style={styles.hint}>{listState.total} document(s) total</Text>
-                {listState.documents.map((doc) => {
-                  const deleteState = deleteStates[doc.document_id];
-                  const isDeleting = deleteState?.status === 'deleting';
-                  return (
-                    <View key={doc.document_id} style={styles.docCard}>
-                      <View style={styles.docCardRow}>
-                        <View style={styles.docCardMain}>
-                          <View style={styles.docTitleRow}>
-                            <Text style={styles.docTitle}>
-                              {safeText(doc.title, doc.source_filename)}
+              {listState.status === 'loading' && (
+                <View style={styles.skeletonList}>
+                  {[1, 2, 3].map((i) => (
+                    <Skeleton key={i} width="100%" height={56} radius={theme.radius.md} />
+                  ))}
+                </View>
+              )}
+              {listState.status === 'error' && (
+                <Notice tone="danger" body={listState.error.message} />
+              )}
+              {listState.status === 'success' && listState.total === 0 && (
+                <EmptyState
+                  title="No documents yet"
+                  description="Upload a PDF, DOCX, TXT, or HTML file above to start building your research corpus."
+                />
+              )}
+              {listState.status === 'success' && listState.total > 0 && (
+                <>
+                  <Text style={styles.hint}>{listState.total} document(s) total</Text>
+                  {listState.documents.map((doc) => {
+                    const deleteState = deleteStates[doc.document_id];
+                    const isDeleting = deleteState?.status === 'deleting';
+                    return (
+                      <View key={doc.document_id} style={styles.docCard}>
+                        <View style={styles.docCardRow}>
+                          <View style={styles.docCardMain}>
+                            <View style={styles.docTitleRow}>
+                              <Text style={styles.docTitle}>
+                                {safeText(doc.title, doc.source_filename)}
+                              </Text>
+                              {isSampleSource(doc.source_filename) && (
+                                <Badge label="Sample" tone="warning" />
+                              )}
+                            </View>
+                            <Text style={styles.docMeta}>
+                              {DOCUMENT_TYPE_LABELS[doc.document_type]} · {doc.chunk_count} chunk(s)
                             </Text>
-                            {isSampleSource(doc.source_filename) && (
-                              <Badge label="Sample" tone="warning" />
-                            )}
                           </View>
-                          <Text style={styles.docMeta}>
-                            {DOCUMENT_TYPE_LABELS[doc.document_type]} · {doc.chunk_count} chunk(s)
-                          </Text>
+                          <Button
+                            label="Delete"
+                            variant="dangerGhost"
+                            size="sm"
+                            accessibilityLabel={`Delete ${safeText(doc.title, doc.source_filename)}`}
+                            onPress={() => handleDeletePress(doc)}
+                            disabled={isDeleting}
+                            loading={isDeleting}
+                          />
                         </View>
-                        <Button
-                          label="Delete"
-                          variant="dangerGhost"
-                          size="sm"
-                          accessibilityLabel={`Delete ${safeText(doc.title, doc.source_filename)}`}
-                          onPress={() => handleDeletePress(doc)}
-                          disabled={isDeleting}
-                          loading={isDeleting}
-                        />
+                        {deleteState?.status === 'error' && (
+                          <Notice
+                            tone="danger"
+                            body={deleteState.error.message}
+                            actionLabel="Dismiss"
+                            onAction={() => resetDeleteState(doc.document_id)}
+                            style={styles.deleteErrorNotice}
+                          />
+                        )}
                       </View>
-                      {deleteState?.status === 'error' && (
-                        <Notice
-                          tone="danger"
-                          body={deleteState.error.message}
-                          actionLabel="Dismiss"
-                          onAction={() => resetDeleteState(doc.document_id)}
-                          style={styles.deleteErrorNotice}
-                        />
-                      )}
-                    </View>
-                  );
-                })}
-              </>
-            )}
-          </View>
+                    );
+                  })}
+                </>
+              )}
+            </View>
+          )}
+
+          {featureFlags.folderLibrary && (
+            <View style={styles.section}>
+              <Breadcrumbs
+                path={
+                  folderLibrary.contentsState.status === 'success'
+                    ? folderLibrary.contentsState.contents.breadcrumbs
+                    : []
+                }
+                onNavigate={folderLibrary.navigate}
+              />
+              <View style={styles.listHeader}>
+                <Text style={styles.sectionTitle}>
+                  {folderLibrary.contentsState.status === 'success' &&
+                  folderLibrary.contentsState.contents.folder
+                    ? folderLibrary.contentsState.contents.folder.name
+                    : 'My Library'}
+                </Text>
+                <View style={styles.libraryHeaderActions}>
+                  <Button
+                    label="New folder"
+                    variant="ghost"
+                    size="sm"
+                    onPress={() => setNewFolderFormOpen(true)}
+                  />
+                  <Button
+                    label="Refresh"
+                    variant="ghost"
+                    size="sm"
+                    onPress={() => folderLibrary.refresh()}
+                  />
+                </View>
+              </View>
+
+              {newFolderFormOpen && (
+                <View style={styles.newFolderForm}>
+                  <TextField
+                    label="Folder name"
+                    value={newFolderName}
+                    onChangeText={setNewFolderName}
+                    placeholder="e.g. Research"
+                    editable={!creatingFolder}
+                    autoFocus
+                    onSubmitEditing={handleCreateFolder}
+                    returnKeyType="done"
+                  />
+                  {createFolderError && <Notice tone="danger" body={createFolderError} />}
+                  <View style={styles.newFolderActions}>
+                    <Button
+                      label="Cancel"
+                      variant="ghost"
+                      size="sm"
+                      disabled={creatingFolder}
+                      onPress={() => {
+                        setNewFolderFormOpen(false);
+                        setNewFolderName('');
+                        setCreateFolderError(null);
+                      }}
+                    />
+                    <Button
+                      label="Create"
+                      variant="secondary"
+                      size="sm"
+                      loading={creatingFolder}
+                      disabled={creatingFolder || !newFolderName.trim()}
+                      onPress={handleCreateFolder}
+                    />
+                  </View>
+                </View>
+              )}
+
+              {folderActionError && (
+                <Notice
+                  tone="danger"
+                  body={folderActionError}
+                  actionLabel="Dismiss"
+                  onAction={() => setFolderActionError(null)}
+                />
+              )}
+              {documentActionError && (
+                <Notice
+                  tone="danger"
+                  body={documentActionError}
+                  actionLabel="Dismiss"
+                  onAction={() => setDocumentActionError(null)}
+                />
+              )}
+
+              {folderLibrary.contentsState.status === 'loading' && (
+                <View style={styles.skeletonList}>
+                  {[1, 2, 3].map((i) => (
+                    <Skeleton key={i} width="100%" height={56} radius={theme.radius.md} />
+                  ))}
+                </View>
+              )}
+              {folderLibrary.contentsState.status === 'error' && (
+                <Notice tone="danger" body={folderLibrary.contentsState.error.message} />
+              )}
+              {folderLibrary.contentsState.status === 'success' && (
+                <>
+                  {folderLibrary.contentsState.contents.folders.length === 0 &&
+                    folderLibrary.contentsState.contents.documents.length === 0 && (
+                      <EmptyState
+                        title="This folder is empty"
+                        description="Create a subfolder, or upload a PDF, DOCX, TXT, or HTML file above — it lands here automatically."
+                      />
+                    )}
+
+                  {folderLibrary.contentsState.contents.folders.map((folder) => (
+                    <FolderRow
+                      key={folder.id}
+                      folder={folder}
+                      onOpen={folderLibrary.navigate}
+                      onRename={folderLibrary.renameFolder}
+                      onMove={setMovingFolder}
+                      onDelete={handleFolderDelete}
+                      deleting={deletingFolderIds.has(folder.id)}
+                    />
+                  ))}
+
+                  {folderLibrary.contentsState.contents.documents.map((doc) => {
+                    const isDeleting = deletingDocumentIds.has(doc.document_id);
+                    return (
+                      <View key={doc.document_id} style={styles.docCard}>
+                        <View style={styles.docCardRow}>
+                          <View style={styles.docCardMain}>
+                            <View style={styles.docTitleRow}>
+                              <Text style={styles.docTitle}>
+                                {safeText(doc.title, doc.source_filename)}
+                              </Text>
+                              {isSampleSource(doc.source_filename) && (
+                                <Badge label="Sample" tone="warning" />
+                              )}
+                            </View>
+                            <Text style={styles.docMeta}>
+                              {DOCUMENT_TYPE_LABELS[doc.document_type]} · {doc.chunk_count} chunk(s)
+                            </Text>
+                          </View>
+                          <View style={styles.docCardActions}>
+                            <Button
+                              label="Move"
+                              variant="ghost"
+                              size="sm"
+                              accessibilityLabel={`Move ${safeText(doc.title, doc.source_filename)}`}
+                              onPress={() => setMovingDocument(doc)}
+                              disabled={isDeleting}
+                            />
+                            <Button
+                              label="Delete"
+                              variant="dangerGhost"
+                              size="sm"
+                              accessibilityLabel={`Delete ${safeText(doc.title, doc.source_filename)}`}
+                              onPress={() => handleFolderDeleteDocument(doc)}
+                              disabled={isDeleting}
+                              loading={isDeleting}
+                            />
+                          </View>
+                        </View>
+                      </View>
+                    );
+                  })}
+                </>
+              )}
+            </View>
+          )}
         </View>
       </ScrollView>
+
+      {movingDocument && (
+        <MoveToFolderDialog
+          title={`Move "${safeText(movingDocument.title, movingDocument.source_filename)}"`}
+          onClose={() => setMovingDocument(null)}
+          onMove={(destinationFolderId) =>
+            folderLibrary.moveDocument(movingDocument.document_id, destinationFolderId)
+          }
+        />
+      )}
+      {movingFolder && (
+        <MoveToFolderDialog
+          title={`Move "${safeText(movingFolder.name, 'this folder')}"`}
+          excludeFolderId={movingFolder.id}
+          onClose={() => setMovingFolder(null)}
+          onMove={(destinationFolderId) =>
+            folderLibrary.moveFolder(movingFolder.id, destinationFolderId)
+          }
+        />
+      )}
     </View>
   );
 }
@@ -721,6 +1051,16 @@ function buildStyles(theme: Theme) {
     centered: { alignItems: 'center', gap: 8 },
     metadataReview: { gap: 8 },
     listHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+    libraryHeaderActions: { flexDirection: 'row' },
+    newFolderForm: {
+      gap: 8,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.border,
+      borderRadius: theme.radius.md,
+      padding: 10,
+      backgroundColor: theme.card,
+    },
+    newFolderActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
     skeletonList: { gap: 8, marginTop: 4 },
     dropZone: {
       borderWidth: 2,
@@ -764,6 +1104,7 @@ function buildStyles(theme: Theme) {
     },
     docCardRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
     docCardMain: { flex: 1, minWidth: 0 },
+    docCardActions: { flexDirection: 'row', flexShrink: 0 },
     docTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
     docTitle: {
       fontSize: 14,

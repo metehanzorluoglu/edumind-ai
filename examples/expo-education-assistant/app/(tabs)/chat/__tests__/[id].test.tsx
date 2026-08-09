@@ -1124,4 +1124,332 @@ describe('ChatConversationRoute ([id])', () => {
       expect(findPressableByText(renderer.root, 'Cancel')).toBeTruthy();
     });
   });
+
+  describe('Chat Sources (Milestone 3)', () => {
+    // Not `findByText`'s exact-single-child match: `Selected ({n})` compiles
+    // to multiple Text children (`["Selected (", n, ")"]`), so this joins
+    // them first — same technique documentsFolderLibrary.test.tsx (Milestone 1)
+    // already uses for the same reason.
+    function findByTextIncluding(root: ReactTestInstance, substring: string): ReactTestInstance {
+      const matches = root.findAll((node) => {
+        if (String(node.type) !== 'Text') return false;
+        const joined = node.children.filter((c): c is string => typeof c === 'string').join('');
+        return joined.includes(substring);
+      });
+      if (matches.length === 0) {
+        throw new Error(`No Text node found containing ${JSON.stringify(substring)}`);
+      }
+      return matches[0]!;
+    }
+
+    function scopeResponse(zoomInMode = false) {
+      return {
+        chat_enabled: true,
+        project_enabled: true,
+        general_enabled: true,
+        include_other_project_summaries: false,
+        zoom_in_mode: zoomInMode,
+      };
+    }
+
+    function mockFetchWithDocuments(
+      documents: { document_id: string; source_filename: string }[],
+      options: { scope?: ReturnType<typeof scopeResponse>; scopeStatus?: number } = {}
+    ): typeof fetch {
+      return jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        const method = (init?.method ?? 'GET').toUpperCase();
+        if (url.includes('/auth/refresh')) {
+          return new Response(JSON.stringify({ detail: 'none' }), { status: 401 });
+        }
+        if (url.includes('/auth/providers')) {
+          return new Response(JSON.stringify({ providers: [], dev_login_enabled: false }), {
+            status: 200,
+          });
+        }
+        if (url.endsWith('/conversations/c-sources')) return conversationDetail('c-sources');
+        if (method === 'GET' && url.endsWith('/conversations/c-sources/documents')) {
+          return new Response(
+            JSON.stringify({
+              documents: documents.map((d) => ({
+                ...d,
+                document_type: 'report',
+                added_at: '2026-01-01T00:00:00Z',
+              })),
+              total: documents.length,
+            }),
+            { status: 200 }
+          );
+        }
+        if (method === 'PUT' && url.endsWith('/conversations/c-sources/documents')) {
+          return new Response(
+            JSON.stringify({
+              documents: [
+                {
+                  document_id: 'd1',
+                  source_filename: 'a.pdf',
+                  document_type: 'report',
+                  added_at: '2026-01-01T00:00:00Z',
+                },
+              ],
+              total: 1,
+            }),
+            { status: 200 }
+          );
+        }
+        if (method === 'GET' && url.endsWith('/conversations/c-sources/scope')) {
+          return new Response(JSON.stringify(options.scope ?? scopeResponse()), {
+            status: options.scopeStatus ?? 200,
+          });
+        }
+        if (method === 'PATCH' && url.endsWith('/conversations/c-sources/scope')) {
+          const body = JSON.parse(String(init?.body));
+          return new Response(JSON.stringify(scopeResponse(Boolean(body.zoom_in_mode))), {
+            status: 200,
+          });
+        }
+        if (method === 'GET' && url.includes('/folders/contents')) {
+          return new Response(
+            JSON.stringify({
+              folder: null,
+              breadcrumbs: [],
+              folders: [],
+              documents: [],
+              documents_total: 0,
+            }),
+            { status: 200 }
+          );
+        }
+        throw new Error(`Unexpected fetch call to ${url} in this test`);
+      }) as unknown as typeof fetch;
+    }
+
+    it('shows the loaded source count from GET .../documents', async () => {
+      mockParams.id = 'c-sources';
+      global.fetch = mockFetchWithDocuments([{ document_id: 'd1', source_filename: 'a.pdf' }]);
+
+      const renderer = await renderChat();
+
+      expect(findByText(renderer.root, '1 source')).toBeTruthy();
+    });
+
+    it('shows "Add sources" when the conversation has no selected documents', async () => {
+      mockParams.id = 'c-sources';
+      global.fetch = mockFetchWithDocuments([]);
+
+      const renderer = await renderChat();
+
+      expect(findByText(renderer.root, 'Add sources')).toBeTruthy();
+    });
+
+    it('the Sources control is hidden when conversationScope is disabled', async () => {
+      mockParams.id = 'c-sources';
+      global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/auth/refresh')) {
+          return new Response(JSON.stringify({ detail: 'none' }), { status: 401 });
+        }
+        if (url.includes('/auth/providers')) {
+          return new Response(JSON.stringify({ providers: [], dev_login_enabled: false }), {
+            status: 200,
+          });
+        }
+        if (url.endsWith('/status')) {
+          return new Response(
+            JSON.stringify({ image_generation_enabled: true, conversation_scope_enabled: false }),
+            { status: 200 }
+          );
+        }
+        if (url.endsWith('/conversations/c-sources')) return conversationDetail('c-sources');
+        // No GET .../documents call is expected at all — the effect that
+        // fires it is itself gated on conversationScopeEnabled.
+        throw new Error(`Unexpected fetch call to ${url} in this test`);
+      }) as unknown as typeof fetch;
+
+      const renderer = await renderChat();
+      // Let the /status fetch (and the effect gated on it) settle.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(queryByText(renderer.root, 'Add sources')).toBeNull();
+    });
+
+    it("opening the picker preselects the conversation's current server-side selection, and Save updates the composer badge", async () => {
+      mockParams.id = 'c-sources';
+      global.fetch = mockFetchWithDocuments([{ document_id: 'd1', source_filename: 'a.pdf' }]);
+
+      const renderer = await renderChat();
+      expect(findByText(renderer.root, '1 source')).toBeTruthy();
+
+      await act(async () => {
+        findPressableByText(renderer.root, '1 source').props.onPress();
+      });
+
+      expect(findByTextIncluding(renderer.root, 'Selected (1)')).toBeTruthy(); // preselected from GET
+
+      await act(async () => {
+        findPressableByText(renderer.root, 'Save').props.onPress();
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // The PUT mock above always returns total: 1 regardless of body —
+      // this proves the composer badge is driven by the picker's onSaved
+      // callback (the server's own response), not left stale.
+      expect(findByText(renderer.root, '1 source')).toBeTruthy();
+    });
+  });
+
+  // Milestone 4: Zoom-In / strict selected-source mode.
+  describe('Zoom-In (Milestone 4)', () => {
+    function scopeResponse(zoomInMode = false) {
+      return {
+        chat_enabled: true,
+        project_enabled: true,
+        general_enabled: true,
+        include_other_project_summaries: false,
+        zoom_in_mode: zoomInMode,
+      };
+    }
+
+    function mockFetchWithDocumentsAndScope(
+      documents: { document_id: string; source_filename: string }[],
+      scope: ReturnType<typeof scopeResponse>,
+      opts: { scopeStatus?: number; documentsStatus?: number } = {}
+    ): typeof fetch {
+      return jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        const method = (init?.method ?? 'GET').toUpperCase();
+        if (url.includes('/auth/refresh')) {
+          return new Response(JSON.stringify({ detail: 'none' }), { status: 401 });
+        }
+        if (url.includes('/auth/providers')) {
+          return new Response(JSON.stringify({ providers: [], dev_login_enabled: false }), {
+            status: 200,
+          });
+        }
+        if (url.endsWith('/conversations/c-sources')) return conversationDetail('c-sources');
+        if (method === 'GET' && url.endsWith('/conversations/c-sources/documents')) {
+          return new Response(
+            JSON.stringify({
+              documents: documents.map((d) => ({
+                ...d,
+                document_type: 'report',
+                added_at: '2026-01-01T00:00:00Z',
+              })),
+              total: documents.length,
+            }),
+            { status: opts.documentsStatus ?? 200 }
+          );
+        }
+        if (method === 'GET' && url.endsWith('/conversations/c-sources/scope')) {
+          return new Response(JSON.stringify(scope), { status: opts.scopeStatus ?? 200 });
+        }
+        throw new Error(`Unexpected fetch call to ${url} in this test`);
+      }) as unknown as typeof fetch;
+    }
+
+    it('restores Zoom-In mode from GET .../scope and shows the distinct badge', async () => {
+      mockParams.id = 'c-sources';
+      global.fetch = mockFetchWithDocumentsAndScope(
+        [{ document_id: 'd1', source_filename: 'a.pdf' }],
+        scopeResponse(true)
+      );
+
+      const renderer = await renderChat();
+
+      expect(findByText(renderer.root, 'Zoom-In · 1')).toBeTruthy();
+    });
+
+    it('restores Prioritize mode (the default) from GET .../scope', async () => {
+      mockParams.id = 'c-sources';
+      global.fetch = mockFetchWithDocumentsAndScope(
+        [{ document_id: 'd1', source_filename: 'a.pdf' }],
+        scopeResponse(false)
+      );
+
+      const renderer = await renderChat();
+
+      expect(findByText(renderer.root, '1 source')).toBeTruthy();
+      expect(queryByText(renderer.root, 'Zoom-In · 1')).toBeNull();
+    });
+
+    it(
+      'a failed scope load shows a retry state and never offers a destructive Save over ' +
+        'unknown server state (Milestone 3 §14 bug fix)',
+      async () => {
+        mockParams.id = 'c-sources';
+        global.fetch = mockFetchWithDocumentsAndScope(
+          [{ document_id: 'd1', source_filename: 'a.pdf' }],
+          scopeResponse(false),
+          { scopeStatus: 500 }
+        );
+
+        const renderer = await renderChat();
+
+        expect(findByText(renderer.root, 'Sources unavailable')).toBeTruthy();
+        // The picker must never open from this state — pressing the button
+        // retries the failed load instead (see the button's onPress wiring).
+        expect(queryByText(renderer.root, 'Save')).toBeNull();
+      }
+    );
+
+    it('a failed documents load ALSO shows the retry state, even if scope loaded fine', async () => {
+      mockParams.id = 'c-sources';
+      global.fetch = mockFetchWithDocumentsAndScope(
+        [{ document_id: 'd1', source_filename: 'a.pdf' }],
+        scopeResponse(false),
+        { documentsStatus: 500 }
+      );
+
+      const renderer = await renderChat();
+
+      expect(findByText(renderer.root, 'Sources unavailable')).toBeTruthy();
+    });
+
+    it('pressing the button in the error state retries both loads instead of opening the picker', async () => {
+      mockParams.id = 'c-sources';
+      let scopeCallCount = 0;
+      global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/auth/refresh')) {
+          return new Response(JSON.stringify({ detail: 'none' }), { status: 401 });
+        }
+        if (url.includes('/auth/providers')) {
+          return new Response(JSON.stringify({ providers: [], dev_login_enabled: false }), {
+            status: 200,
+          });
+        }
+        if (url.endsWith('/conversations/c-sources')) return conversationDetail('c-sources');
+        if (url.endsWith('/conversations/c-sources/documents')) {
+          return new Response(JSON.stringify({ documents: [], total: 0 }), { status: 200 });
+        }
+        if (url.endsWith('/conversations/c-sources/scope')) {
+          scopeCallCount += 1;
+          if (scopeCallCount === 1) {
+            return new Response(JSON.stringify({ detail: 'boom' }), { status: 500 });
+          }
+          return new Response(JSON.stringify(scopeResponse(false)), { status: 200 });
+        }
+        throw new Error(`Unexpected fetch call to ${url} in this test`);
+      }) as unknown as typeof fetch;
+
+      const renderer = await renderChat();
+      expect(findByText(renderer.root, 'Sources unavailable')).toBeTruthy();
+
+      await act(async () => {
+        findPressableByText(renderer.root, 'Sources unavailable').props.onPress();
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(scopeCallCount).toBe(2);
+      expect(queryByText(renderer.root, 'Sources unavailable')).toBeNull();
+      expect(findByText(renderer.root, 'Add sources')).toBeTruthy();
+    });
+  });
 });

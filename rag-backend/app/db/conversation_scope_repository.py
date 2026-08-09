@@ -14,7 +14,13 @@ from app.db.models_conversation_scope import ConversationScopeSettings
 from app.db.models_conversations import Conversation
 
 _EDITABLE_FIELDS = frozenset(
-    {"chat_enabled", "project_enabled", "general_enabled", "include_other_project_summaries"}
+    {
+        "chat_enabled",
+        "project_enabled",
+        "general_enabled",
+        "include_other_project_summaries",
+        "zoom_in_mode",
+    }
 )
 
 
@@ -26,6 +32,11 @@ class ConversationScopeRecord:
     general_enabled: bool
     include_other_project_summaries: bool
     updated_at: datetime
+    # Default False (not just "always passed") so existing test fixtures
+    # across the codebase that construct a ConversationScopeRecord without
+    # mentioning Zoom-In at all (predating this milestone) keep compiling
+    # and behaving exactly as before.
+    zoom_in_mode: bool = False
 
 
 def _to_record(row: ConversationScopeSettings) -> ConversationScopeRecord:
@@ -35,6 +46,7 @@ def _to_record(row: ConversationScopeSettings) -> ConversationScopeRecord:
         project_enabled=row.project_enabled,
         general_enabled=row.general_enabled,
         include_other_project_summaries=row.include_other_project_summaries,
+        zoom_in_mode=row.zoom_in_mode,
         updated_at=row.updated_at,
     )
 

@@ -30,6 +30,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.api.routes_conversations import ParsedMessageRequest, _stream_text_reply
 from app.config import Settings
+from app.core.evidence_client import EvidenceClient
 from app.core.rag_service import RagService
 from app.core.request_timing import RequestTimer
 from app.core.retrieval_schemas import RetrievedChunk
@@ -176,6 +177,10 @@ def _call_stream_text_reply(
         attach_only=False,
         attachment_storage=attachment_storage,
         session_factory=session_factory,
+        # evidence_analysis_enabled defaults to False (Milestone 11 §18) —
+        # this client is never actually called; a real (unmocked)
+        # EvidenceClient is safe to pass here for exactly that reason.
+        evidence_client=EvidenceClient(base_url="http://evidence-service:8100"),
     )
     return _drain_events(response), repository
 

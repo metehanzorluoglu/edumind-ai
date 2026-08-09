@@ -22,6 +22,41 @@ export type ConversationMessageSource = components['schemas']['MessageSourceResp
  */
 export type ConversationMessageAttachment = components['schemas']['MessageAttachmentResponse'];
 
+/**
+ * Milestone 2 (conversation document scope): one document currently in a
+ * conversation's chat-scope retrieval selection — see
+ * GET/POST/PUT/DELETE /conversations/{id}/documents.
+ */
+export type ConversationDocument = components['schemas']['ConversationDocumentResponse'];
+export type ConversationDocumentListResponse =
+  components['schemas']['ConversationDocumentListResponse'];
+
+/**
+ * The research workspace's per-conversation "active scope" toggle bar —
+ * see GET/PATCH /conversations/{id}/scope. `zoomInMode` (Milestone 4:
+ * Zoom-In / strict selected-source mode) is an explicit override layered
+ * on top of the three tier booleans: when true, retrieval draws ONLY from
+ * this conversation's selected chat-scope documents — see rag-backend's
+ * app/db/models_conversation_scope.py for exactly what it changes.
+ */
+export type ConversationScope = components['schemas']['ConversationScopeResponse'];
+
+/**
+ * Partial update for PATCH /conversations/{id}/scope — same
+ * "only fields actually present are touched" convention the backend's
+ * UpdateConversationScopeRequest uses. Setting `zoomInMode: true` is
+ * rejected (422) unless the conversation currently has at least one
+ * selected chat-scope document — see EducationAssistantClient.
+ * updateConversationScope's own docstring.
+ */
+export interface UpdateConversationScopeRequest {
+  chatEnabled?: boolean;
+  projectEnabled?: boolean;
+  generalEnabled?: boolean;
+  includeOtherProjectSummaries?: boolean;
+  zoomInMode?: boolean;
+}
+
 export interface ListConversationsParams {
   limit?: number;
   offset?: number;

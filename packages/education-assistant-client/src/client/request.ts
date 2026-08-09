@@ -14,7 +14,7 @@ export interface RequestContext {
 }
 
 export interface JsonRequestOptions {
-  method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   path: string;
   query?: Record<string, string | number | boolean | undefined>;
   body?: unknown;

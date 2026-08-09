@@ -1,0 +1,52 @@
+[project]
+name = "evidence-service"
+version = "0.1.0"
+description = "Stateless internal NLI/entailment classification service for EduM8's evidence-analysis shadow infrastructure (Milestone 11). Never reachable outside the backend's internal Docker network — see README.md."
+requires-python = ">=3.12"
+dependencies = [
+  # Pinned to the exact versions this model was validated against across
+  # Milestones 8-10's evaluation work (evaluation/.nli-eval-env/.venv) —
+  # see README.md "Runtime" section. Not the same interpreter/venv as
+  # rag-backend's own pyproject.toml; this is a wholly separate,
+  # independently deployed service (see Milestone 11 report §1).
+  #
+  # IMPORTANT: `torch` is deliberately NOT listed here. It is installed
+  # by the Dockerfile as its own explicit, separate step, pinned to
+  # `torch==2.13.0+cpu` from PyTorch's own CPU-only wheel index
+  # (https://download.pytorch.org/whl/cpu) — BEFORE this dependency list
+  # is installed. Listing `torch==2.13.0` here too was tried and
+  # discarded: pip re-resolves any requirement declared directly in
+  # `dependencies` from the ACTIVE index regardless of what is already
+  # installed in the target --prefix, silently replacing the already-
+  # installed `+cpu` build with the CUDA-enabled `+cu130` build (pulling
+  # ~1.5GB+ of unused nvidia-*/triton/cuda-toolkit packages this
+  # CPU-only, GPU-less Oracle host will never use) — confirmed by a real
+  # build that produced a 8.5GB image before this fix. `transformers`
+  # below depends on torch only loosely (no exact-version pin of its
+  # own), so it accepts the already-installed `+cpu` build without
+  # triggering a re-resolution — see the Dockerfile's builder stage for
+  # the two-step install order this relies on.
+  "transformers==5.14.1",
+  "fastapi>=0.115,<0.116",
+  "uvicorn[standard]>=0.30,<0.31",
+  "pydantic>=2.9,<3.0",
+  "pydantic-settings>=2.5,<3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "httpx>=0.27",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

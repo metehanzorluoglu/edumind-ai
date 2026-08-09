@@ -38,6 +38,17 @@ class RetrievalScopeSnapshot:
     project: bool
     general: bool
     other_projects: bool
+    # Milestone 4 (Zoom-In): chat/project/general above already reflect the
+    # EFFECTIVE tiers this turn actually queried (see
+    # app/api/routes_conversations.py's `_effective_scope_flags` — Zoom-In
+    # forces chat=True/project=False/general=False regardless of the raw
+    # toggle-bar settings), so this snapshot is truthful either way. This
+    # extra flag exists only to explain *why* project/general are off when
+    # they are: distinguishes "Zoom-In forced them off" from "the user's
+    # own toggle bar happens to have them off," which the three booleans
+    # alone can't. False for every message persisted before this field
+    # existed (see transparency_from_dict's default).
+    zoom_in: bool = False
 
 
 @dataclass(frozen=True)
@@ -91,6 +102,7 @@ def build_transparency_snapshot(
     sources: list[RetrievedChunk],
     approved_items: list[ProjectKnowledgeRecord],
     profiles: list[ProjectProfileRecord],
+    zoom_in: bool = False,
 ) -> TransparencySnapshot:
     return TransparencySnapshot(
         retrieval_scope=RetrievalScopeSnapshot(
@@ -98,6 +110,7 @@ def build_transparency_snapshot(
             project=project_enabled,
             general=general_enabled,
             other_projects=include_other_project_summaries,
+            zoom_in=zoom_in,
         ),
         documents_used=_documents_used(sources),
         project_summaries_used=[
@@ -122,6 +135,7 @@ def transparency_to_dict(snapshot: TransparencySnapshot) -> dict[str, object]:
             "project": snapshot.retrieval_scope.project,
             "general": snapshot.retrieval_scope.general,
             "other_projects": snapshot.retrieval_scope.other_projects,
+            "zoom_in": snapshot.retrieval_scope.zoom_in,
         },
         "documents_used": [
             {"document_id": doc.document_id, "source_filename": doc.source_filename}
@@ -144,6 +158,7 @@ _EMPTY_RETRIEVAL_SCOPE: dict[str, object] = {
     "project": True,
     "general": True,
     "other_projects": False,
+    "zoom_in": False,
 }
 
 

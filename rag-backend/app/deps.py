@@ -12,6 +12,7 @@ from app.core.embedding_provider import (
     EmbeddingProvider,
     OllamaEmbeddingProvider,
 )
+from app.core.evidence_client import EvidenceClient
 from app.core.image_generation_service import ImageGenerationService
 from app.core.llm_provider import LLMProvider, OllamaLLMProvider
 from app.core.rag_service import RagService
@@ -22,6 +23,7 @@ from app.db.conversation_scope_repository import ConversationScopeRepository
 from app.db.conversations_repository import ConversationsRepository
 from app.db.document_jobs_repository import DocumentJobsRepository
 from app.db.documents_repository import DocumentsRepository
+from app.db.folders_repository import FoldersRepository
 from app.db.project_knowledge_repository import ProjectKnowledgeRepository
 from app.db.project_profile_repository import ProjectProfileRepository
 from app.db.projects_repository import ProjectsRepository
@@ -238,6 +240,27 @@ RagServiceDep = Annotated[RagService, Depends(get_rag_service)]
 
 
 @lru_cache
+def get_evidence_client() -> EvidenceClient:
+    """Milestone 11 §13. Constructed unconditionally (like every other
+    provider singleton in this file) even when
+    Settings.evidence_analysis_enabled is false — building an httpx.Client
+    does not itself open any connection, so this is as cheap as every
+    other @lru_cache singleton here, and it means the eligibility gate
+    (app/core/evidence_eligibility.py) is the ONE place that decides
+    whether this client is ever actually called, not a second
+    conditional-construction path here that would need to stay in sync
+    with it."""
+    settings = get_settings()
+    return EvidenceClient(
+        base_url=settings.evidence_service_url,
+        timeout_seconds=settings.evidence_service_timeout_ms / 1000,
+    )
+
+
+EvidenceClientDep = Annotated[EvidenceClient, Depends(get_evidence_client)]
+
+
+@lru_cache
 def get_chat_rate_limiter() -> RateLimiter:
     settings = get_settings()
     return RateLimiter(
@@ -257,6 +280,15 @@ def get_documents_repository(db: DBSessionDep) -> DocumentsRepository:
 
 
 DocumentsRepositoryDep = Annotated[DocumentsRepository, Depends(get_documents_repository)]
+
+
+def get_folders_repository(db: DBSessionDep) -> FoldersRepository:
+    # Same reasoning as get_documents_repository above: fresh per-request,
+    # never cached across requests.
+    return FoldersRepository(db)
+
+
+FoldersRepositoryDep = Annotated[FoldersRepository, Depends(get_folders_repository)]
 
 
 def get_document_jobs_repository(db: DBSessionDep) -> DocumentJobsRepository:

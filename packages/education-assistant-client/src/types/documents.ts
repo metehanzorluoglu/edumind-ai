@@ -27,6 +27,19 @@ export interface DocumentUploadMetadata {
   sourceVenue?: string;
   doi?: string;
   sourceUrl?: string;
+  /**
+   * Milestone 1 (Document Library / Folder Management): uploads directly
+   * into this folder instead of root. Ignored by the backend (document
+   * lands at root) when folder_library_enabled is false — see
+   * useFeatureFlags().folderLibrary.
+   */
+  folderId?: string;
+}
+
+/** PATCH /documents/{id} — moves a document to a different folder, or to
+ * root when `folderId` is null. */
+export interface MoveDocumentRequest {
+  folderId: string | null;
 }
 
 export interface ListDocumentsParams {

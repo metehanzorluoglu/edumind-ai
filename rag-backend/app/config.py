@@ -305,6 +305,69 @@ class Settings(BaseSettings):
     chat_rate_limit_max_requests: int = Field(default=20, ge=1, le=1000)
     chat_rate_limit_window_seconds: float = Field(default=60.0, ge=1.0, le=3600.0)
 
+    # --- Document library / folder management (Milestone 1) ---
+    # Kill switch for the whole feature: when False, POST /folders, PATCH
+    # /folders/{id}, DELETE /folders/{id}, GET /folders/contents, and
+    # PATCH /documents/{id} (move) all 404 (see the `_require_enabled`
+    # check each of those handlers runs — app/api/routes_folders.py and
+    # app/api/routes_documents.py), any `folder_id` passed to POST
+    # /documents is ignored (the upload behaves exactly as it did before
+    # this milestone), and the frontend falls back to the flat Documents
+    # list it mirrors from GET /status's folder_library_enabled field (see
+    # app/api/routes_status.py) — no separate frontend build flag decides
+    # this, matching FeatureFlags.tsx's existing "/status is the source of
+    # truth" rule for imageGenerator. True by default: unlike image
+    # generation (which depends on an extra Ollama model being pulled),
+    # folder organization is pure SQL metadata with no extra runtime
+    # dependency, so there's no reason to ship it off. Deliberately named
+    # without an app-specific prefix, unlike this project's other ~30
+    # existing settings (IMAGE_GENERATION_ENABLED, VISION_ENABLED, etc.) —
+    # see the Milestone 1 report for why an EDUM8_-prefixed name was
+    # considered and rejected as inconsistent with every flag already here.
+    folder_library_enabled: bool = True
+
+    # --- Conversation document scope (Milestone 2) ---
+    # Gates only the bulk selection-management surface this milestone adds
+    # (GET .../documents list, POST .../documents bulk-add, PUT
+    # .../documents replace) — see
+    # app/api/routes_conversations.py's _require_conversation_scope_enabled.
+    # Deliberately does NOT gate DELETE .../documents/{id} or the
+    # GET/PATCH .../scope toggle-bar endpoints: those (and retrieval's own
+    # consumption of conversation_documents via app/core/scoped_retrieval.py)
+    # already shipped, unconditional, in an earlier ("contextual research
+    # scopes" / "research workspace") milestone — this flag is a rollback
+    # switch for what's new here, not a way to regress what already
+    # worked. True by default: like folder_library_enabled, this is pure
+    # SQL + a payload resync with no extra runtime dependency to justify
+    # shipping it off. Named without an app-specific prefix for the same
+    # reason folder_library_enabled is — see that setting's docstring.
+    conversation_scope_enabled: bool = True
+
+    # --- Zoom-In / strict selected-source mode (Milestone 4) ---
+    # Deliberately a SEPARATE flag from conversation_scope_enabled above,
+    # not a reuse of it: conversation_scope_enabled gates ordinary
+    # (non-exclusive) "prioritize these sources" selection, which can stay
+    # on for every user even while Zoom-In itself is being rolled out or
+    # rolled back independently — see the Milestone 4 report for why
+    # overloading the existing flag was considered and rejected. Gates only
+    # the ability to ever SET conversation_scope_settings.zoom_in_mode=True
+    # (see app/api/routes_conversations.py's `_require_zoom_in_enabled`,
+    # called only when a PATCH .../scope request actually touches
+    # zoom_in_mode) — a conversation already in Zoom-In mode when this flag
+    # is turned off keeps that stored setting and keeps retrieving strictly
+    # (never silently widened back to Prioritize/General without the user
+    # explicitly turning it off), but no NEW conversation can enter Zoom-In
+    # while the flag is off, and GET .../scope keeps reporting the true
+    # persisted value regardless — same "backend enforces the boundary,
+    # frontend only hides the entry point" split as folder_library_enabled/
+    # conversation_scope_enabled above. True by default: pure SQL + the
+    # exact same scoped-retrieval mechanism already shipped in Milestone 2/
+    # 3, no new runtime dependency to justify shipping it off. Deliberately
+    # named without an app-specific prefix, matching this project's other
+    # ~30 unprefixed flags (see folder_library_enabled's docstring for why
+    # an EDUM8_-prefixed name was considered and rejected).
+    zoom_in_enabled: bool = True
+
     qdrant_mode: Literal["local", "server"] = "local"
     qdrant_path: str = "./data/qdrant_storage"
     qdrant_url: str = "http://localhost:6333"
@@ -466,6 +529,73 @@ class Settings(BaseSettings):
     # retrieval results, only the prompt's own text and chunk order.
     rag_prompt_variant: Literal["current", "compact"] = "current"
     rag_source_order: Literal["relevance", "stable"] = "relevance"
+
+    # --- Evidence analysis / NLI shadow infrastructure (Milestone 11) ---
+    # Master kill switch, checked FIRST by
+    # app/core/evidence_eligibility.py's evidence_analysis_eligible()
+    # before anything else — false means zero evidence-service calls,
+    # zero eligibility computation cost beyond this one boolean read, for
+    # every request. Milestone 11's own explicit PO instruction: this
+    # milestone builds and validates the shadow infrastructure but must
+    # NOT turn it on — this flag ships false, and stays false in
+    # deploy/oracle/.env.oracle, until a human operator changes it after
+    # reviewing this milestone's report (see the Milestone 11 report §25/
+    # §28). Never redefine the default to true without that explicit,
+    # separate decision.
+    evidence_analysis_enabled: bool = False
+    # "shadow" is the only mode with any implemented behavior in this
+    # milestone (Milestone 11 §24 explicitly forbids implementing
+    # "zoom_in_enforced" — see app/core/evidence_eligibility.py, which
+    # treats that value identically to "off"). The enum value exists now
+    # so a future milestone can add real behavior for it without another
+    # schema migration.
+    evidence_analysis_mode: Literal["off", "shadow", "zoom_in_enforced"] = "off"
+    # Milestone 10 §37's approved starting value (5%) — irrelevant while
+    # evidence_analysis_enabled is false, but validated (see the
+    # model_validator below) so an operator who does flip the master
+    # switch on can't also hand it a nonsensical rate by typo.
+    evidence_analysis_sample_rate: float = Field(default=0.05, ge=0.0, le=1.0)
+    # Internal Docker-network-only URL — see
+    # deploy/oracle/docker-compose.oracle.yml's evidence-service block
+    # (no host-published port; reachable only from the backend container
+    # by its compose service name). The default matches that service
+    # name/port for same-compose-stack use; overridden in .env.oracle only
+    # if the service is ever renamed.
+    evidence_service_url: str = "http://evidence-service:8100"
+    # Milestone 10 §30's approved value — the BACKEND's own client-side
+    # budget; the service's own internal timeout
+    # (evidence-service/app/config.py's request_timeout_seconds) is set
+    # slightly lower so the service's own overload/timeout response
+    # reaches the client before this deadline would otherwise fire first.
+    evidence_service_timeout_ms: int = Field(default=2500, ge=1)
+    # --- Milestone 11.2: contention-aware shadow scheduling ---
+    # Adopted for the initial shadow rollout specifically (Milestone 11.2
+    # §25) — deliberately lower than the claim transformer's own 2-claim
+    # structural capability (MULTI_CLAIM questions, see
+    # app/core/claim_transformer.py). A 2-claim shadow job costs roughly
+    # 2x the CPU time of a 1-claim one (two independent, sequential
+    # evidence-service calls — see the Milestone 11.1 report §13/§22),
+    # and this value directly controls that cost during the phase where
+    # the goal is proving the scheduling approach is safe, not maximizing
+    # coverage. A question producing more claims than this is bypassed
+    # entirely (never partially analyzed) — see
+    # app/core/evidence_shadow.py. Revisit upward only after the initial
+    # phase's real data supports it (Milestone 11.1 §14 / Milestone 11.2
+    # §25's own framing: "This can be revisited later").
+    evidence_analysis_max_claims: int = Field(default=1, ge=1, le=2)
+    # How long generation must be CONTINUOUSLY idle (host-wide — see
+    # app/core/generation_activity.py) before a deferred shadow job is
+    # allowed to start — reduces (but, per Milestone 11.2 §8/§9, can
+    # never fully eliminate) the chance a new generation starts at almost
+    # the exact moment NLI begins. Milestone 11.2 §7's controlled 0s/1s/2s
+    # experiment; see that milestone's report for the measured
+    # justification of this specific default.
+    evidence_shadow_idle_grace_seconds: float = Field(default=1.0, ge=0.0, le=10.0)
+    # A diagnostic shadow job that can't find a genuinely idle window
+    # within this long is dropped outright (Milestone 11.2 §11) rather
+    # than run late against stale diagnostic relevance — recorded as
+    # `busy_drop`, never silently discarded without a metric.
+    evidence_shadow_max_defer_seconds: float = Field(default=30.0, gt=0.0, le=300.0)
 
     @field_validator("retrieval_min_score", mode="before")
     @classmethod

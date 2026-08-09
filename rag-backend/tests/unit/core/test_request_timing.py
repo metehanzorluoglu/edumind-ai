@@ -133,6 +133,81 @@ def test_record_metric_and_record_coexist_in_as_dict() -> None:
     assert timings["retrieved_chunk_count"] == 3
 
 
+def test_disabled_timer_accumulate_metric_is_a_true_noop() -> None:
+    timer = RequestTimer(enabled=False)
+
+    timer.accumulate_metric("retrieval_candidate_count", 12)
+
+    assert timer.as_dict() == {}
+
+
+def test_enabled_timer_accumulate_metric_sums_across_calls() -> None:
+    """Milestone 2 (conversation document scope): retrieval_candidate_count
+    is recorded once per scope tier (chat, project(s), general — see
+    app/core/retriever.py/scoped_retrieval.py) within one request — unlike
+    record_metric()'s last-write-wins, repeated calls must sum into one
+    per-request total."""
+    timer = RequestTimer(enabled=True)
+
+    timer.accumulate_metric("retrieval_candidate_count", 24)
+    timer.accumulate_metric("retrieval_candidate_count", 24)
+    timer.accumulate_metric("retrieval_candidate_count", 8)
+
+    assert timer.as_dict()["retrieval_candidate_count"] == 56
+
+
+def test_accumulate_metric_starts_from_zero_for_a_new_name() -> None:
+    timer = RequestTimer(enabled=True)
+
+    timer.accumulate_metric("retrieval_candidate_count", 5)
+
+    assert timer.as_dict()["retrieval_candidate_count"] == 5
+
+
+def test_disabled_timer_record_tag_is_a_true_noop() -> None:
+    timer = RequestTimer(enabled=False)
+
+    timer.record_tag("retrieval_mode", "chat+general")
+
+    assert timer.tags_dict() == {}
+
+
+def test_enabled_timer_records_tag_value() -> None:
+    timer = RequestTimer(enabled=True)
+
+    timer.record_tag("retrieval_mode", "chat+project+general")
+    timer.record_tag("conversation_id", "11111111-1111-1111-1111-111111111111")
+
+    tags = timer.tags_dict()
+    assert tags["retrieval_mode"] == "chat+project+general"
+    assert tags["conversation_id"] == "11111111-1111-1111-1111-111111111111"
+
+
+def test_record_tag_last_write_wins() -> None:
+    timer = RequestTimer(enabled=True)
+
+    timer.record_tag("retrieval_mode", "general")
+    timer.record_tag("retrieval_mode", "chat+general")
+
+    assert timer.tags_dict()["retrieval_mode"] == "chat+general"
+
+
+def test_tags_never_appear_in_as_dict() -> None:
+    """Critical isolation guarantee (see RequestTimer's class docstring):
+    tags_dict() and as_dict() are separate output channels specifically so
+    a string tag can never flow into a dict[str, float]-typed Pydantic
+    response field (ChatResult.debug_timings, DocumentJobResponse.timings)
+    and fail validation."""
+    timer = RequestTimer(enabled=True)
+
+    timer.record_tag("retrieval_mode", "chat+general")
+    timer.record_metric("retrieved_chunk_count", 5)
+
+    timings = timer.as_dict()
+    assert "retrieval_mode" not in timings
+    assert all(isinstance(value, int | float) for value in timings.values())
+
+
 def test_get_current_timer_defaults_to_disabled_singleton() -> None:
     assert get_current_timer() is DISABLED_TIMER
 

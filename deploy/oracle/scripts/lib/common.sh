@@ -254,6 +254,63 @@ oracle_ollama_models() {
 }
 
 ################################################################################
+# Disk preflight (Milestone 11.1) — a real ENOSPC incident occurred during
+# Milestone 11's evidence-service image build (a buggy dependency pin
+# pulled ~1.5GB+ of unused CUDA packages, and two build attempts in a row
+# drove this host's root filesystem to 100% full before it was caught and
+# cleaned up — see the Milestone 11 report §27). This is a simple,
+# fail-fast preflight, not automatic cleanup: it aborts BEFORE a build
+# starts if headroom looks unsafe, and tells the operator what to
+# inspect, rather than guessing what is safe to delete on their behalf
+# (Milestone 11.1 §21: "Prefer preflight, fail early, operator-controlled
+# cleanup" — automatic deletion of valuable cached image/build-cache
+# layers can itself increase a future build's time/disk pressure).
+################################################################################
+
+# Minimum free space (GB) on / required before a build is allowed to
+# proceed. Overridable via ORACLE_MIN_BUILD_FREE_GB — deliberately a
+# conservative default: the backend image (no torch/transformers) needs
+# only ~1-2GB of build overhead in practice, and the evidence-service
+# image (which does bundle torch, CPU-only) needs a few GB more — 15GB
+# comfortably covers either single-service targeted build with real
+# margin, without being so large a healthy, unrelated 40%-full host would
+# ever trip it needlessly.
+ORACLE_MIN_BUILD_FREE_GB="${ORACLE_MIN_BUILD_FREE_GB:-15}"
+
+# check_disk_headroom [LABEL]
+# Aborts (die) if free space on / is below ORACLE_MIN_BUILD_FREE_GB.
+# Prints the operator-facing inspection commands rather than running any
+# cleanup itself — see this section's own docstring for why.
+check_disk_headroom() {
+    local label="${1:-build}"
+    local free_kb free_gb
+
+    free_kb="$(df --output=avail / 2>/dev/null | tail -n1 | tr -d '[:space:]')"
+    if [[ -z "$free_kb" || ! "$free_kb" =~ ^[0-9]+$ ]]; then
+        warn "Could not determine free disk space on / — skipping preflight check (df parse failed)."
+        return 0
+    fi
+    free_gb=$((free_kb / 1024 / 1024))
+
+    if (( free_gb < ORACLE_MIN_BUILD_FREE_GB )); then
+        error "Disk preflight failed before $label: only ${free_gb}GB free on / (require >= ${ORACLE_MIN_BUILD_FREE_GB}GB)."
+        error "Not proceeding. This host previously hit 0 bytes free during a build (Milestone 11 §27)."
+        error "Inspect before cleaning up anything:"
+        error "  df -h /"
+        error "  docker system df"
+        error "  docker images"
+        error "Known-safe cleanup (only if you recognize the entries as unused):"
+        error "  docker builder prune          # build cache only, never touches running containers/volumes"
+        error "  docker image prune             # dangling (untagged) images only"
+        error "Do NOT run 'docker system prune -a' or remove any *-data volume without understanding exactly"
+        error "what it deletes first — see this host's own Milestone 11.1 incident report for why."
+        die "Aborting $label: insufficient disk headroom."
+    fi
+
+    success "Disk preflight OK for $label: ${free_gb}GB free on / (>= ${ORACLE_MIN_BUILD_FREE_GB}GB required)."
+}
+
+################################################################################
 # Waiting for health
 ################################################################################
 

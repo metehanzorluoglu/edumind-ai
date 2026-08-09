@@ -1,5 +1,60 @@
 # Evaluation
 
+## Milestone 5.6: evidence-sufficiency threshold calibration
+
+**`scripts/calibrate_evidence_sufficiency.py`** — a companion to
+`scripts/eval_retrieval_controlled.py` below, reusing its corpus/embedding
+provider selection. Sweeps a raw-dense-score threshold against
+`controlled_corpus.py`'s 31 general-mode positive / 38 general-mode
+negative cases (plus 8 Zoom-In-scope cases, calibrated separately — never
+pooled with general mode) and reports a full TP/FP/TN/FN/precision/
+recall/F1/false-abstention-rate/false-answer-rate table, a deterministic
+calibration/holdout split, and a simple-signal comparison (margin,
+mean-top-3, document diversity) against raw top-score alone. Implements
+NO production behavior — calibration only; see the Milestone 5.6 report
+for the resulting recommendation.
+
+```bash
+python scripts/calibrate_evidence_sufficiency.py
+python scripts/calibrate_evidence_sufficiency.py --force-synthetic-embeddings  # mechanics only
+```
+
+Reports land in `evaluation/reports/evidence-sufficiency-calibration-<timestamp>.json`.
+
+## Milestone 5: controlled-corpus retrieval baseline (chunk-level ground truth)
+
+**`controlled_corpus.py`** is a third, separate tool from the two question
+sets below — deliberately Python, not JSON: `EvalCase`/`ControlledDocument`
+dataclasses defining a self-contained corpus (28 documents / 34 chunks / 77
+cases as of Milestone 5.6, up from Milestone 5's original 22/28/31) with
+document_id AND chunk_index-level ground truth verified by construction
+(every `expected_document_ids`/`expected_chunk_ids` value was checked
+against the actual authored chunk text, not guessed). It needs no external
+ingestion step — `scripts/eval_retrieval_controlled.py` builds its own
+embedded, in-memory Qdrant and ingests the corpus itself.
+
+Unlike `fixtures-questions.json` below (which is document-level-only,
+filename-based, and requires `tests/fixtures/corpus/` — a directory that
+does not exist in this checkout, see that file's own known-gaps note),
+`controlled_corpus.py`'s cases carry chunk-level ground truth, cross-
+document "all required documents" ground truth, and Zoom-In scope
+scenarios, and can be run with either a real Ollama embedding model or a
+clearly-labeled synthetic fallback (see below) with zero setup.
+
+```bash
+python scripts/eval_retrieval_controlled.py                       # real embeddings if reachable, else synthetic fallback
+python scripts/eval_retrieval_controlled.py --force-synthetic-embeddings
+```
+
+Reports land in `evaluation/reports/retrieval-baseline-<timestamp>.{json,md}`
+(gitignored, same convention as the reports below). Every report records
+`embedding_mode` (`"real:<model>"` or `"synthetic:lexical-hash"`) — **never
+treat a `synthetic:lexical-hash` run's category-level findings (e.g.
+paraphrase vs. exact-term performance) as a semantic-embedding-quality
+result** — the fallback measures word overlap, not meaning, and exists only
+so the harness's mechanics (metrics, report shape, Zoom-In leakage check)
+can be validated and CI-run without a reachable Ollama.
+
 ## Two question sets, deliberately kept separate
 
 - **`real-corpus-questions.json`** — the milestone 8 evaluation set: at least

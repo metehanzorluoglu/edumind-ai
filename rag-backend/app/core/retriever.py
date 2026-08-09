@@ -137,6 +137,17 @@ class Retriever:
         if effective_min_score is not None:
             candidates = [c for c in candidates if c.score >= effective_min_score]
 
+        # Pre-MMR-selection pool size, accumulated (not overwritten) across
+        # every scope tier's own retrieve() call within one request (chat,
+        # then project(s), then general — see app/core/scoped_retrieval.py),
+        # so a scope-aware chat turn reports one meaningful per-request
+        # total rather than only the last tier's count. Milestone 2
+        # (contextual research scopes / conversation document scope)
+        # observability requirement: lets scope-narrowing's effect on
+        # candidate-pool size be measured directly (see the milestone's
+        # benchmark comparing 0/1/5/20 conversation-selected documents).
+        timer.accumulate_metric("retrieval_candidate_count", len(candidates))
+
         mmr_input: list[tuple[VectorSearchResult, list[float], float]] = [
             (candidate, candidate.vector, candidate.score)
             for candidate in candidates

@@ -24,6 +24,7 @@ class DocumentRecord:
 
     document_id: str
     user_id: uuid.UUID
+    folder_id: uuid.UUID | None
     sha256: str
     source_filename: str
     title: str | None
@@ -44,6 +45,7 @@ def _to_record(row: Document) -> DocumentRecord:
     return DocumentRecord(
         document_id=row.document_id,
         user_id=row.user_id,
+        folder_id=row.folder_id,
         sha256=row.sha256,
         source_filename=row.source_filename,
         title=row.title,
@@ -87,11 +89,26 @@ class DocumentsRepository:
         return _to_record(row) if row is not None else None
 
     def create(
-        self, *, user_id: uuid.UUID, metadata: DocumentMetadata, chunk_count: int
+        self,
+        *,
+        user_id: uuid.UUID,
+        metadata: DocumentMetadata,
+        chunk_count: int,
+        folder_id: uuid.UUID | None = None,
     ) -> DocumentRecord:
+        # folder_id is deliberately not part of DocumentMetadata (see
+        # app/ingestion/metadata_schema.py) — it's Milestone 1's
+        # organizational placement, computed and validated by the caller
+        # (see app/api/routes_documents.py's post_document, which resolves
+        # and ownership-checks it BEFORE the slow background ingestion job
+        # even starts), not something the ingestion/parsing pipeline itself
+        # knows or cares about. Every pre-existing call site (CLI ingest,
+        # ingest_or_reuse_document for project uploads) omits it and gets
+        # the same "unfiled/root" placement documents have always had.
         row = Document(
             document_id=metadata.document_id,
             user_id=user_id,
+            folder_id=folder_id,
             sha256=metadata.sha256,
             source_filename=metadata.source_filename,
             title=metadata.title,
@@ -140,6 +157,58 @@ class DocumentsRepository:
             .all()
         )
         return [_to_record(row) for row in rows], total
+
+    def list_in_folder(
+        self,
+        user_id: uuid.UUID,
+        folder_id: uuid.UUID | None,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[DocumentRecord], int]:
+        """Same shape as list_for_user, filtered to one folder instead of
+        the whole corpus — `folder_id=None` means root/unfiled (backs GET
+        /folders/contents' "what's directly in this folder" listing, see
+        app/api/routes_folders.py). SQLAlchemy compiles
+        `Document.folder_id == None` to `IS NULL`, so root-level documents
+        are matched correctly rather than being excluded the way a naive
+        `= NULL` SQL comparison would."""
+        conditions = (Document.user_id == user_id, Document.folder_id == folder_id)
+        total = self._db.execute(
+            select(func.count()).select_from(Document).where(*conditions)
+        ).scalar_one()
+
+        rows = (
+            self._db.execute(
+                select(Document)
+                .where(*conditions)
+                .order_by(Document.ingested_at.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+            .scalars()
+            .all()
+        )
+        return [_to_record(row) for row in rows], total
+
+    def move_to_folder(
+        self, user_id: uuid.UUID, document_id: str, folder_id: uuid.UUID | None
+    ) -> DocumentRecord | None:
+        """Reassigns which folder a document is filed under (None = move to
+        root) — a single-column SQL UPDATE, never touching Qdrant: see
+        app/db/models_documents.py's `folder_id` docstring for why this is
+        deliberately safe (no re-parse, no re-embed, no chunk/vector
+        rewrite). Caller (see app/api/routes_documents.py) is responsible
+        for verifying `folder_id` belongs to this same user before calling
+        this — this method itself only re-verifies the *document's*
+        ownership, matching update_metadata()'s existing contract."""
+        row = self._db.get(Document, document_id)
+        if row is None or row.user_id != user_id:
+            return None
+        row.folder_id = folder_id
+        self._db.commit()
+        self._db.refresh(row)
+        return _to_record(row)
 
     def update_metadata(
         self, user_id: uuid.UUID, document_id: str, updates: dict[str, object]

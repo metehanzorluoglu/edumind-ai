@@ -155,3 +155,86 @@ class TestPromptMetadataProfiling:
         assert prepared.insufficient_evidence is True
         metrics = timer.as_dict()
         assert metrics["context_tokens_est"] == 0
+
+
+def _prepare_with_scope(
+    rag_service: RagService,
+    query: str,
+    *,
+    conversation_id: str | None = None,
+    project_ids: tuple[str, ...] = (),
+    enabled: bool = True,
+):
+    timer = RequestTimer(enabled=enabled, label="test")
+    token = bind_timer(timer)
+    try:
+        prepared = rag_service.prepare(
+            query, user_id="user-1", conversation_id=conversation_id, project_ids=project_ids
+        )
+    finally:
+        unbind_timer(token)
+    return prepared, timer
+
+
+class TestRetrievalModeObservability:
+    """Milestone 2 (conversation document scope): retrieval_mode and
+    conversation_id, recorded as RequestTimer *tags* (never metrics — see
+    RequestTimer's class docstring on why a string can't go through
+    record_metric/as_dict) in app/core/rag_service.py's retrieve_and_cite,
+    derived from the resolved ScopePlan's own tier list so it can never
+    drift from what retrieval actually queried."""
+
+    def test_general_only_when_no_conversation_or_project(self) -> None:
+        rag_service = RagService(
+            retriever=_FakeRetriever([_chunk("evidence")]), llm_provider=_FakeLLMProvider(),
+            model_name="m",
+        )
+        _, timer = _prepare_with_scope(rag_service, "a question")
+        assert timer.tags_dict()["retrieval_mode"] == "general"
+        assert "conversation_id" not in timer.tags_dict()
+
+    def test_chat_plus_general_when_conversation_id_given(self) -> None:
+        rag_service = RagService(
+            retriever=_FakeRetriever([_chunk("evidence")]), llm_provider=_FakeLLMProvider(),
+            model_name="m",
+        )
+        _, timer = _prepare_with_scope(rag_service, "a question", conversation_id="conv-1")
+        tags = timer.tags_dict()
+        assert tags["retrieval_mode"] == "chat+general"
+        assert tags["conversation_id"] == "conv-1"
+
+    def test_chat_plus_project_plus_general_with_both_scopes(self) -> None:
+        rag_service = RagService(
+            retriever=_FakeRetriever([_chunk("evidence")]), llm_provider=_FakeLLMProvider(),
+            model_name="m",
+        )
+        _, timer = _prepare_with_scope(
+            rag_service, "a question", conversation_id="conv-1", project_ids=("proj-1",)
+        )
+        assert timer.tags_dict()["retrieval_mode"] == "chat+project+general"
+
+    def test_multiple_projects_collapse_to_one_project_label(self) -> None:
+        """dict.fromkeys()-based dedup of tier names — two project tiers
+        (one per project a conversation belongs to) must not produce
+        "chat+project+project+general"."""
+        rag_service = RagService(
+            retriever=_FakeRetriever([_chunk("evidence")]), llm_provider=_FakeLLMProvider(),
+            model_name="m",
+        )
+        _, timer = _prepare_with_scope(
+            rag_service,
+            "a question",
+            conversation_id="conv-1",
+            project_ids=("proj-1", "proj-2"),
+        )
+        assert timer.tags_dict()["retrieval_mode"] == "chat+project+general"
+
+    def test_records_nothing_when_profiling_disabled(self) -> None:
+        rag_service = RagService(
+            retriever=_FakeRetriever([_chunk("evidence")]), llm_provider=_FakeLLMProvider(),
+            model_name="m",
+        )
+        _, timer = _prepare_with_scope(
+            rag_service, "a question", conversation_id="conv-1", enabled=False
+        )
+        assert timer.tags_dict() == {}

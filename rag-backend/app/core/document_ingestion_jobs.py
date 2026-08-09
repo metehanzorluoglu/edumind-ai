@@ -69,6 +69,7 @@ def run_ingestion_job(
     embedding_provider: EmbeddingProvider,
     vector_store: QdrantVectorStore,
     timer: RequestTimer,
+    folder_id: uuid.UUID | None = None,
 ) -> None:
     session = get_session_factory()()
     jobs_repository = DocumentJobsRepository(session)
@@ -83,6 +84,7 @@ def run_ingestion_job(
             jobs_repository=jobs_repository,
             documents_repository=DocumentsRepository(session),
             timer=timer,
+            folder_id=folder_id,
         )
     except Exception as exc:
         logger.exception(
@@ -109,6 +111,7 @@ def _run(
     jobs_repository: DocumentJobsRepository,
     documents_repository: DocumentsRepository,
     timer: RequestTimer,
+    folder_id: uuid.UUID | None = None,
 ) -> None:
     total = len(chunks)
     logger.info(
@@ -162,7 +165,9 @@ def _run(
     jobs_repository.update_progress(job_id, stage="persisting", embedded_chunks=total)
     persist_start = time.monotonic()
     with timer.stage("database"):
-        documents_repository.create(user_id=user_id, metadata=metadata, chunk_count=total)
+        documents_repository.create(
+            user_id=user_id, metadata=metadata, chunk_count=total, folder_id=folder_id
+        )
     logger.info(
         "Ingestion job %s: metadata persisted in %.2fs", job_id, time.monotonic() - persist_start
     )

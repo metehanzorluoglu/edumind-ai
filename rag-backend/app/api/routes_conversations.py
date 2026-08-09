@@ -19,17 +19,21 @@ from app.core.citation import Citation
 from app.core.citation_validation import validate_citations
 from app.core.conversation_title import generate_title, sanitize_title
 from app.core.document_scoping import (
-    add_document_to_conversation,
+    InvalidDocumentIdsError,
+    add_conversation_documents,
     remove_document_from_conversation,
+    replace_conversation_documents,
 )
 from app.core.errors import AttachmentValidationError, LLMProviderError, VisionServiceError
+from app.core.evidence_client import EvidenceClient
+from app.core.evidence_shadow import maybe_schedule_evidence_shadow
 from app.core import generation_manager
 from app.core.generation_events import GenerationUpdate, GenProgress
 from app.core.intent_detection import is_instructional_design_request
 from app.core.llm_provider import LLMProvider
 from app.core.model_routing import ModelRoute, choose_model
 from app.core.project_context import format_project_context
-from app.core.prompt_builder import NO_EVIDENCE_ANSWER
+from app.core.prompt_builder import NO_EVIDENCE_ANSWER, ZOOM_IN_NO_EVIDENCE_ANSWER
 from app.core.rag_service import CorpusEvidence, RagService, RetrieverLike, retrieve_and_cite
 from app.core.rate_limiter import RateLimiter
 from app.core.request_timing import RequestTimer, bind_timer, unbind_timer
@@ -51,12 +55,14 @@ from app.db.models_conversations import Message
 from app.db.project_knowledge_repository import ProjectKnowledgeRecord, ProjectKnowledgeRepository
 from app.db.project_profile_repository import ProjectProfileRecord, ProjectProfileRepository
 from app.db.projects_repository import ProjectsRepository
-from app.db.scopes_repository import ConversationDocumentRecord
+from app.db.scopes_repository import ConversationDocumentRecord, ScopesRepository
 from app.deps import (
     AttachmentStorageDep,
     ChatRateLimiterDep,
     ConversationScopeRepositoryDep,
     ConversationsRepositoryDep,
+    DocumentsRepositoryDep,
+    EvidenceClientDep,
     LLMProviderDep,
     ProjectKnowledgeRepositoryDep,
     ProjectProfileRepositoryDep,
@@ -80,8 +86,9 @@ from app.schemas.chat import (
     TransparencyResponse,
 )
 from app.schemas.conversations import (
-    AddConversationDocumentRequest,
+    AddConversationDocumentsRequest,
     ConversationDetailResponse,
+    ConversationDocumentListResponse,
     ConversationDocumentResponse,
     ConversationListResponse,
     ConversationScopeResponse,
@@ -91,6 +98,7 @@ from app.schemas.conversations import (
     MessageSourceResponse,
     PostConversationMessageRequest,
     RenameConversationRequest,
+    ReplaceConversationDocumentsRequest,
     UpdateConversationScopeRequest,
 )
 from app.services.attachment_storage import (
@@ -352,7 +360,46 @@ def _scope_response(record: ConversationScopeRecord) -> ConversationScopeRespons
         project_enabled=record.project_enabled,
         general_enabled=record.general_enabled,
         include_other_project_summaries=record.include_other_project_summaries,
+        zoom_in_mode=record.zoom_in_mode,
     )
+
+
+def _effective_scope_flags(scope_settings: ConversationScopeRecord) -> tuple[bool, bool, bool]:
+    """Milestone 4 (Zoom-In / strict selected-source mode): the single
+    place that turns a conversation's persisted scope settings into the
+    `include_chat`/`include_project`/`include_general` flags actually
+    passed to retrieval (see resolve_scope_plan in
+    app/core/scoped_retrieval.py — the exact, pre-existing per-tier
+    inclusion mechanism this reuses; no new retrieval code path exists for
+    Zoom-In). When `zoom_in_mode` is set, it overrides the three
+    individual tier toggles entirely: chat is force-included (Zoom-In IS
+    the chat tier) and project/general are force-excluded (no fallback,
+    ever — not "reduced," not "deprioritized," not queried at all),
+    regardless of what the toggle bar itself says. When `zoom_in_mode` is
+    False (the default for every conversation before this milestone and
+    every conversation that has never turned it on), this returns exactly
+    (chat_enabled, project_enabled, general_enabled) unchanged — byte-for-
+    byte today's pre-Milestone-4 behavior."""
+    if scope_settings.zoom_in_mode:
+        return True, False, False
+    return (
+        scope_settings.chat_enabled,
+        scope_settings.project_enabled,
+        scope_settings.general_enabled,
+    )
+
+
+def _require_zoom_in_enabled(settings: Settings) -> None:
+    """Milestone 4: gates only the ability to ever SET
+    conversation_scope_settings.zoom_in_mode=True (see
+    update_conversation_scope below) — mirrors
+    _require_conversation_scope_enabled's "backend enforces, frontend only
+    hides" split. GET .../scope always reports the true persisted value
+    regardless of this flag; a conversation already in Zoom-In when this
+    flag is turned off keeps retrieving strictly rather than being
+    silently widened."""
+    if not settings.zoom_in_enabled:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Zoom-In is disabled")
 
 
 @router.get("/{conversation_id}/scope", response_model=ConversationScopeResponse)
@@ -376,12 +423,45 @@ def update_conversation_scope(
     conversation_id: uuid.UUID,
     request: UpdateConversationScopeRequest,
     user: CurrentUserDep,
+    settings: SettingsDep,
     conversation_scope_repository: ConversationScopeRepositoryDep,
+    scopes_repository: ScopesRepositoryDep,
 ) -> ConversationScopeResponse:
     """Toggling here takes effect starting with this conversation's *next*
     message — a past message's own `transparency.retrieval_scope` always
-    keeps showing what was active when it was actually generated."""
+    keeps showing what was active when it was actually generated.
+
+    Milestone 4 (Zoom-In): a request that sets `zoom_in_mode=True` is
+    additionally checked against two conditions before being applied —
+    `zoom_in_enabled` (see _require_zoom_in_enabled) and "this conversation
+    currently has at least one selected chat-scope document" (see
+    UpdateConversationScopeRequest's docstring) — either check failing
+    leaves the stored settings completely untouched (checked before the
+    repository call, not after). Turning `zoom_in_mode` back OFF, or a
+    request that doesn't mention it at all, is never subject to either
+    check."""
     updates = request.model_dump(exclude_unset=True)
+    if updates.get("zoom_in_mode") is True:
+        # Existence/ownership must be established BEFORE the ≥1-source
+        # check below: count_conversation_documents returns 0 (not an
+        # error) for a nonexistent/foreign conversation_id (see its own
+        # docstring), which would otherwise surface as a misleading 422
+        # ("add a source") instead of the correct 404 for a conversation
+        # that was never this user's to begin with.
+        if conversation_scope_repository.get_or_create(user.id, conversation_id) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+        _require_zoom_in_enabled(settings)
+        selected_document_count = scopes_repository.count_conversation_documents(
+            user.id, conversation_id
+        )
+        if selected_document_count == 0:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    "Zoom-In requires at least one selected source. Add a source before "
+                    "turning Zoom-In on."
+                ),
+            )
     record = conversation_scope_repository.update(user.id, conversation_id, updates)
     if record is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
@@ -399,40 +479,118 @@ def _conversation_document_response(
     )
 
 
+def _conversation_document_list_response(
+    records: list[ConversationDocumentRecord],
+) -> ConversationDocumentListResponse:
+    documents = [_conversation_document_response(r) for r in records]
+    return ConversationDocumentListResponse(documents=documents, total=len(documents))
+
+
+def _require_conversation_scope_enabled(settings: Settings) -> None:
+    """Milestone 2 (conversation document scope): gates only the bulk
+    selection-management surface added/changed THIS milestone (list, bulk
+    add, replace) — see app/config.py's `conversation_scope_enabled`
+    docstring for why DELETE (pre-existing, unconditional before this
+    milestone) and the scope toggle-bar endpoints are deliberately NOT
+    gated here."""
+    if not settings.conversation_scope_enabled:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation scope is disabled")
+
+
+@router.get("/{conversation_id}/documents", response_model=ConversationDocumentListResponse)
+def list_conversation_documents(
+    conversation_id: uuid.UUID,
+    user: CurrentUserDep,
+    settings: SettingsDep,
+    scopes_repository: ScopesRepositoryDep,
+) -> ConversationDocumentListResponse:
+    """Milestone 2: the conversation's current chat-scope document
+    selection — what retrieval's "chat" tier actually draws from for this
+    conversation's next turn (see app/core/scoped_retrieval.py)."""
+    _require_conversation_scope_enabled(settings)
+    records = scopes_repository.list_conversation_documents(user.id, conversation_id)
+    if records is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    return _conversation_document_list_response(records)
+
+
 @router.post(
     "/{conversation_id}/documents",
-    response_model=ConversationDocumentResponse,
+    response_model=ConversationDocumentListResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def add_conversation_document(
+def add_conversation_documents_route(
     conversation_id: uuid.UUID,
-    request: AddConversationDocumentRequest,
+    request: AddConversationDocumentsRequest,
     user: CurrentUserDep,
+    settings: SettingsDep,
     scopes_repository: ScopesRepositoryDep,
+    documents_repository: DocumentsRepositoryDep,
     vector_store: VectorStoreDep,
-) -> ConversationDocumentResponse:
-    """Associates an already-ingested document (see POST /documents) with
-    this conversation as chat-scope retrieval evidence (contextual
-    research scopes) — never duplicates the document's vectors, only adds
-    a pointer plus a Qdrant payload resync (see
-    app/core/document_scoping.py). Idempotent: re-adding a document already
-    associated with this conversation returns the existing association
-    unchanged."""
-    record = add_document_to_conversation(
-        conversation_id=conversation_id,
-        document_id=request.document_id,
-        user_id=user.id,
-        scopes_repository=scopes_repository,
-        vector_store=vector_store,
-    )
-    if record is None:
-        # Deliberately the same 404 whether the conversation doesn't exist,
-        # isn't the caller's, the document doesn't exist, or belongs to a
-        # different user — never reveals which (see ScopesRepository).
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND, detail="Conversation or document not found"
+) -> ConversationDocumentListResponse:
+    """Milestone 2: associates one or more already-ingested documents (see
+    POST /documents) with this conversation as chat-scope retrieval
+    evidence in a single call — never duplicates vectors, only adds
+    pointers plus a Qdrant payload resync per document (see
+    app/core/document_scoping.py). Idempotent per id and de-duplicated
+    within the request; returns the conversation's full current selection
+    (not just the newly-added ids)."""
+    _require_conversation_scope_enabled(settings)
+    try:
+        records = add_conversation_documents(
+            conversation_id=conversation_id,
+            document_ids=request.document_ids,
+            user_id=user.id,
+            scopes_repository=scopes_repository,
+            documents_repository=documents_repository,
+            vector_store=vector_store,
         )
-    return _conversation_document_response(record)
+    except InvalidDocumentIdsError as exc:
+        # Deliberately the same 404 shape as "conversation not found" below
+        # — never confirms/denies which specific id exists or belongs to
+        # another user (see InvalidDocumentIdsError's docstring).
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            detail=f"One or more documents not found: {exc.invalid_ids}",
+        ) from exc
+    if records is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    return _conversation_document_list_response(records)
+
+
+@router.put("/{conversation_id}/documents", response_model=ConversationDocumentListResponse)
+def replace_conversation_documents_route(
+    conversation_id: uuid.UUID,
+    request: ReplaceConversationDocumentsRequest,
+    user: CurrentUserDep,
+    settings: SettingsDep,
+    scopes_repository: ScopesRepositoryDep,
+    documents_repository: DocumentsRepositoryDep,
+    vector_store: VectorStoreDep,
+) -> ConversationDocumentListResponse:
+    """Milestone 2: makes `document_ids` this conversation's ENTIRE
+    chat-scope selection — documents not listed are removed, documents
+    listed but not yet associated are added, documents in both are left
+    untouched (see replace_conversation_documents). `document_ids: []`
+    clears the selection; there is no separate clear endpoint."""
+    _require_conversation_scope_enabled(settings)
+    try:
+        records = replace_conversation_documents(
+            conversation_id=conversation_id,
+            document_ids=request.document_ids,
+            user_id=user.id,
+            scopes_repository=scopes_repository,
+            documents_repository=documents_repository,
+            vector_store=vector_store,
+        )
+    except InvalidDocumentIdsError as exc:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            detail=f"One or more documents not found: {exc.invalid_ids}",
+        ) from exc
+    if records is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    return _conversation_document_list_response(records)
 
 
 @router.delete(
@@ -447,7 +605,9 @@ def remove_conversation_document(
 ) -> None:
     """Removes only the association — never the document itself (it may
     still be part of the caller's general corpus or another
-    conversation's/project's scope)."""
+    conversation's/project's scope). Pre-existing, unconditional (not
+    gated by conversation_scope_enabled — see
+    _require_conversation_scope_enabled's docstring)."""
     removed = remove_document_from_conversation(
         conversation_id=conversation_id,
         document_id=document_id,
@@ -754,6 +914,7 @@ def _stream_text_reply(
     attach_only: bool,
     attachment_storage: AttachmentStorage,
     session_factory: Callable[[], Session],
+    evidence_client: EvidenceClient,
 ) -> StreamingResponse:
     """Streams (or attaches to) one assistant reply. The actual LLM call
     now runs on a detached background thread (see
@@ -798,6 +959,7 @@ def _stream_text_reply(
             return
 
         yield _sse(ChatProgressEvent(stage="retrieving"))
+        include_chat, include_project, include_general = _effective_scope_flags(scope_settings)
         token = bind_timer(timer)
         try:
             prepared = rag_service.prepare(
@@ -808,9 +970,10 @@ def _stream_text_reply(
                 conversation_id=str(conversation_id),
                 project_ids=tuple(str(p) for p in project_ids),
                 project_context=project_context,
-                include_chat=scope_settings.chat_enabled,
-                include_project=scope_settings.project_enabled,
-                include_general=scope_settings.general_enabled,
+                include_chat=include_chat,
+                include_project=include_project,
+                include_general=include_general,
+                strict_mode=scope_settings.zoom_in_mode,
             )
         finally:
             unbind_timer(token)
@@ -826,13 +989,14 @@ def _stream_text_reply(
 
         transparency = transparency_to_dict(
             build_transparency_snapshot(
-                chat_enabled=scope_settings.chat_enabled,
-                project_enabled=scope_settings.project_enabled,
-                general_enabled=scope_settings.general_enabled,
+                chat_enabled=include_chat,
+                project_enabled=include_project,
+                general_enabled=include_general,
                 include_other_project_summaries=scope_settings.include_other_project_summaries,
                 sources=prepared.retrieved_sources,
                 approved_items=approved_items,
                 profiles=profiles,
+                zoom_in=scope_settings.zoom_in_mode,
             )
         )
 
@@ -864,7 +1028,9 @@ def _stream_text_reply(
             assistant_message_id=assistant_message.id,
             stream_answer=_stream_answer,
             insufficient_evidence=prepared.insufficient_evidence,
-            no_evidence_answer=NO_EVIDENCE_ANSWER,
+            no_evidence_answer=(
+                ZOOM_IN_NO_EVIDENCE_ANSWER if scope_settings.zoom_in_mode else NO_EVIDENCE_ANSWER
+            ),
             retrieved_sources=prepared.retrieved_sources,
             citations=prepared.citations,
             transparency=transparency,
@@ -876,6 +1042,34 @@ def _stream_text_reply(
         for delta in generation_manager.poll_until_done(assistant_message.id):
             yield _sse(ChatTokenEvent(content=delta))
         yield from _final_reply_events(repository, assistant_message.id, timer)
+
+        # Milestone 11 §21: strictly AFTER the SSE stream has already
+        # yielded every event above — this line runs once the consumer
+        # has drained the generator that far, so it can never delay TTFT,
+        # token streaming, or the final reply events. Scheduling onto the
+        # bounded executor (see app/core/evidence_shadow.py) is a fast,
+        # in-memory operation; the actual evidence-service HTTP call(s)
+        # happen later, on a separate worker thread, long after this
+        # request has returned. Diagnostic-only (Milestone 11 §2/§23): no
+        # branch of this call can alter `prepared`, the persisted answer,
+        # or anything already sent above.
+        maybe_schedule_evidence_shadow(
+            settings=settings,
+            zoom_in_mode=scope_settings.zoom_in_mode,
+            query=parsed.query,
+            # prepared.citations is index-aligned 1:1 with
+            # prepared.retrieved_sources (see app/core/citation.py's
+            # build_citations — both are the same "S1, S2, ..." order),
+            # so this pairs each chunk's actual text with the exact
+            # citation ID the generator/frontend already use for it.
+            source_texts=[
+                (citation.source_id, chunk.text)
+                for citation, chunk in zip(
+                    prepared.citations, prepared.retrieved_sources, strict=True
+                )
+            ],
+            evidence_client=evidence_client,
+        )
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -930,6 +1124,14 @@ def _stream_vision_reply(
     synthesis both use the fast text model, never the vision model, once
     a document's images have already been distilled into per-batch
     findings — see that module's docstring for why."""
+    # Milestone 4 (Zoom-In) attachment-semantics decision: Zoom-In
+    # restricts corpus RETRIEVAL only (which tiers `retrieve_and_cite`
+    # queries) — it never restricts or affects a message's own attached
+    # image(s)/PDF page(s), which are direct user-supplied evidence, not
+    # something drawn from the corpus, and are always fully visible to the
+    # vision model regardless of Zoom-In. See the Milestone 4 report's
+    # "attachment semantics" section for the full investigation/rationale.
+    include_chat, include_project, include_general = _effective_scope_flags(scope_settings)
     if route.use_retrieval:
         evidence = retrieve_and_cite(
             retriever,
@@ -944,9 +1146,10 @@ def _stream_vision_reply(
             project_ids=tuple(str(p) for p in project_ids),
             chat_scope_top_k=settings.retrieval_chat_scope_top_k,
             project_scope_top_k=settings.retrieval_project_scope_top_k,
-            include_chat=scope_settings.chat_enabled,
-            include_project=scope_settings.project_enabled,
-            include_general=scope_settings.general_enabled,
+            include_chat=include_chat,
+            include_project=include_project,
+            include_general=include_general,
+            retrieval_mode_label="zoom_in" if scope_settings.zoom_in_mode else None,
         )
     else:
         evidence = CorpusEvidence(sources=[], citations=[])
@@ -1008,13 +1211,14 @@ def _stream_vision_reply(
 
         transparency = transparency_to_dict(
             build_transparency_snapshot(
-                chat_enabled=scope_settings.chat_enabled,
-                project_enabled=scope_settings.project_enabled,
-                general_enabled=scope_settings.general_enabled,
+                chat_enabled=include_chat,
+                project_enabled=include_project,
+                general_enabled=include_general,
                 include_other_project_summaries=scope_settings.include_other_project_summaries,
                 sources=evidence.sources,
                 approved_items=approved_items,
                 profiles=profiles,
+                zoom_in=scope_settings.zoom_in_mode,
             )
         )
 
@@ -1111,9 +1315,11 @@ def _handle_conversation_message(
     project_knowledge_repository: ProjectKnowledgeRepository,
     project_profile_repository: ProjectProfileRepository,
     conversation_scope_repository: ConversationScopeRepository,
+    scopes_repository: ScopesRepository,
     timer: RequestTimer,
     session_factory: Callable[[], Session],
     llm_provider: LLMProvider,
+    evidence_client: EvidenceClient,
 ) -> StreamingResponse:
     # Checked before any DB/validation work (milestone V4 — see
     # app/core/rate_limiter.py): the cheapest possible rejection for a
@@ -1138,16 +1344,37 @@ def _handle_conversation_message(
     # (see app/db/models_conversation_scope.py) — lazily created with
     # every tier on except pooling other projects' summaries, so a
     # conversation that never opens its scope settings behaves exactly
-    # like it always has.
-    scope_settings = conversation_scope_repository.get_or_create(user.id, conversation_id)
-    assert scope_settings is not None  # conversation ownership already verified above
+    # like it always has. Milestone 2 (conversation document scope)
+    # observability: wraps this plus the project-association lookup and
+    # the new selected_document_count query in one "scope_resolution"
+    # stage — "how long did it take to know what this turn's retrieval
+    # scope actually is," distinct from "conversation_lookup" (the
+    # conversation row itself, timed separately above) and "retrieval"
+    # (the actual Qdrant search, timed inside app/core/retriever.py).
+    with timer.stage("scope_resolution"):
+        scope_settings = conversation_scope_repository.get_or_create(user.id, conversation_id)
+        assert scope_settings is not None  # conversation ownership already verified above
 
-    # Contextual research scopes: every project (if any) this conversation
-    # currently belongs to — threaded into retrieval below as the
-    # project-scope tier(s), priority-ordered above the general corpus (see
-    # app/core/scoped_retrieval.py). [] for a conversation in zero
-    # projects, the common case today.
-    project_ids = projects_repository.get_project_ids_for_conversation(user.id, conversation_id)
+        # Contextual research scopes: every project (if any) this
+        # conversation currently belongs to — threaded into retrieval
+        # below as the project-scope tier(s), priority-ordered above the
+        # general corpus (see app/core/scoped_retrieval.py). [] for a
+        # conversation in zero projects, the common case today.
+        project_ids = projects_repository.get_project_ids_for_conversation(
+            user.id, conversation_id
+        )
+        selected_document_count = scopes_repository.count_conversation_documents(
+            user.id, conversation_id
+        )
+    if timer.enabled:
+        timer.record_metric("selected_document_count", float(selected_document_count))
+        # Milestone 4 (Zoom-In) observability — recorded here (independent
+        # of retrieve_and_cite's own "zoom_in" retrieval_mode tag, set
+        # later, per-route, only once retrieval actually runs) so
+        # "was this turn even eligible for Zoom-In" is visible even on a
+        # path that never reaches retrieval at all (e.g. rate-limited,
+        # attachment-validation error).
+        timer.record_tag("zoom_in_mode", "true" if scope_settings.zoom_in_mode else "false")
     # Project Memory + Research Profile: user-approved knowledge items and
     # confirmed research preferences, formatted into a non-citable
     # "Project Context" block (see app/core/project_context.py) — empty
@@ -1422,6 +1649,7 @@ def _handle_conversation_message(
         attach_only=attach_only,
         attachment_storage=attachment_storage,
         session_factory=session_factory,
+        evidence_client=evidence_client,
     )
 
 
@@ -1441,9 +1669,11 @@ async def post_conversation_message(
     project_knowledge_repository: ProjectKnowledgeRepositoryDep,
     project_profile_repository: ProjectProfileRepositoryDep,
     conversation_scope_repository: ConversationScopeRepositoryDep,
+    scopes_repository: ScopesRepositoryDep,
     request_timer: RequestTimerDep,
     session_factory: SessionFactoryDep,
     llm_provider: LLMProviderDep,
+    evidence_client: EvidenceClientDep,
 ) -> StreamingResponse:
     """Accepts either `application/json` (the original, text-only shape —
     see PostConversationMessageRequest) or `multipart/form-data` (adds
@@ -1489,9 +1719,11 @@ async def post_conversation_message(
         project_knowledge_repository,
         project_profile_repository,
         conversation_scope_repository,
+        scopes_repository,
         request_timer,
         session_factory,
         llm_provider,
+        evidence_client,
     )
 
 

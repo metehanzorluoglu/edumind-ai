@@ -155,6 +155,92 @@ services:
     networks:
       - edumind-rpi5-net
 
+  # Milestone 11 (Evidence Service & Shadow Infrastructure Implementation)
+  # — a stateless, internal-only NLI/entailment classification service for
+  # the (currently OFF-by-default — see EVIDENCE_ANALYSIS_ENABLED in
+  # .env.oracle) evidence-analysis shadow track. No database, no Qdrant,
+  # no Ollama, no public port — see evidence-service/README.md and the
+  # Milestone 11 report for the full design. Deliberately its OWN image
+  # (not folded into the backend image): keeps torch/transformers out of
+  # the primary backend image entirely (Milestone 10 §28), and keeps this
+  # service's resource footprint independently boundable/restartable from
+  # backend workers (Milestone 10 §26).
+  evidence-service:
+    build:
+      context: ../../evidence-service
+      dockerfile: Dockerfile
+
+    platform: linux/arm64
+
+    # Deliberately does NOT read .env.oracle (unlike backend/backend-
+    # migrate below) — that file carries the FULL backend secret bundle
+    # (JWT_SECRET, OAuth client secrets, SMTP password). This service has
+    # no use for any of it (Settings in evidence-service/app/config.py
+    # only ever reads EVIDENCE_SERVICE_*-prefixed variables, all of which
+    # already have sensible defaults matching this compose file's own
+    # setup — the /model-cache volume path, port 8100) and there is no
+    # reason to expose that secret bundle inside a second container's
+    # environment merely because it happens to share a compose file.
+    # Add explicit `environment:` keys here (EVIDENCE_SERVICE_*) only if
+    # a future override is ever needed.
+
+    volumes:
+      - evidence-model-cache:/model-cache
+
+    # ~1.6GB RSS measured for the loaded model (Milestone 8-10) plus
+    # tokenizer/runtime overhead; 2g gives headroom without being
+    # excessive.
+    #
+    # cpus: "2.0" — NOT "1.0" as originally planned. A real on-host
+    # measurement during Milestone 11 (see the report's "Real-Service
+    # Performance" section) found cpus:"1.0" produced single-pair
+    # latencies of ~1.1-1.5s and a batch-of-3 call that exceeded the 2.3s
+    # internal timeout entirely — torch's default intra-op parallelism
+    # still spawns threads matching the HOST's visible core count (4)
+    # regardless of the cgroup CPU quota, so a too-tight quota causes
+    # thread contention on top of the raw compute shortfall, not just a
+    # proportional slowdown. Raising to 2.0 measurably improved (though
+    # did not eliminate — this host has real concurrent production
+    # traffic) latency and variance. This still leaves qdrant (0.5) +
+    # backend (1.0) + evidence-service (2.0) = 3.5 of 4 OCPUs explicitly
+    # reserved, with ollama uncapped and free to burst into whatever
+    # remains — see the Milestone 11 report for the full, honest
+    # measured numbers and the resulting recommendation to keep this
+    # milestone's rollout at shadow (not enforced) scope specifically
+    # because measured latency on this shared host is higher and more
+    # variable than the earlier offline evaluation's clean-room numbers.
+    mem_limit: 2g
+    cpus: "2.0"
+
+    # No `ports:` at all — Milestone 11 §7/§40: never published to the
+    # host, never reachable outside this compose network. `expose` only
+    # documents the container-internal port for other containers on the
+    # same network; it publishes nothing.
+    expose:
+      - "8100"
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import json, urllib.request; body = json.loads(urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=5).read()); raise SystemExit(0 if body.get('ready') else 1)"
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      # Generous: a cold model load (weights download or disk read +
+      # tokenizer init + sanity check) is a one-time startup cost, not a
+      # steady-state latency concern (Milestone 10 §31) — see the
+      # Milestone 11 report's real measured startup time.
+      start_period: 90s
+
+    restart: unless-stopped
+
+    networks:
+      - edumind-rpi5-net
+
   backend:
     build:
       context: ../../rag-backend
@@ -207,6 +293,14 @@ services:
 
     restart: unless-stopped
 
+    # Deliberately does NOT depend on evidence-service (Milestone 11
+    # §12/§30: "Backend must NOT depend on evidence service for startup
+    # availability... Optional component must remain optional.") — chat
+    # continues to work identically whether evidence-service is healthy,
+    # still starting, or not running at all, since
+    # EVIDENCE_ANALYSIS_ENABLED defaults to false and every call site
+    # (app/core/evidence_shadow.py) treats a client failure as a
+    # no-op-and-log outcome, never a raised exception.
     depends_on:
       qdrant:
         condition: service_healthy
@@ -227,6 +321,16 @@ volumes:
 
   ollama-data:
     name: edumind-rpi5_ollama-data
+
+  # Milestone 11 §10/§29: persists the pinned NLI model weights so
+  # evidence-service never re-downloads the ~1.35GB model on a container
+  # restart. Named consistently with the other volumes above (same
+  # `edumind-rpi5_` prefix, even though the service itself is
+  # Oracle-specific) — this compose project intentionally keeps that
+  # legacy prefix for every volume, not just the ones inherited from the
+  # original Pi deployment (see this file's own header comment).
+  evidence-model-cache:
+    name: edumind-rpi5_evidence-model-cache
 
 networks:
   edumind-rpi5-net:

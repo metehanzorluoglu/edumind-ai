@@ -22,6 +22,12 @@ import {
 import { AttachmentButton } from '@/components/AttachmentButton';
 import { AttachmentPreviewRow } from '@/components/AttachmentPreviewRow';
 import { ChatComposer } from '@/components/ChatComposer';
+import { ChatSourcesButton } from '@/components/ChatSourcesButton';
+import {
+  ChatSourcesPicker,
+  type PendingSourceDoc,
+  type SourceMode,
+} from '@/components/ChatSourcesPicker';
 import { ConversationTurnCard } from '@/components/ConversationTurnCard';
 import { CorpusToggle } from '@/components/CorpusToggle';
 import { EduM8Symbol } from '@/components/EduM8Logo';
@@ -127,7 +133,11 @@ export default function NewChatScreen() {
   const theme = useTheme();
   const styles = useMemo(() => buildStyles(theme), [theme]);
   const { client, baseUrl, hydrated } = useClient();
-  const { imageGenerator: imageGeneratorEnabled } = useFeatureFlags();
+  const {
+    imageGenerator: imageGeneratorEnabled,
+    conversationScope: conversationScopeEnabled,
+    zoomIn: zoomInEnabled,
+  } = useFeatureFlags();
   const router = useRouter();
   const refreshConversations = useRefreshConversations();
   const { createConversation } = useConversations(client);
@@ -144,6 +154,23 @@ export default function NewChatScreen() {
   const [submittedQuestion, setSubmittedQuestion] = useState<string | null>(null);
   const [submittedAttachments, setSubmittedAttachments] = useState<PendingAttachment[]>([]);
   const [submittedUseCorpus, setSubmittedUseCorpus] = useState(false);
+  // Milestone 3 §7 (new-conversation edge case): no conversation_id exists
+  // yet for a brand-new chat, so a Scope selection made here is held
+  // locally until createConversation() succeeds — then persisted via ONE
+  // replaceConversationDocuments() call inside runFirstMessage(), BEFORE
+  // that first message's own retrieval runs (see runFirstMessage below).
+  // `submittedSourceIds` mirrors submittedAttachments/submittedUseCorpus's
+  // own "snapshot at submit time, used by Retry" pattern exactly.
+  const [pendingSources, setPendingSources] = useState<PendingSourceDoc[]>([]);
+  const [submittedSourceIds, setSubmittedSourceIds] = useState<string[]>([]);
+  // Milestone 4 (Zoom-In): mirrors pendingSources/submittedSourceIds'
+  // exact "snapshot at submit time, used by Retry" pattern — the mode
+  // chosen in the picker is held locally until runFirstMessage persists
+  // it (one PATCH .../scope, immediately after the sources PUT, still
+  // before the first message's own retrieval runs).
+  const [pendingMode, setPendingMode] = useState<SourceMode>('prioritize');
+  const [submittedMode, setSubmittedMode] = useState<SourceMode>('prioritize');
+  const [sourcesPickerOpen, setSourcesPickerOpen] = useState(false);
   const [assistantTurn, setAssistantTurn] = useState<DisplayMessage | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const {
@@ -234,11 +261,49 @@ export default function NewChatScreen() {
     question: string,
     clientMessageId: string,
     messageAttachments: PendingAttachment[],
-    messageUseCorpus: boolean
+    messageUseCorpus: boolean,
+    sourceDocumentIds: string[],
+    sourceMode: SourceMode
   ): Promise<void> {
     setPhase('sending');
     setErrorMessage(null);
     setAssistantTurn(pendingAssistantTurn(messageAttachments, messageUseCorpus));
+
+    // Milestone 3 §7: persisted BEFORE the message stream starts, so the
+    // very first turn's own retrieval already sees the selected scope —
+    // "the first user message must not silently ignore the selected
+    // Scope." One bulk PUT regardless of how many sources were picked.
+    // Idempotent, so a Retry after a later failure (see the catch blocks
+    // below, which call fail() rather than unwinding the conversation
+    // itself) safely repeats this rather than skipping or double-applying.
+    if (sourceDocumentIds.length > 0) {
+      try {
+        await client.replaceConversationDocuments(conversationId, sourceDocumentIds);
+      } catch (error) {
+        fail(
+          formatRequestError('PUT', baseUrl, `/conversations/${conversationId}/documents`, error)
+        );
+        return;
+      }
+    }
+
+    // Milestone 4 (Zoom-In): persisted immediately after the sources
+    // above (same ordering rule — before the first message's retrieval
+    // runs), never before them — the backend's >=1-source check for
+    // zoom_in_mode=true reads the CURRENTLY persisted selection, so the
+    // PUT above must land first. Only issued when Zoom-In was actually
+    // chosen: a brand-new conversation's mode is already 'prioritize'
+    // (the persisted default), so there is nothing to PATCH for that
+    // case. Same idempotent/Retry-preserving failure handling as the
+    // sources PUT above.
+    if (sourceMode === 'zoom-in') {
+      try {
+        await client.updateConversationScope(conversationId, { zoomInMode: true });
+      } catch (error) {
+        fail(formatRequestError('PATCH', baseUrl, `/conversations/${conversationId}/scope`, error));
+        return;
+      }
+    }
 
     abortControllerRef.current?.abort();
     const controller = new AbortController();
@@ -350,13 +415,19 @@ export default function NewChatScreen() {
     isSubmittingRef.current = true;
     const attachmentsSnapshot = attachments;
     const useCorpusSnapshot = useCorpus;
+    const sourceIdsSnapshot = pendingSources.map((doc) => doc.documentId);
+    const modeSnapshot = pendingMode;
     setQuery('');
     clearAttachments();
     setUseCorpus(false);
+    setPendingSources([]);
+    setPendingMode('prioritize');
     setErrorMessage(null);
     setSubmittedQuestion(question);
     setSubmittedAttachments(attachmentsSnapshot);
     setSubmittedUseCorpus(useCorpusSnapshot);
+    setSubmittedSourceIds(sourceIdsSnapshot);
+    setSubmittedMode(modeSnapshot);
     setAssistantTurn(pendingAssistantTurn(attachmentsSnapshot, useCorpusSnapshot));
     setPhase('creating');
 
@@ -364,7 +435,15 @@ export default function NewChatScreen() {
       const { id } = await createConversation();
       const clientMessageId = generateClientMessageId();
       pendingRef.current = { conversationId: id, clientMessageId };
-      await runFirstMessage(id, question, clientMessageId, attachmentsSnapshot, useCorpusSnapshot);
+      await runFirstMessage(
+        id,
+        question,
+        clientMessageId,
+        attachmentsSnapshot,
+        useCorpusSnapshot,
+        sourceIdsSnapshot,
+        modeSnapshot
+      );
     } catch (error) {
       // No conversation exists yet, so there's nothing for Retry to target
       // — restore the input instead and let the user resubmit from scratch.
@@ -396,7 +475,9 @@ export default function NewChatScreen() {
       submittedQuestion,
       pending.clientMessageId,
       submittedAttachments,
-      submittedUseCorpus
+      submittedUseCorpus,
+      submittedSourceIds,
+      submittedMode
     );
   }
 
@@ -486,6 +567,14 @@ export default function NewChatScreen() {
                 setImageModalKey((k) => k + 1);
                 setImageModalOpen(true);
               }}
+              disabled={phase !== 'idle'}
+            />
+          )}
+          {conversationScopeEnabled && (
+            <ChatSourcesButton
+              count={pendingSources.length}
+              mode={pendingMode}
+              onPress={() => setSourcesPickerOpen(true)}
               disabled={phase !== 'idle'}
             />
           )}
@@ -607,6 +696,20 @@ export default function NewChatScreen() {
           onClose={() => setImageModalOpen(false)}
           onGenerate={handleGenerateImagesFromNew}
           initialValues={imageModalInitialValues}
+        />
+      )}
+
+      {sourcesPickerOpen && (
+        <ChatSourcesPicker
+          target={{ kind: 'pending' }}
+          initialSelection={pendingSources}
+          initialMode={pendingMode}
+          zoomInEnabled={zoomInEnabled}
+          onClose={() => setSourcesPickerOpen(false)}
+          onSaved={(selection, mode) => {
+            setPendingSources(selection);
+            setPendingMode(mode);
+          }}
         />
       )}
     </KeyboardAvoidingView>

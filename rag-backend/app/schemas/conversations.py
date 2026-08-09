@@ -108,12 +108,38 @@ class RenameConversationRequest(BaseModel):
     title: str = Field(min_length=1, max_length=120)
 
 
-class AddConversationDocumentRequest(BaseModel):
-    """Associates an already-ingested document (see POST /documents) with
-    this conversation as chat-scope retrieval evidence — never uploads or
-    re-embeds anything; document_id must already belong to the caller."""
+_MAX_BULK_DOCUMENT_IDS = 200
 
-    document_id: str
+
+class AddConversationDocumentsRequest(BaseModel):
+    """Milestone 2 (conversation document scope): associates one or more
+    already-ingested documents (see POST /documents) with this
+    conversation as chat-scope retrieval evidence in a single call — never
+    uploads or re-embeds anything; every id must already belong to the
+    caller (validated atomically — see
+    app/core/document_scoping.py's InvalidDocumentIdsError). Adding a
+    document already in scope is a no-op, and a repeated id within this
+    same list is deduplicated — both idempotent, so a multi-select UI can
+    always resend its full current picks safely.
+
+    Renamed (plural, list-based) from the milestone-1-era
+    AddConversationDocumentRequest's singular `document_id` — safe because
+    that field had zero SDK/frontend consumers as of this milestone (see
+    the Milestone 2 report); `document_ids: ["x"]` covers the old
+    single-add case exactly."""
+
+    document_ids: list[str] = Field(min_length=1, max_length=_MAX_BULK_DOCUMENT_IDS)
+
+
+class ReplaceConversationDocumentsRequest(BaseModel):
+    """PUT .../documents — makes `document_ids` the conversation's entire
+    chat-scope selection (documents not listed are removed, documents
+    listed but not yet associated are added, documents in both are left
+    untouched — see replace_conversation_documents). `document_ids: []` is
+    how a caller clears the selection entirely; there is no separate
+    "clear" endpoint."""
+
+    document_ids: list[str] = Field(min_length=0, max_length=_MAX_BULK_DOCUMENT_IDS)
 
 
 class ConversationDocumentResponse(BaseModel):
@@ -123,24 +149,39 @@ class ConversationDocumentResponse(BaseModel):
     added_at: datetime
 
 
+class ConversationDocumentListResponse(BaseModel):
+    documents: list[ConversationDocumentResponse]
+    total: int
+
+
 class ConversationScopeResponse(BaseModel):
     """The research workspace's per-conversation "active scope" toggle bar
-    (see app/db/models_conversation_scope.py)."""
+    (see app/db/models_conversation_scope.py). `zoom_in_mode` (Milestone 4)
+    is an explicit override layered on top of the three tier toggles —
+    see that model's docstring for exactly what it changes about
+    retrieval."""
 
     chat_enabled: bool
     project_enabled: bool
     general_enabled: bool
     include_other_project_summaries: bool
+    zoom_in_mode: bool = False
 
 
 class UpdateConversationScopeRequest(BaseModel):
     """Partial update — same `model_fields_set`-driven convention as every
-    other PATCH in this app."""
+    other PATCH in this app. Setting `zoom_in_mode=True` is rejected
+    (422) unless this conversation currently has at least one selected
+    chat-scope document (see app/api/routes_conversations.py's
+    update_conversation_scope) — Zoom-In with nothing to zoom in on would
+    silently retrieve zero evidence every turn, which is never useful and
+    is caught here rather than left as a confusing empty-answer surprise."""
 
     chat_enabled: bool | None = None
     project_enabled: bool | None = None
     general_enabled: bool | None = None
     include_other_project_summaries: bool | None = None
+    zoom_in_mode: bool | None = None
 
 
 class PostConversationMessageRequest(BaseModel):

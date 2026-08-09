@@ -57,6 +57,10 @@ class RetrievalScopeResponse(BaseModel):
     project: bool
     general: bool
     other_projects: bool
+    # Milestone 4 (Zoom-In) — see app/core/answer_transparency.py's
+    # RetrievalScopeSnapshot.zoom_in docstring. False for every message
+    # persisted before this field existed.
+    zoom_in: bool = False
 
 
 class DocumentUsedResponse(BaseModel):

@@ -24,8 +24,10 @@ from app.deps import (
     DocumentJobsRepositoryDep,
     DocumentsRepositoryDep,
     EmbeddingProviderDep,
+    FoldersRepositoryDep,
     RequestTimerDep,
     ScopesRepositoryDep,
+    SettingsDep,
     VectorStoreDep,
 )
 from app.ingestion.chunker import chunk_pages
@@ -46,6 +48,7 @@ from app.schemas.documents import (
     DocumentSummary,
     DocumentUploadAcceptedResponse,
     DocumentUploadResponse,
+    MoveDocumentRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,8 +76,10 @@ def post_document(
     background_tasks: BackgroundTasks,
     response: Response,
     user: CurrentUserDep,
+    settings: SettingsDep,
     documents_repository: DocumentsRepositoryDep,
     document_jobs_repository: DocumentJobsRepositoryDep,
+    folders_repository: FoldersRepositoryDep,
     embedding_provider: EmbeddingProviderDep,
     vector_store: VectorStoreDep,
     request_timer: RequestTimerDep,
@@ -87,6 +92,16 @@ def post_document(
     source_venue: Annotated[str | None, Form()] = None,
     doi: Annotated[str | None, Form()] = None,
     source_url: Annotated[str | None, Form()] = None,
+    # Milestone 1 (Document Library / Folder Management): uploads directly
+    # into the folder the user currently has open, so "upload while inside
+    # Research / AI Education" doesn't require a separate move step
+    # afterward. Resolved and ownership-checked here, synchronously, before
+    # the slow background ingestion job (embedding) ever starts — a bad
+    # folder_id fails fast with a 404 rather than after minutes of wasted
+    # CPU work. Ignored (documents land at root, exactly as before this
+    # milestone) when folder_library_enabled is False, so a stale client
+    # can't smuggle folder placement past a disabled feature.
+    folder_id: Annotated[str | None, Form()] = None,
 ) -> DocumentUploadAcceptedResponse:
     """Does the fast, synchronous part of ingestion only (duplicate check,
     parsing, chunking — measured under a second even for a 290-page PDF on
@@ -110,6 +125,20 @@ def post_document(
     reference (not the ambient get_current_timer() this module's deeper
     dependencies use) is what makes that safe.
     """
+    resolved_folder_id: uuid.UUID | None = None
+    if folder_id and settings.folder_library_enabled:
+        try:
+            candidate = uuid.UUID(folder_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid folder_id"
+            ) from exc
+        if folders_repository.get(user.id, candidate) is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found"
+            )
+        resolved_folder_id = candidate
+
     with request_timer.stage("file_save"):
         author_list = (
             [name.strip() for name in authors.split(",") if name.strip()] if authors else None
@@ -186,6 +215,7 @@ def post_document(
         embedding_provider=embedding_provider,
         vector_store=vector_store,
         timer=request_timer,
+        folder_id=resolved_folder_id,
     )
 
     request_timer.log_summary(note="sync phase (file_save/pdf_parsing/chunking) — "
@@ -238,6 +268,7 @@ def get_document_job(
                 document_id=record.document_id,
                 source_filename=record.source_filename,
                 file_format=record.file_format,
+                folder_id=str(record.folder_id) if record.folder_id else None,
                 document_type=record.document_type,  # type: ignore[arg-type]
                 journal_quartile=record.journal_quartile,  # type: ignore[arg-type]
                 title=record.title,
@@ -324,6 +355,7 @@ def get_documents(
             DocumentSummary(
                 document_id=record.document_id,
                 source_filename=record.source_filename,
+                folder_id=str(record.folder_id) if record.folder_id else None,
                 document_type=record.document_type,  # type: ignore[arg-type]
                 journal_quartile=record.journal_quartile,  # type: ignore[arg-type]
                 title=record.title,
@@ -338,6 +370,56 @@ def get_documents(
             for record in records
         ],
         total=total,
+    )
+
+
+@router.patch("/documents/{document_id}", response_model=DocumentSummary)
+def move_document_route(
+    document_id: str,
+    request: MoveDocumentRequest,
+    user: CurrentUserDep,
+    settings: SettingsDep,
+    documents_repository: DocumentsRepositoryDep,
+    folders_repository: FoldersRepositoryDep,
+) -> DocumentSummary:
+    """Milestone 1 (Document Library / Folder Management): moves a document
+    into a different folder, or to root (`folder_id: null`) — a single SQL
+    column update (see DocumentsRepository.move_to_folder), never a
+    re-parse/re-embed/Qdrant write. 404s while folder_library_enabled is
+    False (see routes_folders.py's module docstring for why this endpoint,
+    living on the always-mounted documents router, needs its own explicit
+    gate rather than relying on a router simply not being included)."""
+    if not settings.folder_library_enabled:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Folder library is disabled")
+
+    target_folder_id: uuid.UUID | None = None
+    if request.folder_id:
+        try:
+            target_folder_id = uuid.UUID(request.folder_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid folder_id"
+            ) from exc
+        if folders_repository.get(user.id, target_folder_id) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Folder not found")
+
+    record = documents_repository.move_to_folder(user.id, document_id, target_folder_id)
+    if record is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Document not found")
+    return DocumentSummary(
+        document_id=record.document_id,
+        source_filename=record.source_filename,
+        folder_id=str(record.folder_id) if record.folder_id else None,
+        document_type=record.document_type,  # type: ignore[arg-type]
+        journal_quartile=record.journal_quartile,  # type: ignore[arg-type]
+        title=record.title,
+        authors=record.authors,
+        publication_year=record.publication_year,
+        source_venue=record.source_venue,
+        doi=record.doi,
+        source_url=record.source_url,
+        chunk_count=record.chunk_count,
+        ingested_at=record.ingested_at,
     )
 
 

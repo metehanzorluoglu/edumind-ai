@@ -14,6 +14,9 @@ class DocumentUploadResponse(BaseModel):
     document_id: str
     source_filename: str
     file_format: str
+    # Milestone 1 (Document Library / Folder Management): None = root/
+    # unfiled. See app/db/models_documents.py's `folder_id` docstring.
+    folder_id: str | None = None
     document_type: DocumentType
     journal_quartile: JournalQuartile = None
     title: str | None = None
@@ -79,6 +82,7 @@ class DocumentJobResponse(BaseModel):
 class DocumentSummary(BaseModel):
     document_id: str
     source_filename: str
+    folder_id: str | None = None
     document_type: DocumentType
     journal_quartile: JournalQuartile = None
     title: str | None = None
@@ -100,6 +104,15 @@ class DocumentDeleteResponse(BaseModel):
     deleted: bool
     document_id: str
     deleted_chunks: int
+
+
+class MoveDocumentRequest(BaseModel):
+    """PATCH /documents/{id} — moves a document into a different folder
+    (or to root, when `folder_id` is null). Purely organizational: never
+    touches chunks, embeddings, or Qdrant (see
+    DocumentsRepository.move_to_folder)."""
+
+    folder_id: str | None = None
 
 
 class DocumentMetadataPreviewResponse(BaseModel):

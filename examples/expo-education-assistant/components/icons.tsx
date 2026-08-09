@@ -402,6 +402,21 @@ export function StarIcon({
   );
 }
 
+/** Simple outline folder — Milestone 1 (Document Library / Folder
+ * Management): folder rows on the Documents screen. */
+export function FolderIcon({ size = 18, color, strokeWidth = 1.75 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox={VIEWBOX} fill="none">
+      <Path
+        d="M3.5 6.5c0-.83.67-1.5 1.5-1.5h4l2 2h8c.83 0 1.5.67 1.5 1.5v8.5a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5V6.5Z"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
+
 /** X — close a drawer/overlay/dialog. */
 export function CloseIcon({ size = 18, color, strokeWidth = 1.75 }: IconProps) {
   return (

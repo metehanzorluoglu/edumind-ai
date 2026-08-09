@@ -379,6 +379,16 @@ export interface paths {
          * @description Toggling here takes effect starting with this conversation's *next*
          *     message — a past message's own `transparency.retrieval_scope` always
          *     keeps showing what was active when it was actually generated.
+         *
+         *     Milestone 4 (Zoom-In): a request that sets `zoom_in_mode=True` is
+         *     additionally checked against two conditions before being applied —
+         *     `zoom_in_enabled` (see _require_zoom_in_enabled) and "this conversation
+         *     currently has at least one selected chat-scope document" (see
+         *     UpdateConversationScopeRequest's docstring) — either check failing
+         *     leaves the stored settings completely untouched (checked before the
+         *     repository call, not after). Turning `zoom_in_mode` back OFF, or a
+         *     request that doesn't mention it at all, is never subject to either
+         *     check.
          */
         patch: operations["update_conversation_scope_conversations__conversation_id__scope_patch"];
         trace?: never;
@@ -390,19 +400,33 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
-        put?: never;
         /**
-         * Add Conversation Document
-         * @description Associates an already-ingested document (see POST /documents) with
-         *     this conversation as chat-scope retrieval evidence (contextual
-         *     research scopes) — never duplicates the document's vectors, only adds
-         *     a pointer plus a Qdrant payload resync (see
-         *     app/core/document_scoping.py). Idempotent: re-adding a document already
-         *     associated with this conversation returns the existing association
-         *     unchanged.
+         * List Conversation Documents
+         * @description Milestone 2: the conversation's current chat-scope document
+         *     selection — what retrieval's "chat" tier actually draws from for this
+         *     conversation's next turn (see app/core/scoped_retrieval.py).
          */
-        post: operations["add_conversation_document_conversations__conversation_id__documents_post"];
+        get: operations["list_conversation_documents_conversations__conversation_id__documents_get"];
+        /**
+         * Replace Conversation Documents Route
+         * @description Milestone 2: makes `document_ids` this conversation's ENTIRE
+         *     chat-scope selection — documents not listed are removed, documents
+         *     listed but not yet associated are added, documents in both are left
+         *     untouched (see replace_conversation_documents). `document_ids: []`
+         *     clears the selection; there is no separate clear endpoint.
+         */
+        put: operations["replace_conversation_documents_route_conversations__conversation_id__documents_put"];
+        /**
+         * Add Conversation Documents Route
+         * @description Milestone 2: associates one or more already-ingested documents (see
+         *     POST /documents) with this conversation as chat-scope retrieval
+         *     evidence in a single call — never duplicates vectors, only adds
+         *     pointers plus a Qdrant payload resync per document (see
+         *     app/core/document_scoping.py). Idempotent per id and de-duplicated
+         *     within the request; returns the conversation's full current selection
+         *     (not just the newly-added ids).
+         */
+        post: operations["add_conversation_documents_route_conversations__conversation_id__documents_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -423,7 +447,9 @@ export interface paths {
          * Remove Conversation Document
          * @description Removes only the association — never the document itself (it may
          *     still be part of the caller's general corpus or another
-         *     conversation's/project's scope).
+         *     conversation's/project's scope). Pre-existing, unconditional (not
+         *     gated by conversation_scope_enabled — see
+         *     _require_conversation_scope_enabled's docstring).
          */
         delete: operations["remove_conversation_document_conversations__conversation_id__documents__document_id__delete"];
         options?: never;
@@ -1051,7 +1077,83 @@ export interface paths {
         delete: operations["delete_document_route_documents__document_id__delete"];
         options?: never;
         head?: never;
+        /**
+         * Move Document Route
+         * @description Milestone 1 (Document Library / Folder Management): moves a document
+         *     into a different folder, or to root (`folder_id: null`) — a single SQL
+         *     column update (see DocumentsRepository.move_to_folder), never a
+         *     re-parse/re-embed/Qdrant write. 404s while folder_library_enabled is
+         *     False (see routes_folders.py's module docstring for why this endpoint,
+         *     living on the always-mounted documents router, needs its own explicit
+         *     gate rather than relying on a router simply not being included).
+         */
+        patch: operations["move_document_route_documents__document_id__patch"];
+        trace?: never;
+    };
+    "/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Folder */
+        post: operations["create_folder_folders_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/folders/contents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Folder Contents
+         * @description One round trip for a folder library screen: the folder itself (None
+         *     for root), its breadcrumb chain, its direct child folders, and a page
+         *     of its direct documents — see FolderContentsResponse's docstring for
+         *     why this is one endpoint instead of two.
+         */
+        get: operations["get_folder_contents_folders_contents_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/folders/{folder_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Folder
+         * @description Safe by default: a non-empty folder is refused with 409 (see
+         *     FolderNotEmptyError) unless the caller explicitly opts into
+         *     `move_contents_to_root=true` — enforced here regardless of what the
+         *     frontend does, so a non-empty folder can never be silently emptied by
+         *     a stale or hand-crafted request (see the milestone's "least
+         *     destructive" requirement).
+         */
+        delete: operations["delete_folder_folders__folder_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Folder */
+        patch: operations["update_folder_folders__folder_id__patch"];
         trace?: never;
     };
     "/attachments/{attachment_id}/promote": {
@@ -1192,14 +1294,26 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
-         * AddConversationDocumentRequest
-         * @description Associates an already-ingested document (see POST /documents) with
-         *     this conversation as chat-scope retrieval evidence — never uploads or
-         *     re-embeds anything; document_id must already belong to the caller.
+         * AddConversationDocumentsRequest
+         * @description Milestone 2 (conversation document scope): associates one or more
+         *     already-ingested documents (see POST /documents) with this
+         *     conversation as chat-scope retrieval evidence in a single call — never
+         *     uploads or re-embeds anything; every id must already belong to the
+         *     caller (validated atomically — see
+         *     app/core/document_scoping.py's InvalidDocumentIdsError). Adding a
+         *     document already in scope is a no-op, and a repeated id within this
+         *     same list is deduplicated — both idempotent, so a multi-select UI can
+         *     always resend its full current picks safely.
+         *
+         *     Renamed (plural, list-based) from the milestone-1-era
+         *     AddConversationDocumentRequest's singular `document_id` — safe because
+         *     that field had zero SDK/frontend consumers as of this milestone (see
+         *     the Milestone 2 report); `document_ids: ["x"]` covers the old
+         *     single-add case exactly.
          */
-        AddConversationDocumentRequest: {
-            /** Document Id */
-            document_id: string;
+        AddConversationDocumentsRequest: {
+            /** Document Ids */
+            document_ids: string[];
         };
         /** AddProjectConversationRequest */
         AddProjectConversationRequest: {
@@ -1242,6 +1356,8 @@ export interface components {
             doi?: string | null;
             /** Source Url */
             source_url?: string | null;
+            /** Folder Id */
+            folder_id?: string | null;
         };
         /** Body_post_metadata_preview_documents_metadata_preview_post */
         Body_post_metadata_preview_documents_metadata_preview_post: {
@@ -1347,6 +1463,13 @@ export interface components {
             /** Messages */
             messages: components["schemas"]["MessageResponse"][];
         };
+        /** ConversationDocumentListResponse */
+        ConversationDocumentListResponse: {
+            /** Documents */
+            documents: components["schemas"]["ConversationDocumentResponse"][];
+            /** Total */
+            total: number;
+        };
         /** ConversationDocumentResponse */
         ConversationDocumentResponse: {
             /** Document Id */
@@ -1374,7 +1497,10 @@ export interface components {
         /**
          * ConversationScopeResponse
          * @description The research workspace's per-conversation "active scope" toggle bar
-         *     (see app/db/models_conversation_scope.py).
+         *     (see app/db/models_conversation_scope.py). `zoom_in_mode` (Milestone 4)
+         *     is an explicit override layered on top of the three tier toggles —
+         *     see that model's docstring for exactly what it changes about
+         *     retrieval.
          */
         ConversationScopeResponse: {
             /** Chat Enabled */
@@ -1385,6 +1511,11 @@ export interface components {
             general_enabled: boolean;
             /** Include Other Project Summaries */
             include_other_project_summaries: boolean;
+            /**
+             * Zoom In Mode
+             * @default false
+             */
+            zoom_in_mode: boolean;
         };
         /** ConversationSummaryResponse */
         ConversationSummaryResponse: {
@@ -1407,6 +1538,13 @@ export interface components {
             /** Last Message Preview */
             last_message_preview?: string | null;
         };
+        /** CreateFolderRequest */
+        CreateFolderRequest: {
+            /** Name */
+            name: string;
+            /** Parent Id */
+            parent_id?: string | null;
+        };
         /** CreateProjectNoteRequest */
         CreateProjectNoteRequest: {
             /** Content */
@@ -1418,6 +1556,17 @@ export interface components {
             name: string;
             /** Description */
             description?: string | null;
+        };
+        /** DeleteFolderResponse */
+        DeleteFolderResponse: {
+            /** Deleted */
+            deleted: boolean;
+            /** Folder Id */
+            folder_id: string;
+            /** Moved Folders */
+            moved_folders: number;
+            /** Moved Documents */
+            moved_documents: number;
         };
         /** DevLoginRequest */
         DevLoginRequest: {
@@ -1517,6 +1666,8 @@ export interface components {
             document_id: string;
             /** Source Filename */
             source_filename: string;
+            /** Folder Id */
+            folder_id?: string | null;
             /**
              * Document Type
              * @enum {string}
@@ -1598,6 +1749,8 @@ export interface components {
             source_filename: string;
             /** File Format */
             file_format: string;
+            /** Folder Id */
+            folder_id?: string | null;
             /**
              * Document Type
              * @enum {string}
@@ -1644,6 +1797,56 @@ export interface components {
          * @enum {string}
          */
         ExtractionSource: "user" | "embedded_metadata" | "structured_text" | "filename";
+        /** FolderBreadcrumb */
+        FolderBreadcrumb: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+        };
+        /**
+         * FolderContentsResponse
+         * @description GET /folders/contents — one round trip for everything a folder
+         *     library screen needs to render: which folder this is (None = root),
+         *     the breadcrumb chain to get here, its direct child folders, and a page
+         *     of its direct documents. Avoids the two-separate-list-calls N+1 a
+         *     naive "GET /folders?parent=X" + "GET /documents?folder=X" pair would
+         *     cost on every navigation.
+         */
+        FolderContentsResponse: {
+            folder: components["schemas"]["FolderResponse"] | null;
+            /** Breadcrumbs */
+            breadcrumbs: components["schemas"]["FolderBreadcrumb"][];
+            /** Folders */
+            folders: components["schemas"]["FolderResponse"][];
+            /** Documents */
+            documents: components["schemas"]["DocumentSummary"][];
+            /** Documents Total */
+            documents_total: number;
+        };
+        /** FolderResponse */
+        FolderResponse: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Parent Id */
+            parent_id?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Folder Count */
+            folder_count: number;
+            /** Document Count */
+            document_count: number;
+        };
         /**
          * GenerateConversationSummaryRequest
          * @description Generates a new draft Project Memory item from an existing
@@ -1860,6 +2063,17 @@ export interface components {
              * @enum {string}
              */
             scope: "chat" | "project" | "general";
+        };
+        /**
+         * MoveDocumentRequest
+         * @description PATCH /documents/{id} — moves a document into a different folder
+         *     (or to root, when `folder_id` is null). Purely organizational: never
+         *     touches chunks, embeddings, or Qdrant (see
+         *     DocumentsRepository.move_to_folder).
+         */
+        MoveDocumentRequest: {
+            /** Folder Id */
+            folder_id?: string | null;
         };
         /** ProjectAttachmentListResponse */
         ProjectAttachmentListResponse: {
@@ -2262,6 +2476,19 @@ export interface components {
             /** Title */
             title: string;
         };
+        /**
+         * ReplaceConversationDocumentsRequest
+         * @description PUT .../documents — makes `document_ids` the conversation's entire
+         *     chat-scope selection (documents not listed are removed, documents
+         *     listed but not yet associated are added, documents in both are left
+         *     untouched — see replace_conversation_documents). `document_ids: []` is
+         *     how a caller clears the selection entirely; there is no separate
+         *     "clear" endpoint.
+         */
+        ReplaceConversationDocumentsRequest: {
+            /** Document Ids */
+            document_ids: string[];
+        };
         /** ResearchPreferenceListResponse */
         ResearchPreferenceListResponse: {
             /** Suggestions */
@@ -2326,6 +2553,11 @@ export interface components {
             general: boolean;
             /** Other Projects */
             other_projects: boolean;
+            /**
+             * Zoom In
+             * @default false
+             */
+            zoom_in: boolean;
         };
         /** RetrievedChunk */
         RetrievedChunk: {
@@ -2438,6 +2670,12 @@ export interface components {
             vision_model_available: boolean | null;
             /** Image Generation Enabled */
             image_generation_enabled: boolean;
+            /** Folder Library Enabled */
+            folder_library_enabled: boolean;
+            /** Conversation Scope Enabled */
+            conversation_scope_enabled: boolean;
+            /** Zoom In Enabled */
+            zoom_in_enabled: boolean;
             /** Text Model Available */
             text_model_available: boolean;
             /** Embedding Model Available */
@@ -2497,7 +2735,12 @@ export interface components {
         /**
          * UpdateConversationScopeRequest
          * @description Partial update — same `model_fields_set`-driven convention as every
-         *     other PATCH in this app.
+         *     other PATCH in this app. Setting `zoom_in_mode=True` is rejected
+         *     (422) unless this conversation currently has at least one selected
+         *     chat-scope document (see app/api/routes_conversations.py's
+         *     update_conversation_scope) — Zoom-In with nothing to zoom in on would
+         *     silently retrieve zero evidence every turn, which is never useful and
+         *     is caught here rather than left as a confusing empty-answer surprise.
          */
         UpdateConversationScopeRequest: {
             /** Chat Enabled */
@@ -2508,6 +2751,23 @@ export interface components {
             general_enabled?: boolean | null;
             /** Include Other Project Summaries */
             include_other_project_summaries?: boolean | null;
+            /** Zoom In Mode */
+            zoom_in_mode?: boolean | null;
+        };
+        /**
+         * UpdateFolderRequest
+         * @description Partial update — only fields actually present in the request body
+         *     are applied (see `model_fields_set`, same convention as
+         *     UpdateProjectRequest): a rename-only PATCH never moves the folder, and
+         *     a move-only PATCH never renames it. `parent_id: null` explicitly means
+         *     "move to root" when the field IS present; omitting `parent_id`
+         *     entirely leaves the folder where it is.
+         */
+        UpdateFolderRequest: {
+            /** Name */
+            name?: string | null;
+            /** Parent Id */
+            parent_id?: string | null;
         };
         /**
          * UpdateProjectKnowledgeItemRequest
@@ -3326,7 +3586,40 @@ export interface operations {
             };
         };
     };
-    add_conversation_document_conversations__conversation_id__documents_post: {
+    list_conversation_documents_conversations__conversation_id__documents_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationDocumentListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    replace_conversation_documents_route_conversations__conversation_id__documents_put: {
         parameters: {
             query?: never;
             header?: {
@@ -3339,7 +3632,44 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["AddConversationDocumentRequest"];
+                "application/json": components["schemas"]["ReplaceConversationDocumentsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationDocumentListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_conversation_documents_route_conversations__conversation_id__documents_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddConversationDocumentsRequest"];
             };
         };
         responses: {
@@ -3349,7 +3679,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ConversationDocumentResponse"];
+                    "application/json": components["schemas"]["ConversationDocumentListResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4620,6 +4950,187 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DocumentDeleteResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    move_document_route_documents__document_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MoveDocumentRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_folder_folders_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateFolderRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FolderResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_folder_contents_folders_contents_get: {
+        parameters: {
+            query?: {
+                /** @description Omit or blank for root */
+                folder_id?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FolderContentsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_folder_folders__folder_id__delete: {
+        parameters: {
+            query?: {
+                /** @description If true, directly-contained folders/documents are moved to root instead of blocking the delete. */
+                move_contents_to_root?: boolean;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                folder_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteFolderResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_folder_folders__folder_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                folder_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateFolderRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FolderResponse"];
                 };
             };
             /** @description Validation Error */

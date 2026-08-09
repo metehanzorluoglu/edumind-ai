@@ -12,12 +12,14 @@ from app.api.routes_auth import router as auth_router
 from app.api.routes_chat import router as chat_router
 from app.api.routes_conversations import router as conversations_router
 from app.api.routes_documents import router as documents_router
+from app.api.routes_folders import router as folders_router
 from app.api.routes_health import router as health_router
 from app.api.routes_images import router as images_router
 from app.api.routes_projects import router as projects_router
 from app.api.routes_search import router as search_router
 from app.api.routes_status import router as status_router
 from app.config import get_settings, refuse_dev_email_backend_in_production
+from app.core.evidence_shadow import shutdown_shadow_executor
 from app.db.conversations_repository import sweep_stale_generating_messages
 from app.db.session import get_session_factory
 from app.logging_config import configure_logging
@@ -43,7 +45,15 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.info("Swept %d stale 'generating' message(s) to 'interrupted' on startup", swept)
     finally:
         session.close()
-    yield
+    try:
+        yield
+    finally:
+        # Milestone 11 §22's shutdown semantics: best-effort, non-blocking
+        # — an in-flight shadow job is diagnostic-only (see
+        # app/core/evidence_shadow.py) and never worth delaying process
+        # shutdown for. A no-op in every deployment until a future
+        # milestone turns EVIDENCE_ANALYSIS_ENABLED on.
+        shutdown_shadow_executor()
 
 
 def create_app() -> FastAPI:
@@ -74,6 +84,14 @@ def create_app() -> FastAPI:
     app.include_router(projects_router)
     app.include_router(search_router)
     app.include_router(documents_router)
+    # Folder library (Milestone 1) is always mounted, unlike images below —
+    # every handler in routes_folders.py (and the two folder-aware
+    # additions inside routes_documents.py) checks
+    # settings.folder_library_enabled itself and 404s when it's off, since
+    # one of those additions (PATCH /documents/{id}) lives on the
+    # documents_router mounted just above and can't be gated by simply not
+    # including a second router — see routes_folders.py's module docstring.
+    app.include_router(folders_router)
     app.include_router(attachments_router)
     # Image generation is wholly gated on IMAGE_GENERATION_ENABLED — when
     # disabled the router is simply not mounted, so every /images/* request

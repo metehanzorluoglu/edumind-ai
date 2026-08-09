@@ -24,6 +24,38 @@ export interface FeatureSnapshot {
    * mounted on the backend, and existing generated images remain viewable
    * but cannot be regenerated. */
   imageGenerator: boolean;
+  /** Mirrors rag-backend's folder_library_enabled (see app/config.py +
+   * app/api/routes_status.py, Milestone 1: Document Library / Folder
+   * Management). When false, the Documents screen falls back to its
+   * pre-Milestone-1 flat list and every folder-only backend endpoint
+   * (POST/PATCH/DELETE /folders, GET /folders/contents, PATCH
+   * /documents/{id}) 404s regardless of what this flag says client-side —
+   * this only controls which UI is shown, never enforces the boundary
+   * itself (the backend already does, see routes_folders.py). */
+  folderLibrary: boolean;
+  /** Mirrors rag-backend's conversation_scope_enabled (see app/config.py +
+   * app/api/routes_status.py, Milestone 2/3: conversation document scope /
+   * Chat Sources). When false, the composer's Sources control is hidden
+   * entirely (see ChatSourcesButton) and GET/POST/PUT
+   * /conversations/{id}/documents 404 regardless of what this flag says
+   * client-side — same "backend enforces, frontend only hides" split as
+   * folderLibrary above. DELETE .../documents/{id} and existing chat
+   * retrieval are never gated by this (see the Milestone 2 report's flag
+   * docstring) — a conversation's already-selected sources keep working
+   * even with this off; the user just can't change the selection through
+   * this UI until it's back on. */
+  conversationScope: boolean;
+  /** Mirrors rag-backend's zoom_in_enabled (see app/config.py +
+   * app/api/routes_status.py, Milestone 4: Zoom-In / strict
+   * selected-source mode). Independent of conversationScope above — when
+   * false, ChatSourcesPicker's mode toggle is hidden (only "Prioritize"
+   * selection remains available) and PATCH .../scope requests that try to
+   * turn zoom_in_mode on 404 regardless of what this flag says
+   * client-side — same "backend enforces, frontend only hides" split as
+   * every other flag here. A conversation already in Zoom-In when this is
+   * off keeps its badge and keeps retrieving strictly; only the entry
+   * point to turn it ON is hidden. */
+  zoomIn: boolean;
   /**
    * Gates the Developer settings entry point + screen (backend URL, model
    * names, latency, per-service readiness). A deliberate deviation from the
@@ -69,6 +101,30 @@ function bootstrapImageGeneratorFlag(): boolean {
   return env ?? true;
 }
 
+function bootstrapFolderLibraryFlag(): boolean {
+  const env = readEnvBool('EXPO_PUBLIC_FOLDER_LIBRARY_ENABLED');
+  // Same reasoning as imageGenerator above: true by default (this is the
+  // new standard Documents experience, not an opt-in beta), overridden by
+  // GET /status the moment it resolves.
+  return env ?? true;
+}
+
+function bootstrapConversationScopeFlag(): boolean {
+  const env = readEnvBool('EXPO_PUBLIC_CONVERSATION_SCOPE_ENABLED');
+  // Same reasoning as folderLibrary above: true by default (this is the
+  // new standard Chat experience, not an opt-in beta), overridden by
+  // GET /status the moment it resolves.
+  return env ?? true;
+}
+
+function bootstrapZoomInFlag(): boolean {
+  const env = readEnvBool('EXPO_PUBLIC_ZOOM_IN_ENABLED');
+  // Same reasoning as conversationScope above: true by default (the new
+  // standard Chat Sources mode toggle, not an opt-in beta), overridden by
+  // GET /status the moment it resolves.
+  return env ?? true;
+}
+
 function bootstrapDeveloperSettingsFlag(): boolean {
   const env = readEnvBool('EXPO_PUBLIC_DEVELOPER_SETTINGS_ENABLED');
   // Default to FALSE — the opposite of imageGenerator, on purpose: anything
@@ -92,6 +148,9 @@ function bootstrapDeveloperSettingsFlag(): boolean {
 export function buildBootstrapSnapshot(): FeatureSnapshot {
   return {
     imageGenerator: bootstrapImageGeneratorFlag(),
+    folderLibrary: bootstrapFolderLibraryFlag(),
+    conversationScope: bootstrapConversationScopeFlag(),
+    zoomIn: bootstrapZoomInFlag(),
     developerSettings: bootstrapDeveloperSettingsFlag(),
     loaded: false,
   };
@@ -112,6 +171,9 @@ export function FeatureFlagsProvider({ children }: { children: ReactNode }) {
       // one flag is client-build configuration only.
       setSnapshot((prev) => ({
         imageGenerator: status.image_generation_enabled,
+        folderLibrary: status.folder_library_enabled,
+        conversationScope: status.conversation_scope_enabled,
+        zoomIn: status.zoom_in_enabled,
         developerSettings: prev.developerSettings,
         loaded: true,
       }));

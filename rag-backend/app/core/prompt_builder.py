@@ -166,6 +166,38 @@ evidence that something was verified."""
 
 NO_EVIDENCE_ANSWER = "The corpus does not contain enough evidence to answer this question."
 
+# Milestone 4 (Zoom-In / strict selected-source mode): a context-aware
+# replacement for NO_EVIDENCE_ANSWER used only when the conversation was
+# actually in Zoom-In (see app/api/routes_conversations.py) — distinct
+# wording because "the corpus does not contain enough evidence" is
+# misleading here: the corpus at large may well cover this question, but
+# Zoom-In deliberately never looked beyond the user's explicitly selected
+# source(s) (see resolve_scope_plan's include_project=False,
+# include_general=False), so the honest, actionable statement is about the
+# *selection*, not the corpus.
+ZOOM_IN_NO_EVIDENCE_ANSWER = (
+    "None of your selected sources contain enough evidence to answer this question. "
+    "Try selecting a different source, or turn off Zoom-In to search your full library."
+)
+
+# Milestone 4: the smallest addition that makes the model's own account of
+# its evidence match what Zoom-In retrieval actually did — without this,
+# the base grounding rules above ("use ONLY the numbered sources") already
+# forbid outside knowledge, but say nothing about *why* only a handful of
+# sources were offered, so a model can still phrase an answer as if it
+# freely searched a larger corpus and these were merely what it chose to
+# cite ("the literature suggests...", "other documents in your library
+# also cover..."). This addendum makes that framing explicitly wrong.
+_ZOOM_IN_ADDENDUM = """
+
+Zoom-In mode: the numbered source(s) below are the ONLY documents this \
+conversation is currently scoped to — there is no broader corpus, project \
+knowledge, or general library available for this question, and none was \
+searched. Never imply that other documents, "the literature", or "your \
+library" were considered beyond what's shown here. If these source(s) \
+don't contain enough evidence, say so plainly rather than reaching beyond \
+them."""
+
 _NO_SOURCES_MESSAGE = "No sources were found in the corpus for this query."
 
 _QUARTILE_LABELS: dict[str, str] = {"Q1": "Q1", "Q2": "Q2"}
@@ -188,6 +220,7 @@ def build_chat_prompt(
     project_context: str | None = None,
     *,
     prompt_variant: PromptVariant = "current",
+    strict_mode: bool = False,
 ) -> tuple[str, str]:
     """`project_context` (see app/core/project_context.py) is optional and
     additive — omitting it (the default) produces byte-for-byte the same
@@ -221,7 +254,15 @@ def build_chat_prompt(
     rules are never relaxed by this — the addendum explicitly requires the
     same [S#] discipline for factual claims while keeping proposed design
     choices uncited, on purpose (an uncited claim would itself violate the
-    rules above)."""
+    rules above).
+
+    `strict_mode` (Milestone 4 — Zoom-In, see app/db/models_conversation_
+    scope.py's `zoom_in_mode`) appends _ZOOM_IN_ADDENDUM last, after every
+    other addendum, so it is the most recent instruction the model reads
+    before the sources/question — the smallest possible prompt change:
+    grounding/citation rules are unchanged, only the model's account of
+    *why* so few sources are present is corrected. False by default,
+    byte-for-byte unchanged prompt for every non-Zoom-In call site."""
     context = _NO_SOURCES_MESSAGE if not sources else format_sources_block(sources)
     blocks = [format_project_context_block(project_context)] if project_context else []
     blocks.append(context)
@@ -238,10 +279,14 @@ def build_chat_prompt(
             system_prompt += _PROJECT_CONTEXT_RULE_COMPACT
         if instructional_design:
             system_prompt += _INSTRUCTIONAL_DESIGN_ADDENDUM
+        if strict_mode:
+            system_prompt += _ZOOM_IN_ADDENDUM
         return system_prompt, user_prompt
     system_prompt = _SYSTEM_PROMPT
     if instructional_design:
         system_prompt += _INSTRUCTIONAL_DESIGN_ADDENDUM
+    if strict_mode:
+        system_prompt += _ZOOM_IN_ADDENDUM
     return system_prompt, user_prompt
 
 

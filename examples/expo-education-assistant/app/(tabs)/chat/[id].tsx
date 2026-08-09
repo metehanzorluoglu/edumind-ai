@@ -1,4 +1,9 @@
-import { hasStreamingCapability, useConversationMessages } from 'education-assistant-client';
+import {
+  hasStreamingCapability,
+  useConversationDocuments,
+  useConversationMessages,
+  useConversationScope,
+} from 'education-assistant-client';
 import type { DisplayMessage, PostConversationMessageRequest } from 'education-assistant-client';
 import { useLocalSearchParams } from 'expo-router';
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -16,6 +21,12 @@ import {
 import { AttachmentButton } from '@/components/AttachmentButton';
 import { AttachmentPreviewRow } from '@/components/AttachmentPreviewRow';
 import { ChatComposer } from '@/components/ChatComposer';
+import { ChatSourcesButton } from '@/components/ChatSourcesButton';
+import {
+  ChatSourcesPicker,
+  type PendingSourceDoc,
+  type SourceMode,
+} from '@/components/ChatSourcesPicker';
 import { ConversationTurnCard } from '@/components/ConversationTurnCard';
 import { CorpusToggle } from '@/components/CorpusToggle';
 import { EduM8Symbol } from '@/components/EduM8Logo';
@@ -93,7 +104,11 @@ function ChatConversationScreen({ conversationId }: { conversationId: string }) 
   const theme = useTheme();
   const styles = useMemo(() => buildStyles(theme), [theme]);
   const { client, baseUrl, hydrated } = useClient();
-  const { imageGenerator: imageGeneratorEnabled } = useFeatureFlags();
+  const {
+    imageGenerator: imageGeneratorEnabled,
+    conversationScope: conversationScopeEnabled,
+    zoomIn: zoomInEnabled,
+  } = useFeatureFlags();
   const { preferences } = usePreferences();
   const refreshConversations = useRefreshConversations();
   const {
@@ -107,6 +122,64 @@ function ChatConversationScreen({ conversationId }: { conversationId: string }) 
     isResumingGeneration,
     cancelPersistedGeneration,
   } = useConversationMessages(client, conversationId);
+  // Milestone 3 (Chat Scope / Add Sources) — the conversation's current
+  // chat-scope selection, loaded once on mount so the composer's Sources
+  // button shows a real count immediately rather than flashing "Add
+  // sources" first (see ChatSourcesButton's `count: null` loading state).
+  const conversationDocuments = useConversationDocuments(client);
+  // Milestone 4 (Zoom-In) — the conversation's current mode (chat/project/
+  // general toggle bar + zoom_in_mode), loaded alongside the document
+  // selection so the button/picker can restore BOTH together, never one
+  // without the other.
+  const conversationScope = useConversationScope(client);
+  const [sourcesCount, setSourcesCount] = useState<number | null>(null);
+  const [sourceMode, setSourceMode] = useState<SourceMode>('prioritize');
+  const [sourcesPickerOpen, setSourcesPickerOpen] = useState(false);
+
+  const refreshSources = useCallback(() => {
+    conversationDocuments.refresh(conversationId);
+    conversationScope.refresh(conversationId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (!conversationScopeEnabled) return;
+    refreshSources();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId, conversationScopeEnabled]);
+
+  useEffect(() => {
+    if (conversationDocuments.documentsState.status === 'success') {
+      setSourcesCount(conversationDocuments.documentsState.total);
+    }
+  }, [conversationDocuments.documentsState]);
+
+  useEffect(() => {
+    if (conversationScope.scopeState.status === 'success') {
+      setSourceMode(conversationScope.scopeState.scope.zoom_in_mode ? 'zoom-in' : 'prioritize');
+    }
+  }, [conversationScope.scopeState]);
+
+  // Milestone 4 §15 (Milestone 3 bug fix): if EITHER the selection or the
+  // mode failed to load, the picker's initialSelection/initialMode below
+  // cannot be trusted as real server state — the button must show a
+  // retry/error affordance instead of silently offering a Save that would
+  // destructively overwrite whatever the server actually has (see
+  // ChatSourcesButton's `hasError` prop).
+  const sourcesHasError =
+    conversationDocuments.documentsState.status === 'error' ||
+    conversationScope.scopeState.status === 'error';
+  const sourcesLoading =
+    conversationDocuments.documentsState.status === 'loading' ||
+    conversationScope.scopeState.status === 'loading';
+
+  const sourcesInitialSelection: PendingSourceDoc[] =
+    conversationDocuments.documentsState.status === 'success'
+      ? conversationDocuments.documentsState.documents.map((doc) => ({
+          documentId: doc.document_id,
+          displayName: doc.source_filename,
+        }))
+      : [];
   // The (at most one, by backend construction) message this screen is
   // currently polling to completion — see isResumingGeneration's own docs.
   // Only its id is needed here, to target the explicit Cancel action below.
@@ -347,6 +420,15 @@ function ChatConversationScreen({ conversationId }: { conversationId: string }) 
                 disabled={isBusy}
               />
             )}
+            {conversationScopeEnabled && (
+              <ChatSourcesButton
+                count={sourcesCount}
+                mode={sourceMode}
+                hasError={sourcesHasError}
+                onPress={sourcesHasError ? refreshSources : () => setSourcesPickerOpen(true)}
+                disabled={isBusy || sourcesLoading}
+              />
+            )}
           </>
         }
       >
@@ -468,6 +550,20 @@ function ChatConversationScreen({ conversationId }: { conversationId: string }) 
           onClose={() => setImageModalOpen(false)}
           onGenerate={handleGenerateImages}
           initialValues={imageModalInitialValues}
+        />
+      )}
+
+      {sourcesPickerOpen && (
+        <ChatSourcesPicker
+          target={{ kind: 'conversation', conversationId }}
+          initialSelection={sourcesInitialSelection}
+          initialMode={sourceMode}
+          zoomInEnabled={zoomInEnabled}
+          onClose={() => setSourcesPickerOpen(false)}
+          onSaved={(selection, mode) => {
+            setSourcesCount(selection.length);
+            setSourceMode(mode);
+          }}
         />
       )}
     </KeyboardAvoidingView>

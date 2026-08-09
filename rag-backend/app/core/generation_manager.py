@@ -55,6 +55,7 @@ from sqlalchemy.orm import Session
 from app.core.citation import Citation
 from app.core.citation_validation import validate_citations
 from app.core.errors import LLMProviderError, VisionServiceError
+from app.core.generation_activity import generation_lease
 from app.core.generation_events import GenerationUpdate, GenProgress, GenToken
 from app.core.request_timing import RequestTimer
 from app.core.retrieval_schemas import RetrievedChunk
@@ -194,24 +195,35 @@ def run_text_generation(
         answer_parts: list[str] = []
         flushed_len = 0
         try:
-            for token in stream_answer():
-                if state.cancel_event.is_set():
-                    raise GenerationCancelled
-                answer_parts.append(token)
-                with state.lock:
-                    state.content += token
-                    current_len = len(state.content)
-                # Periodic partial-content flush to the database — a
-                # refresh/reopen *during* generation then shows real
-                # in-progress text instead of a blank row until
-                # completion, at the (deliberately small) cost of one
-                # extra UPDATE roughly every 200 characters. Status stays
-                # 'generating'; only the final flush below changes it.
-                if current_len - flushed_len >= 200:
-                    repository.update_assistant_message(
-                        assistant_message_id, content="".join(answer_parts), status="generating"
-                    )
-                    flushed_len = current_len
+            # Milestone 11.2: held only across the actual Ollama-consuming
+            # loop below (see app/core/generation_activity.py's module
+            # docstring for why here specifically, and why not the whole
+            # function) — released the instant this loop exits for ANY
+            # reason (normal completion falling through, GenerationCancelled
+            # raised, or an LLMProviderError raised), via the context
+            # manager's own finally, before either except clause below even
+            # runs. This is the host-wide signal the evidence-analysis
+            # shadow scheduler (app/core/evidence_shadow.py) uses to avoid
+            # starting NLI inference while qwen3:8b is actively generating.
+            with generation_lease():
+                for token in stream_answer():
+                    if state.cancel_event.is_set():
+                        raise GenerationCancelled
+                    answer_parts.append(token)
+                    with state.lock:
+                        state.content += token
+                        current_len = len(state.content)
+                    # Periodic partial-content flush to the database — a
+                    # refresh/reopen *during* generation then shows real
+                    # in-progress text instead of a blank row until
+                    # completion, at the (deliberately small) cost of one
+                    # extra UPDATE roughly every 200 characters. Status stays
+                    # 'generating'; only the final flush below changes it.
+                    if current_len - flushed_len >= 200:
+                        repository.update_assistant_message(
+                            assistant_message_id, content="".join(answer_parts), status="generating"
+                        )
+                        flushed_len = current_len
         except GenerationCancelled:
             answer = "".join(answer_parts)
             with state.lock:
@@ -403,20 +415,27 @@ def run_vision_generation(
         answer_parts: list[str] = []
         flushed_len = 0
         try:
-            async for token in stream_chat():
-                if state.cancel_event.is_set():
-                    return "".join(answer_parts), "cancelled", None, None
-                answer_parts.append(token)
-                with state.lock:
-                    state.content += token
-                    current_len = len(state.content)
-                # Same periodic partial-content flush as the text worker —
-                # see run_text_generation's own comment.
-                if current_len - flushed_len >= 200:
-                    repository.update_assistant_message(
-                        assistant_message_id, content="".join(answer_parts), status="generating"
-                    )
-                    flushed_len = current_len
+            # Milestone 11.2 — see run_text_generation's identical comment
+            # above; a plain (sync) `with` works correctly here even
+            # inside an `async def` since the context manager itself
+            # never awaits anything, and its `finally` still runs on an
+            # early `return` (the cancellation path just below) exactly
+            # as it would on a raised exception.
+            with generation_lease():
+                async for token in stream_chat():
+                    if state.cancel_event.is_set():
+                        return "".join(answer_parts), "cancelled", None, None
+                    answer_parts.append(token)
+                    with state.lock:
+                        state.content += token
+                        current_len = len(state.content)
+                    # Same periodic partial-content flush as the text worker —
+                    # see run_text_generation's own comment.
+                    if current_len - flushed_len >= 200:
+                        repository.update_assistant_message(
+                            assistant_message_id, content="".join(answer_parts), status="generating"
+                        )
+                        flushed_len = current_len
         except VisionServiceError as exc:
             return "".join(answer_parts), "error", str(exc), str(exc.category)
         return "".join(answer_parts), None, None, None
@@ -473,23 +492,25 @@ def run_batched_vision_generation(
         answer_parts: list[str] = []
         flushed_len = 0
         try:
-            async for update in stream_updates():
-                if state.cancel_event.is_set():
-                    return "".join(answer_parts), "cancelled", None, None
-                if isinstance(update, GenProgress):
+            # Milestone 11.2 — see run_text_generation's identical comment.
+            with generation_lease():
+                async for update in stream_updates():
+                    if state.cancel_event.is_set():
+                        return "".join(answer_parts), "cancelled", None, None
+                    if isinstance(update, GenProgress):
+                        with state.lock:
+                            state.progress = update.detail
+                            state.progress_seq += 1
+                        continue
+                    answer_parts.append(update.text)
                     with state.lock:
-                        state.progress = update.detail
-                        state.progress_seq += 1
-                    continue
-                answer_parts.append(update.text)
-                with state.lock:
-                    state.content += update.text
-                    current_len = len(state.content)
-                if current_len - flushed_len >= 200:
-                    repository.update_assistant_message(
-                        assistant_message_id, content="".join(answer_parts), status="generating"
-                    )
-                    flushed_len = current_len
+                        state.content += update.text
+                        current_len = len(state.content)
+                    if current_len - flushed_len >= 200:
+                        repository.update_assistant_message(
+                            assistant_message_id, content="".join(answer_parts), status="generating"
+                        )
+                        flushed_len = current_len
         except VisionServiceError as exc:
             return "".join(answer_parts), "error", str(exc), str(exc.category)
         return "".join(answer_parts), None, None, None

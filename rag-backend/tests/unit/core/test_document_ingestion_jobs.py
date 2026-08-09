@@ -70,7 +70,7 @@ class _FakeJobsRepository:
 
 
 class _FakeDocumentsRepository:
-    def create(self, *, user_id, metadata, chunk_count):
+    def create(self, *, user_id, metadata, chunk_count, folder_id=None):
         pass
 
 

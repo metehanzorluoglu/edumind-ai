@@ -221,6 +221,7 @@ run_migrations() {
 deploy_containers() {
     echo
     if [[ "$REBUILD_REQUIRED" == true ]]; then
+        check_disk_headroom "oracle-update rebuild"
         info "Building and recreating Oracle containers..."
         oracle_compose up -d --build
     else

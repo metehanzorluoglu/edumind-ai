@@ -3,6 +3,7 @@ import { EducationAssistantClient } from '../src/client/EducationAssistantClient
 import {
   AuthenticationError,
   BackendError,
+  ConflictError,
   NotFoundError,
   ProviderUnavailableError,
   RequestCancelledError,
@@ -1092,6 +1093,174 @@ describe('conversations', () => {
     expect(init.method).toBe('DELETE');
   });
 
+  // Milestone 2: conversation document scope.
+  describe('conversation document scope', () => {
+    function conversationDocument(overrides: Partial<Record<string, unknown>> = {}) {
+      return {
+        document_id: 'd1',
+        source_filename: 'notes.pdf',
+        document_type: 'report',
+        added_at: '2026-01-01T00:00:00Z',
+        ...overrides,
+      };
+    }
+
+    it('listConversationDocuments() GETs /conversations/{id}/documents', async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ documents: [conversationDocument()], total: 1 })
+      );
+      const result = await makeClient().listConversationDocuments('c1');
+
+      expect(result.total).toBe(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(url).toBe('http://localhost:8000/conversations/c1/documents');
+      expect(init.method).toBe('GET');
+    });
+
+    it('addConversationDocuments() POSTs document_ids and returns the full selection', async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse(
+          { documents: [conversationDocument({ document_id: 'd1' })], total: 1 },
+          201
+        )
+      );
+      const result = await makeClient().addConversationDocuments('c1', ['d1']);
+
+      expect(result.total).toBe(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(url).toBe('http://localhost:8000/conversations/c1/documents');
+      expect(init.method).toBe('POST');
+      expect(JSON.parse(init.body)).toEqual({ document_ids: ['d1'] });
+    });
+
+    it('addConversationDocuments() supports multiple ids in one call', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ documents: [], total: 2 }, 201));
+      await makeClient().addConversationDocuments('c1', ['d1', 'd2']);
+
+      const [, init] = fetchMock.mock.calls[0]!;
+      expect(JSON.parse(init.body)).toEqual({ document_ids: ['d1', 'd2'] });
+    });
+
+    it('replaceConversationDocuments() PUTs document_ids', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ documents: [], total: 1 }));
+      await makeClient().replaceConversationDocuments('c1', ['d2']);
+
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(url).toBe('http://localhost:8000/conversations/c1/documents');
+      expect(init.method).toBe('PUT');
+      expect(JSON.parse(init.body)).toEqual({ document_ids: ['d2'] });
+    });
+
+    it('clearConversationDocuments() PUTs an empty document_ids list', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ documents: [], total: 0 }));
+      const result = await makeClient().clearConversationDocuments('c1');
+
+      expect(result.total).toBe(0);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(url).toBe('http://localhost:8000/conversations/c1/documents');
+      expect(init.method).toBe('PUT');
+      expect(JSON.parse(init.body)).toEqual({ document_ids: [] });
+    });
+
+    it('removeConversationDocument() DELETEs /conversations/{id}/documents/{document_id}', async () => {
+      fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+      await makeClient().removeConversationDocument('c1', 'd1');
+
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(url).toBe('http://localhost:8000/conversations/c1/documents/d1');
+      expect(init.method).toBe('DELETE');
+    });
+
+    it('addConversationDocuments() rejects with NotFoundError on a 404 (bad conversation or document id)', async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ detail: "One or more documents not found: ['missing']" }, 404)
+      );
+      await expect(
+        makeClient().addConversationDocuments('c1', ['missing'])
+      ).rejects.toBeInstanceOf(NotFoundError);
+    });
+  });
+
+  // Milestone 4: Zoom-In / strict selected-source mode.
+  describe('conversation scope', () => {
+    function conversationScope(overrides: Partial<Record<string, unknown>> = {}) {
+      return {
+        chat_enabled: true,
+        project_enabled: true,
+        general_enabled: true,
+        include_other_project_summaries: false,
+        zoom_in_mode: false,
+        ...overrides,
+      };
+    }
+
+    it('getConversationScope() GETs /conversations/{id}/scope', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(conversationScope({ zoom_in_mode: true })));
+      const result = await makeClient().getConversationScope('c1');
+
+      expect(result.zoom_in_mode).toBe(true);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(url).toBe('http://localhost:8000/conversations/c1/scope');
+      expect(init.method).toBe('GET');
+    });
+
+    it('updateConversationScope() PATCHes only the fields present on the request', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(conversationScope({ zoom_in_mode: true })));
+      await makeClient().updateConversationScope('c1', { zoomInMode: true });
+
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(url).toBe('http://localhost:8000/conversations/c1/scope');
+      expect(init.method).toBe('PATCH');
+      expect(JSON.parse(init.body)).toEqual({ zoom_in_mode: true });
+    });
+
+    it('updateConversationScope() omits fields not present on the request', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(conversationScope({ chat_enabled: false })));
+      await makeClient().updateConversationScope('c1', { chatEnabled: false });
+
+      const [, init] = fetchMock.mock.calls[0]!;
+      const body = JSON.parse(init.body);
+      expect(body).toEqual({ chat_enabled: false });
+      expect('zoom_in_mode' in body).toBe(false);
+    });
+
+    it('updateConversationScope() can send every field together', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(conversationScope()));
+      await makeClient().updateConversationScope('c1', {
+        chatEnabled: true,
+        projectEnabled: false,
+        generalEnabled: false,
+        includeOtherProjectSummaries: true,
+        zoomInMode: false,
+      });
+
+      const [, init] = fetchMock.mock.calls[0]!;
+      expect(JSON.parse(init.body)).toEqual({
+        chat_enabled: true,
+        project_enabled: false,
+        general_enabled: false,
+        include_other_project_summaries: true,
+        zoom_in_mode: false,
+      });
+    });
+
+    it('updateConversationScope() rejects with a ValidationError on a 422 (zero selected sources)', async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ detail: 'Zoom-In requires at least one selected source.' }, 422)
+      );
+      await expect(
+        makeClient().updateConversationScope('c1', { zoomInMode: true })
+      ).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    it('updateConversationScope() rejects with NotFoundError on a 404 (missing conversation)', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Conversation not found' }, 404));
+      await expect(
+        makeClient().updateConversationScope('c1', { zoomInMode: false })
+      ).rejects.toBeInstanceOf(NotFoundError);
+    });
+  });
+
   it('streamConversationMessage() posts to /conversations/{id}/messages and yields parsed events', async () => {
     fetchMock.mockResolvedValueOnce(
       sseResponse([
@@ -1994,5 +2163,247 @@ describe('images', () => {
 
     await expect(iterator.next()).rejects.toBeInstanceOf(RequestCancelledError);
     expect(received).toHaveLength(1); // never received a second progress event or "done"
+  });
+});
+
+// Milestone 1: Document Library / Folder Management.
+describe('folders', () => {
+  function folderResponse(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: 'f1',
+      name: 'Research',
+      parent_id: null,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      folder_count: 0,
+      document_count: 0,
+      ...overrides,
+    };
+  }
+
+  it('createFolder() POSTs /folders with name and parentId (defaulting parentId to null)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(folderResponse(), 201));
+    const result = await makeClient().createFolder({ name: 'Research' });
+
+    expect(result.id).toBe('f1');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/folders');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ name: 'Research', parent_id: null });
+  });
+
+  it('createFolder() sends the given parentId', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(folderResponse({ id: 'f2', name: 'AI Education', parent_id: 'f1' }), 201)
+    );
+    await makeClient().createFolder({ name: 'AI Education', parentId: 'f1' });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(init.body)).toEqual({ name: 'AI Education', parent_id: 'f1' });
+  });
+
+  it('getFolderContents() GETs /folders/contents with folder_id omitted for root', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        folder: null,
+        breadcrumbs: [],
+        folders: [folderResponse()],
+        documents: [],
+        documents_total: 0,
+      })
+    );
+    const result = await makeClient().getFolderContents();
+
+    expect(result.folders).toHaveLength(1);
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/folders/contents');
+  });
+
+  it('getFolderContents() GETs /folders/contents with folder_id/limit/offset when given', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        folder: folderResponse(),
+        breadcrumbs: [{ id: 'f1', name: 'Research' }],
+        folders: [],
+        documents: [],
+        documents_total: 0,
+      })
+    );
+    await makeClient().getFolderContents({ folderId: 'f1', limit: 10, offset: 20 });
+
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/folders/contents?folder_id=f1&limit=10&offset=20');
+  });
+
+  it('updateFolder() sends only name when renaming', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(folderResponse({ name: 'Renamed' })));
+    await makeClient().updateFolder('f1', { name: 'Renamed' });
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/folders/f1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body)).toEqual({ name: 'Renamed' });
+  });
+
+  it('updateFolder() sends an explicit null parentId to move to root', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(folderResponse()));
+    await makeClient().updateFolder('f2', { parentId: null });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(init.body)).toEqual({ parent_id: null });
+  });
+
+  it('updateFolder() omits a field entirely when not present on the request', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(folderResponse()));
+    await makeClient().updateFolder('f1', { parentId: 'f2' });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(init.body)).toEqual({ parent_id: 'f2' });
+    expect(JSON.parse(init.body)).not.toHaveProperty('name');
+  });
+
+  it('deleteFolder() DELETEs /folders/{id} with move_contents_to_root omitted by default', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ deleted: true, folder_id: 'f1', moved_folders: 0, moved_documents: 0 })
+    );
+    await makeClient().deleteFolder('f1');
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/folders/f1');
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('deleteFolder() sends move_contents_to_root=true when requested', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ deleted: true, folder_id: 'f1', moved_folders: 2, moved_documents: 3 })
+    );
+    const result = await makeClient().deleteFolder('f1', { moveContentsToRoot: true });
+
+    expect(result.moved_folders).toBe(2);
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/folders/f1?move_contents_to_root=true');
+  });
+
+  it('createFolder() rejects with a ConflictError on a 409 (duplicate sibling name)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ detail: "A folder named 'Research' already exists here" }, 409)
+    );
+    await expect(makeClient().createFolder({ name: 'Research' })).rejects.toBeInstanceOf(
+      ConflictError
+    );
+  });
+});
+
+describe('moveDocument (Milestone 1: Document Library / Folder Management)', () => {
+  it('PATCHes /documents/{id} with folder_id', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        document_id: 'd1',
+        source_filename: 'notes.pdf',
+        folder_id: 'f1',
+        document_type: 'report',
+        chunk_count: 3,
+        ingested_at: '2026-01-01T00:00:00Z',
+      })
+    );
+    const result = await makeClient().moveDocument('d1', { folderId: 'f1' });
+
+    expect(result.folder_id).toBe('f1');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/documents/d1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body)).toEqual({ folder_id: 'f1' });
+  });
+
+  it('sends folder_id: null to move a document to root', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        document_id: 'd1',
+        source_filename: 'notes.pdf',
+        folder_id: null,
+        document_type: 'report',
+        chunk_count: 3,
+        ingested_at: '2026-01-01T00:00:00Z',
+      })
+    );
+    await makeClient().moveDocument('d1', { folderId: null });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(init.body)).toEqual({ folder_id: null });
+  });
+
+  it('rejects with NotFoundError on a 404 (document or folder not found)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Folder not found' }, 404));
+    await expect(makeClient().moveDocument('d1', { folderId: 'missing' })).rejects.toBeInstanceOf(
+      NotFoundError
+    );
+  });
+});
+
+describe('uploadDocument() folderId (Milestone 1: Document Library / Folder Management)', () => {
+  it('appends folder_id to the multipart form when provided', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ job_id: 'job1' }, 202));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        job_id: 'job1',
+        status: 'completed',
+        stage: 'persisting',
+        total_chunks: 1,
+        embedded_chunks: 1,
+        document: {
+          document_id: 'd1',
+          source_filename: 'notes.txt',
+          file_format: 'txt',
+          folder_id: 'f1',
+          document_type: 'report',
+          page_count: 1,
+          chunk_count: 1,
+          ingested_at: '2026-01-01T00:00:00Z',
+        },
+        error: null,
+      })
+    );
+
+    const file = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    const result = await makeClient().uploadDocument(file, {
+      documentType: 'report',
+      folderId: 'f1',
+    });
+
+    expect(result.folder_id).toBe('f1');
+    const [, uploadInit] = fetchMock.mock.calls[0]!;
+    const formData = uploadInit.body as FormData;
+    expect(formData.get('folder_id')).toBe('f1');
+  });
+
+  it('omits folder_id from the multipart form when not provided (root upload, unchanged behavior)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ job_id: 'job1' }, 202));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        job_id: 'job1',
+        status: 'completed',
+        stage: 'persisting',
+        total_chunks: 1,
+        embedded_chunks: 1,
+        document: {
+          document_id: 'd1',
+          source_filename: 'notes.txt',
+          file_format: 'txt',
+          folder_id: null,
+          document_type: 'report',
+          page_count: 1,
+          chunk_count: 1,
+          ingested_at: '2026-01-01T00:00:00Z',
+        },
+        error: null,
+      })
+    );
+
+    const file = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    await makeClient().uploadDocument(file, { documentType: 'report' });
+
+    const [, uploadInit] = fetchMock.mock.calls[0]!;
+    const formData = uploadInit.body as FormData;
+    expect(formData.has('folder_id')).toBe(false);
   });
 });

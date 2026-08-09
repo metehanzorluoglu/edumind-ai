@@ -67,15 +67,27 @@ class RequestTimer:
     app/api/routes_conversations.py). Kept in a separate dict from the
     duration stages rather than overloading record() for both: a metric is
     a single point value (last write wins), never summed across repeated
-    calls the way same-named durations are."""
+    calls the way same-named durations are.
 
-    __slots__ = ("_metrics", "_stages", "_start", "enabled", "label")
+    Also collects *tags* — categorical/string observability fields (e.g.
+    retrieval_mode, conversation_id — see app/core/rag_service.py's
+    conversation-scope retrieval, contextual-research-scopes milestone 2).
+    Deliberately a THIRD dict, never merged into `_metrics`/as_dict():
+    as_dict()'s output feeds `dict[str, float]`-typed Pydantic response
+    fields (ChatResult.debug_timings in app/schemas/chat.py,
+    DocumentUploadAcceptedResponse/DocumentJobResponse.timings in
+    app/schemas/documents.py) that a string value would fail to validate
+    against — tags are logged the same way metrics are, but surfaced
+    separately via tags_dict(), never through as_dict()."""
+
+    __slots__ = ("_metrics", "_stages", "_start", "_tags", "enabled", "label")
 
     def __init__(self, *, enabled: bool, label: str = "") -> None:
         self.enabled = enabled
         self.label = label
         self._stages: list[tuple[str, float]] = []
         self._metrics: dict[str, float] = {}
+        self._tags: dict[str, str] = {}
         self._start = time.perf_counter() if enabled else 0.0
 
     def record(self, name: str, duration_ms: float) -> None:
@@ -98,6 +110,37 @@ class RequestTimer:
             return
         self._metrics[name] = value
         logger.info("timing metric=%s value=%s request=%s", name, value, self.label)
+
+    def accumulate_metric(self, name: str, delta: float) -> None:
+        """Adds `delta` to a metric's running total across multiple calls
+        within one request — e.g. retrieval_candidate_count (see
+        app/core/retriever.py), summed across every scope tier's own
+        retrieve() call (chat/project/general — see
+        app/core/scoped_retrieval.py) into one per-request total. Unlike
+        record_metric() (last write wins), repeated calls with the same
+        name accumulate — the metric equivalent of how stage() already
+        sums same-named durations across repeated calls. No-op when
+        disabled, same as every other method here."""
+        if not self.enabled:
+            return
+        self._metrics[name] = self._metrics.get(name, 0.0) + delta
+        logger.info(
+            "timing metric=%s value=%s (+%s) request=%s",
+            name,
+            self._metrics[name],
+            delta,
+            self.label,
+        )
+
+    def record_tag(self, name: str, value: str) -> None:
+        """Records a categorical/string observability field — see the
+        class docstring for why this is a separate dict from
+        record_metric()'s numeric _metrics. Last write wins, same as
+        record_metric(). No-op when disabled."""
+        if not self.enabled:
+            return
+        self._tags[name] = value
+        logger.info("timing tag=%s value=%s request=%s", name, value, self.label)
 
     @contextmanager
     def stage(self, name: str) -> Iterator[None]:
@@ -131,6 +174,14 @@ class RequestTimer:
         result.update(self._metrics)
         return result
 
+    def tags_dict(self) -> dict[str, str]:
+        """Categorical fields recorded via record_tag() — see that method
+        and the class docstring for why these are never merged into
+        as_dict(). Empty dict when disabled, same convention as as_dict()."""
+        if not self.enabled:
+            return {}
+        return dict(self._tags)
+
     def server_timing_header(self) -> str:
         """Formats recorded stages as a standard HTTP `Server-Timing`
         header value (https://www.w3.org/TR/server-timing/), viewable in
@@ -149,10 +200,11 @@ class RequestTimer:
         if not self.enabled:
             return
         logger.info(
-            "timing summary request=%s%s stages=%s",
+            "timing summary request=%s%s stages=%s tags=%s",
             self.label,
             f" note={note}" if note else "",
             self.as_dict(),
+            self.tags_dict(),
         )
 
 

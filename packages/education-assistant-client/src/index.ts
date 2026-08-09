@@ -60,6 +60,21 @@ export type {
   UseConversationsResult,
 } from './hooks/useConversations';
 
+export { useFolderLibrary } from './hooks/useFolderLibrary';
+export type { FolderContentsState, UseFolderLibraryResult } from './hooks/useFolderLibrary';
+
+export { useConversationDocuments } from './hooks/useConversationDocuments';
+export type {
+  ConversationDocumentsState,
+  UseConversationDocumentsResult,
+} from './hooks/useConversationDocuments';
+
+export { useConversationScope } from './hooks/useConversationScope';
+export type {
+  ConversationScopeState,
+  UseConversationScopeResult,
+} from './hooks/useConversationScope';
+
 export { useProjects } from './hooks/useProjects';
 export type {
   AddRemoveConversationState,
@@ -103,8 +118,19 @@ export type {
   DocumentUploadResponse,
   ExtractionSource,
   ListDocumentsParams,
+  MoveDocumentRequest,
   UploadableFile,
 } from './types/documents';
+export type {
+  CreateFolderRequest,
+  DeleteFolderParams,
+  DeleteFolderResponse,
+  FolderBreadcrumb,
+  FolderContentsResponse,
+  FolderResponse,
+  GetFolderContentsParams,
+  UpdateFolderRequest,
+} from './types/folders';
 export type {
   ChatRequest,
   ChatEvent,
@@ -136,16 +162,20 @@ export {
 } from './types/conversations';
 export type {
   ConversationDetail,
+  ConversationDocument,
+  ConversationDocumentListResponse,
   ConversationListResponse,
   ConversationMessage,
   ConversationMessageAttachment,
   ConversationMessageSource,
+  ConversationScope,
   ConversationSummary,
   DisplaySource,
   ListConversationsParams,
   MessageAttachmentUpload,
   PostConversationMessageRequest,
   SendVisionMessageRequest,
+  UpdateConversationScopeRequest,
 } from './types/conversations';
 export type {
   CreateProjectRequest,

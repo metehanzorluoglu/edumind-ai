@@ -21,3 +21,5 @@ evaluation/reports/*
 
 # Local backup output (scripts/backup.sh) — contains private corpus data.
 backups/
+evaluation/.nli-model-cache/
+evaluation/.nli-eval-env/

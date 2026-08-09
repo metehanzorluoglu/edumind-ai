@@ -3,7 +3,25 @@ import { act, create, type ReactTestRenderer, type ReactTestInstance } from 'rea
 import { AuthProvider } from '@/lib/AuthProvider';
 import { ClientProvider } from '@/lib/ClientProvider';
 import { MAX_UPLOAD_FILE_SIZE_BYTES, formatFileSize } from '@/lib/documentUpload';
+import { FeatureFlagsProvider } from '@/lib/FeatureFlags';
 import DocumentsScreen from '../documents';
+
+// This whole file predates Milestone 1 (Document Library / Folder
+// Management) and exercises the flat, pre-Milestone-1 Documents UI —
+// exactly what folderLibrary=false falls back to (see FeatureFlags.tsx).
+// Forcing the bootstrap default off here means every test below keeps
+// testing that exact fallback path deterministically, from the very first
+// render, without depending on how quickly a mocked GET /status resolves —
+// folder-library-ENABLED behavior (navigation, create/rename/move/delete
+// folder, upload-into-folder) is covered separately in
+// documentsFolderLibrary.test.tsx.
+const ORIGINAL_FOLDER_LIBRARY_ENV = process.env.EXPO_PUBLIC_FOLDER_LIBRARY_ENABLED;
+beforeAll(() => {
+  process.env.EXPO_PUBLIC_FOLDER_LIBRARY_ENABLED = 'false';
+});
+afterAll(() => {
+  process.env.EXPO_PUBLIC_FOLDER_LIBRARY_ENABLED = ORIGINAL_FOLDER_LIBRARY_ENV;
+});
 
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(),
@@ -137,7 +155,9 @@ async function renderHydrated(
     renderer = create(
       <AuthProvider>
         <ClientProvider>
-          <DocumentsScreen />
+          <FeatureFlagsProvider>
+            <DocumentsScreen />
+          </FeatureFlagsProvider>
         </ClientProvider>
       </AuthProvider>,
       createNodeMock ? { createNodeMock } : undefined

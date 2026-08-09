@@ -85,6 +85,7 @@ start_stack() {
     # separate migration step is needed or safer than relying on that
     # dependency graph.
     if [[ "$BUILD" == true ]]; then
+        check_disk_headroom "oracle-start --build"
         info "Building images and starting the Oracle stack (this can take a while on first run)..."
         oracle_compose up -d --build
     else

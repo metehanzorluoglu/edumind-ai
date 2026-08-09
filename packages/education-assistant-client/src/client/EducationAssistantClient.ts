@@ -26,11 +26,22 @@ import type {
   DocumentJobResponse,
   DocumentListResponse,
   DocumentMetadataPreviewResponse,
+  DocumentSummary,
   DocumentUploadMetadata,
   DocumentUploadResponse,
   ListDocumentsParams,
+  MoveDocumentRequest,
   UploadableFile,
 } from '../types/documents';
+import type {
+  CreateFolderRequest,
+  DeleteFolderParams,
+  DeleteFolderResponse,
+  FolderContentsResponse,
+  FolderResponse,
+  GetFolderContentsParams,
+  UpdateFolderRequest,
+} from '../types/folders';
 import type { ChatEvent, ChatRequest, ChatResult } from '../types/chat';
 import type {
   GenerateImagesRequest,
@@ -50,11 +61,14 @@ import type {
 } from '../types/auth';
 import type {
   ConversationDetail,
+  ConversationDocumentListResponse,
   ConversationListResponse,
+  ConversationScope,
   ConversationSummary,
   ListConversationsParams,
   PostConversationMessageRequest,
   SendVisionMessageRequest,
+  UpdateConversationScopeRequest,
 } from '../types/conversations';
 import type {
   CreateProjectRequest,
@@ -246,6 +260,28 @@ export class EducationAssistantClient {
   }
 
   /**
+   * PATCH /documents/{document_id} — moves a document into a different
+   * folder, or to root (`folderId: null`). Milestone 1 (Document Library /
+   * Folder Management): purely organizational, never re-parses/re-embeds
+   * or touches Qdrant. Rejects with NotFoundError (404) if the document
+   * doesn't exist, or `folderId` names a folder that doesn't exist / isn't
+   * the caller's, or folder_library_enabled is off on the backend.
+   */
+  async moveDocument(
+    documentId: string,
+    request: MoveDocumentRequest,
+    options: RequestOptions = {}
+  ): Promise<DocumentSummary> {
+    const { data } = await requestJson<DocumentSummary>(this.context, {
+      method: 'PATCH',
+      path: `/documents/${encodeURIComponent(documentId)}`,
+      body: { folder_id: request.folderId },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
    * POST /documents/metadata-preview (multipart) — extraction only: reads
    * embedded file metadata and runs the same structured-text/filename
    * fallbacks the backend would use during a real upload, but never
@@ -304,6 +340,7 @@ export class EducationAssistantClient {
     if (metadata.sourceVenue !== undefined) formData.append('source_venue', metadata.sourceVenue);
     if (metadata.doi !== undefined) formData.append('doi', metadata.doi);
     if (metadata.sourceUrl !== undefined) formData.append('source_url', metadata.sourceUrl);
+    if (metadata.folderId !== undefined) formData.append('folder_id', metadata.folderId);
 
     const { data: accepted } = await requestMultipart<{ job_id: string }>(this.context, {
       method: 'POST',
@@ -332,6 +369,91 @@ export class EducationAssistantClient {
       options.onProgress?.(job);
       await sleep(DOCUMENT_JOB_POLL_INTERVAL_MS);
     }
+  }
+
+  /**
+   * POST /folders — Milestone 1 (Document Library / Folder Management).
+   * Rejects with a 409 BackendError if a sibling folder already has this
+   * name, or NotFoundError (404) if `parentId` doesn't exist / isn't the
+   * caller's.
+   */
+  async createFolder(
+    request: CreateFolderRequest,
+    options: RequestOptions = {}
+  ): Promise<FolderResponse> {
+    const { data } = await requestJson<FolderResponse>(this.context, {
+      method: 'POST',
+      path: '/folders',
+      body: { name: request.name, parent_id: request.parentId ?? null },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * GET /folders/contents — one round trip for a folder library screen:
+   * the folder itself (omit `folderId`/pass null for root), its breadcrumb
+   * chain, its direct child folders, and a page of its direct documents.
+   */
+  async getFolderContents(
+    params: GetFolderContentsParams = {},
+    options: RequestOptions = {}
+  ): Promise<FolderContentsResponse> {
+    const { data } = await requestJson<FolderContentsResponse>(this.context, {
+      method: 'GET',
+      path: '/folders/contents',
+      query: {
+        folder_id: params.folderId ?? undefined,
+        limit: params.limit,
+        offset: params.offset,
+      },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * PATCH /folders/{folder_id} — partial update (see UpdateFolderRequest):
+   * pass `name` to rename, `parentId` to move (null = root), or both at
+   * once. Rejects with a 409 BackendError on a name conflict, or a 400
+   * BackendError if `parentId` would create a circular reference.
+   */
+  async updateFolder(
+    folderId: string,
+    request: UpdateFolderRequest,
+    options: RequestOptions = {}
+  ): Promise<FolderResponse> {
+    const body: Record<string, unknown> = {};
+    if ('name' in request) body.name = request.name;
+    if ('parentId' in request) body.parent_id = request.parentId;
+    const { data } = await requestJson<FolderResponse>(this.context, {
+      method: 'PATCH',
+      path: `/folders/${encodeURIComponent(folderId)}`,
+      body,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * DELETE /folders/{folder_id} — safe by default: rejects with a 409
+   * BackendError if the folder directly contains a subfolder or a
+   * document, unless `moveContentsToRoot: true` is passed, in which case
+   * those direct contents are moved to root instead of the folder itself
+   * ever being blocked from deletion. Never deletes contained documents.
+   */
+  async deleteFolder(
+    folderId: string,
+    params: DeleteFolderParams = {},
+    options: RequestOptions = {}
+  ): Promise<DeleteFolderResponse> {
+    const { data } = await requestJson<DeleteFolderResponse>(this.context, {
+      method: 'DELETE',
+      path: `/folders/${encodeURIComponent(folderId)}`,
+      query: { move_contents_to_root: params.moveContentsToRoot },
+      signal: options.signal,
+    });
+    return data;
   }
 
   /**
@@ -657,6 +779,152 @@ export class EducationAssistantClient {
       path: `/conversations/${encodeURIComponent(conversationId)}`,
       signal: options.signal,
     });
+  }
+
+  /**
+   * GET /conversations/{id}/documents — Milestone 2 (conversation document
+   * scope): the conversation's current chat-scope document selection, what
+   * retrieval's "chat" tier actually draws from for this conversation's
+   * next turn. 404s (NotFoundError) if conversation_scope_enabled is off
+   * on the backend, or the conversation doesn't exist / isn't the
+   * caller's.
+   */
+  async listConversationDocuments(
+    conversationId: string,
+    options: RequestOptions = {}
+  ): Promise<ConversationDocumentListResponse> {
+    const { data } = await requestJson<ConversationDocumentListResponse>(this.context, {
+      method: 'GET',
+      path: `/conversations/${encodeURIComponent(conversationId)}/documents`,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * POST /conversations/{id}/documents — associates one or more
+   * already-ingested documents (see uploadDocument()) with this
+   * conversation as chat-scope retrieval evidence in a single call; never
+   * re-embeds anything. Idempotent per id and de-duplicated within
+   * `documentIds`. Rejects with NotFoundError (404) if the conversation,
+   * or any one of `documentIds`, doesn't exist / isn't the caller's — the
+   * backend applies nothing at all in that case (never a partial add).
+   * Returns the conversation's full current selection, not just the
+   * newly-added ids.
+   */
+  async addConversationDocuments(
+    conversationId: string,
+    documentIds: string[],
+    options: RequestOptions = {}
+  ): Promise<ConversationDocumentListResponse> {
+    const { data } = await requestJson<ConversationDocumentListResponse>(this.context, {
+      method: 'POST',
+      path: `/conversations/${encodeURIComponent(conversationId)}/documents`,
+      body: { document_ids: documentIds },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * PUT /conversations/{id}/documents — makes `documentIds` this
+   * conversation's ENTIRE chat-scope selection: documents not listed are
+   * removed, documents listed but not yet associated are added, documents
+   * in both are left untouched (no redundant Qdrant resync). Pass `[]` to
+   * clear the selection entirely — see clearConversationDocuments(), a
+   * thin convenience wrapper over exactly this call.
+   */
+  async replaceConversationDocuments(
+    conversationId: string,
+    documentIds: string[],
+    options: RequestOptions = {}
+  ): Promise<ConversationDocumentListResponse> {
+    const { data } = await requestJson<ConversationDocumentListResponse>(this.context, {
+      method: 'PUT',
+      path: `/conversations/${encodeURIComponent(conversationId)}/documents`,
+      body: { document_ids: documentIds },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /** Convenience wrapper over replaceConversationDocuments(id, []) — clears the conversation's entire chat-scope selection. There is no separate backend "clear" endpoint. */
+  async clearConversationDocuments(
+    conversationId: string,
+    options: RequestOptions = {}
+  ): Promise<ConversationDocumentListResponse> {
+    return this.replaceConversationDocuments(conversationId, [], options);
+  }
+
+  /**
+   * DELETE /conversations/{id}/documents/{document_id} — removes only the
+   * association, never the document itself (it may still be part of the
+   * caller's general corpus or another conversation's/project's scope).
+   * Pre-dates conversation_scope_enabled and is never gated by it (see
+   * the backend's _require_conversation_scope_enabled docstring).
+   */
+  async removeConversationDocument(
+    conversationId: string,
+    documentId: string,
+    options: RequestOptions = {}
+  ): Promise<void> {
+    await requestJson<undefined>(this.context, {
+      method: 'DELETE',
+      path: `/conversations/${encodeURIComponent(conversationId)}/documents/${encodeURIComponent(documentId)}`,
+      signal: options.signal,
+    });
+  }
+
+  /**
+   * GET /conversations/{id}/scope — the conversation's "active scope"
+   * toggle bar, including `zoomInMode` (Milestone 4: Zoom-In / strict
+   * selected-source mode). Lazily created server-side on first read, so
+   * this always resolves to a well-defined value even for a conversation
+   * that has never touched its scope settings.
+   */
+  async getConversationScope(
+    conversationId: string,
+    options: RequestOptions = {}
+  ): Promise<ConversationScope> {
+    const { data } = await requestJson<ConversationScope>(this.context, {
+      method: 'GET',
+      path: `/conversations/${encodeURIComponent(conversationId)}/scope`,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * PATCH /conversations/{id}/scope — partial update; only fields actually
+   * present on `request` are sent (see UpdateConversationScopeRequest).
+   * Setting `zoomInMode: true` rejects with a BackendError (422) if this
+   * conversation currently has zero selected chat-scope documents (see
+   * addConversationDocuments/replaceConversationDocuments) — Zoom-In
+   * always requires at least one selected source. Turning `zoomInMode`
+   * back off, or a request that never mentions it, is never subject to
+   * that check.
+   */
+  async updateConversationScope(
+    conversationId: string,
+    request: UpdateConversationScopeRequest,
+    options: RequestOptions = {}
+  ): Promise<ConversationScope> {
+    const body: Record<string, unknown> = {};
+    if ('chatEnabled' in request) body.chat_enabled = request.chatEnabled;
+    if ('projectEnabled' in request) body.project_enabled = request.projectEnabled;
+    if ('generalEnabled' in request) body.general_enabled = request.generalEnabled;
+    if ('includeOtherProjectSummaries' in request) {
+      body.include_other_project_summaries = request.includeOtherProjectSummaries;
+    }
+    if ('zoomInMode' in request) body.zoom_in_mode = request.zoomInMode;
+
+    const { data } = await requestJson<ConversationScope>(this.context, {
+      method: 'PATCH',
+      path: `/conversations/${encodeURIComponent(conversationId)}/scope`,
+      body,
+      signal: options.signal,
+    });
+    return data;
   }
 
   /**

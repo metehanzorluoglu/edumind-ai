@@ -30,6 +30,15 @@ class StatusResponse(BaseModel):
     # "expose a boolean the app gates on" contract, just for the opposite
     # direction (this writes images; vision reads them).
     image_generation_enabled: bool
+    # --- Document library / folder management (Milestone 1) ---
+    # The backend's single source of truth the frontend reads to fall back
+    # to the pre-Milestone-1 flat Documents list when this is false — see
+    # app/config.py's `folder_library_enabled` for the full flag reasoning.
+    folder_library_enabled: bool
+    # --- Conversation document scope (Milestone 2) ---
+    conversation_scope_enabled: bool
+    # --- Zoom-In / strict selected-source mode (Milestone 4) ---
+    zoom_in_enabled: bool
     # --- Developer/Settings page (milestone V4): availability for every
     # model this backend can call, and how long the one Ollama round trip
     # this check makes took — see app/core/readiness.py. Latency is null

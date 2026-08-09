@@ -15,7 +15,12 @@ from app.core.context_preparation import (
     prepare_context,
 )
 from app.core.llm_provider import LLMProvider
-from app.core.prompt_builder import NO_EVIDENCE_ANSWER, PromptVariant, build_chat_prompt
+from app.core.prompt_builder import (
+    NO_EVIDENCE_ANSWER,
+    ZOOM_IN_NO_EVIDENCE_ANSWER,
+    PromptVariant,
+    build_chat_prompt,
+)
 from app.core.request_timing import RequestTimer, get_current_timer
 from app.core.retrieval_schemas import RetrievalFilters, RetrievedChunk
 from app.core.scoped_retrieval import execute_scope_plan, resolve_scope_plan
@@ -112,6 +117,7 @@ def retrieve_and_cite(
     include_project: bool = True,
     include_general: bool = True,
     source_order: SourceOrder = "relevance",
+    retrieval_mode_label: str | None = None,
 ) -> CorpusEvidence:
     """Retrieval -> context-prep -> citation-building, shared by
     RagService.prepare() (text-only chat) below and
@@ -130,7 +136,16 @@ def retrieve_and_cite(
     (research workspace milestone) let a caller omit a tier entirely
     regardless of what conversation_id/project_ids would otherwise
     produce — the per-conversation scope toggle bar's effect on
-    retrieval."""
+    retrieval.
+
+    `retrieval_mode_label` (Milestone 4 — Zoom-In) overrides the
+    observability tag recorded below with a caller-supplied string instead
+    of the tier-derived one — used only to record the distinct "zoom_in"
+    value (see RagService.prepare's `strict_mode`) so a Zoom-In turn's
+    retrieval_mode is never confused with an ordinary conversation that
+    merely happens to have every other tier toggled off, which would
+    otherwise also derive to "chat" alone. None (the default) preserves
+    today's tier-derived label unchanged for every other caller."""
     plan = resolve_scope_plan(
         conversation_id=conversation_id,
         project_ids=list(project_ids),
@@ -141,6 +156,22 @@ def retrieve_and_cite(
         include_project=include_project,
         include_general=include_general,
     )
+    # Observability (Milestone 2: conversation document scope) — derived
+    # from `plan.tiers` itself (the single authoritative source of "which
+    # tiers this request actually queried"), never re-derived from
+    # conversation_id/project_ids/include_* independently, so this can
+    # never drift from what resolve_scope_plan() actually decided. "none"
+    # only if every tier toggle is off (see ConversationScopeSettings) —
+    # general is otherwise always present, so "none" is rare in practice.
+    timer = get_current_timer()
+    if timer.enabled:
+        if retrieval_mode_label is not None:
+            timer.record_tag("retrieval_mode", retrieval_mode_label)
+        else:
+            tier_names = list(dict.fromkeys(tier.name for tier in plan.tiers))
+            timer.record_tag("retrieval_mode", "+".join(tier_names) if tier_names else "none")
+        if conversation_id is not None:
+            timer.record_tag("conversation_id", conversation_id)
     raw_sources = execute_scope_plan(retriever, query, plan, user_id=user_id, filters=filters)[
         :top_k
     ]
@@ -231,7 +262,18 @@ class RagService:
         include_chat: bool = True,
         include_project: bool = True,
         include_general: bool = True,
+        strict_mode: bool = False,
     ) -> PreparedChat:
+        """`strict_mode` (Milestone 4 — Zoom-In) is purely additive
+        observability/prompt wiring on top of the retrieval restriction a
+        caller already expresses via include_project=False,
+        include_general=False: it does not itself change which tiers are
+        queried (the caller — see app/api/routes_conversations.py's
+        `_effective_scope_flags` — decides that), it only (a) tags this
+        retrieval's `retrieval_mode` as "zoom_in" instead of the
+        tier-derived label, and (b) appends the small Zoom-In prompt
+        addendum (see prompt_builder._ZOOM_IN_ADDENDUM). False by default —
+        every existing caller is unaffected."""
         evidence = retrieve_and_cite(
             self._retriever,
             query,
@@ -249,6 +291,7 @@ class RagService:
             include_project=include_project,
             include_general=include_general,
             source_order=self._source_order,
+            retrieval_mode_label="zoom_in" if strict_mode else None,
         )
         insufficient_evidence = len(evidence.sources) == 0
         with get_current_timer().stage("prompt_construction"):
@@ -257,6 +300,7 @@ class RagService:
                 evidence.sources,
                 project_context=project_context,
                 prompt_variant=self._prompt_variant,
+                strict_mode=strict_mode,
             )
         _record_prompt_metadata(
             get_current_timer(),
@@ -301,6 +345,7 @@ class RagService:
         include_chat: bool = True,
         include_project: bool = True,
         include_general: bool = True,
+        strict_mode: bool = False,
     ) -> ChatPipelineResult:
         start = time.monotonic()
         prepared = self.prepare(
@@ -314,10 +359,11 @@ class RagService:
             include_chat=include_chat,
             include_project=include_project,
             include_general=include_general,
+            strict_mode=strict_mode,
         )
 
         if prepared.insufficient_evidence:
-            answer = NO_EVIDENCE_ANSWER
+            answer = ZOOM_IN_NO_EVIDENCE_ANSWER if strict_mode else NO_EVIDENCE_ANSWER
             warnings: list[str] = []
         else:
             answer = "".join(self.stream_answer(prepared))

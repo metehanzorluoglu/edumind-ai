@@ -34,11 +34,32 @@ class Document(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "sha256", name="uq_documents_user_sha256"),
         Index("ix_documents_user_id_ingested_at", "user_id", "ingested_at"),
+        # Backs GET /folders/contents' per-folder document listing (Milestone
+        # 1) — filters on (user_id, folder_id) exactly the same shape as the
+        # existing (user_id, ingested_at) index above, just for "documents in
+        # this folder" instead of "documents for this user" ordered by time.
+        Index("ix_documents_user_id_folder_id", "user_id", "folder_id"),
     )
 
     document_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Milestone 1 (Document Library / Folder Management): purely
+    # organizational placement in the caller's folder tree (see
+    # app/db/models_folders.py) — NULL means "root" (unfiled), matching
+    # this system's existing "flat by default" behavior for every document
+    # ingested before folders existed. Deliberately NOT part of retrieval,
+    # chunking, or the Qdrant payload: moving a document between folders is
+    # a single SQL UPDATE of this column (see
+    # DocumentsRepository.move_to_folder) and never touches embeddings,
+    # chunks, or vector storage — see FoldersRepository/routes_folders.py's
+    # module docstrings for the full "why folders never reparent evidence"
+    # reasoning behind the future Zoom-In/Scope retrieval boundary, which
+    # stays keyed on document_id (and conversation/project associations),
+    # never on folder_id.
+    folder_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("folders.id", ondelete="SET NULL"), nullable=True
     )
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     source_filename: Mapped[str] = mapped_column(String(512), nullable=False)

@@ -62,6 +62,9 @@ void withProvider; // reserved for a follow-up test that wants a static provider
 
 interface CapturedFlags {
   imageGenerator: boolean;
+  folderLibrary: boolean;
+  conversationScope: boolean;
+  zoomIn: boolean;
   developerSettings: boolean;
   loaded: boolean;
   refresh: () => Promise<void>;
@@ -242,6 +245,211 @@ describe('FeatureFlagsProvider', () => {
     expect(mockStatusCallCount).toBe(2);
 
     void renderer; // silence unused-var warning for the happy-path render only
+  });
+});
+
+// folderLibrary (Milestone 1: Document Library / Folder Management) is
+// server-derived exactly like imageGenerator above — same bootstrap/
+// refresh/error-doesn't-flicker contract, just a different backend field
+// and a `true` (not `false`) build-time default (see
+// bootstrapFolderLibraryFlag's docstring for why: this is the new standard
+// Documents experience, not an opt-in beta).
+describe('folderLibrary flag', () => {
+  afterEach(() => {
+    delete process.env.EXPO_PUBLIC_FOLDER_LIBRARY_ENABLED;
+  });
+
+  it('reads folderLibrary=true from a successful GET /status', async () => {
+    mockStatusResponses.push({
+      reject: false,
+      payload: { image_generation_enabled: true, folder_library_enabled: true },
+    });
+    const { flags } = await renderAndCapture();
+    expect(flags.folderLibrary).toBe(true);
+    expect(flags.loaded).toBe(true);
+  });
+
+  it('reads folderLibrary=false from a successful GET /status (the disabled/rollback mode)', async () => {
+    mockStatusResponses.push({
+      reject: false,
+      payload: { image_generation_enabled: true, folder_library_enabled: false },
+    });
+    const { flags } = await renderAndCapture();
+    expect(flags.folderLibrary).toBe(false);
+    expect(flags.loaded).toBe(true);
+  });
+
+  it('falls back to the build-time default (true) before /status resolves', async () => {
+    mockStatus.mockImplementationOnce(() => new Promise(() => {}));
+    let last: CapturedFlags | null = null;
+    await act(async () => {
+      create(
+        <FeatureFlagsProvider>
+          <Probe onRender={(f) => (last = f)} />
+        </FeatureFlagsProvider>
+      );
+      await Promise.resolve();
+    });
+    expect(last).not.toBeNull();
+    expect(last!.folderLibrary).toBe(true);
+    expect(last!.loaded).toBe(false);
+  });
+
+  it('an explicit EXPO_PUBLIC_FOLDER_LIBRARY_ENABLED=false bootstrap default is honored pre-/status', async () => {
+    process.env.EXPO_PUBLIC_FOLDER_LIBRARY_ENABLED = 'false';
+    mockStatus.mockImplementationOnce(() => new Promise(() => {}));
+    let last: CapturedFlags | null = null;
+    await act(async () => {
+      create(
+        <FeatureFlagsProvider>
+          <Probe onRender={(f) => (last = f)} />
+        </FeatureFlagsProvider>
+      );
+      await Promise.resolve();
+    });
+    expect(last!.folderLibrary).toBe(false);
+  });
+
+  it('refresh() re-fetches /status and reflects the latest folderLibrary value', async () => {
+    mockStatusResponses.push({
+      reject: false,
+      payload: { image_generation_enabled: true, folder_library_enabled: true },
+    });
+    mockStatusResponses.push({
+      reject: false,
+      payload: { image_generation_enabled: true, folder_library_enabled: false },
+    });
+
+    let last: CapturedFlags | null = null;
+    await act(async () => {
+      create(
+        <FeatureFlagsProvider>
+          <Probe onRender={(f) => (last = f)} />
+        </FeatureFlagsProvider>
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(last!.folderLibrary).toBe(true);
+
+    await act(async () => {
+      await last!.refresh();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(last!.folderLibrary).toBe(false);
+  });
+});
+
+// conversationScope (Milestone 2/3: conversation document scope / Chat
+// Sources) is server-derived exactly like folderLibrary above.
+describe('conversationScope flag', () => {
+  afterEach(() => {
+    delete process.env.EXPO_PUBLIC_CONVERSATION_SCOPE_ENABLED;
+  });
+
+  it('reads conversationScope=true from a successful GET /status', async () => {
+    mockStatusResponses.push({
+      reject: false,
+      payload: { image_generation_enabled: true, conversation_scope_enabled: true },
+    });
+    const { flags } = await renderAndCapture();
+    expect(flags.conversationScope).toBe(true);
+    expect(flags.loaded).toBe(true);
+  });
+
+  it('reads conversationScope=false from a successful GET /status (the disabled/rollback mode)', async () => {
+    mockStatusResponses.push({
+      reject: false,
+      payload: { image_generation_enabled: true, conversation_scope_enabled: false },
+    });
+    const { flags } = await renderAndCapture();
+    expect(flags.conversationScope).toBe(false);
+  });
+
+  it('falls back to the build-time default (true) before /status resolves', async () => {
+    mockStatus.mockImplementationOnce(() => new Promise(() => {}));
+    let last: CapturedFlags | null = null;
+    await act(async () => {
+      create(
+        <FeatureFlagsProvider>
+          <Probe onRender={(f) => (last = f)} />
+        </FeatureFlagsProvider>
+      );
+      await Promise.resolve();
+    });
+    expect(last!.conversationScope).toBe(true);
+  });
+
+  it('an explicit EXPO_PUBLIC_CONVERSATION_SCOPE_ENABLED=false bootstrap default is honored pre-/status', async () => {
+    process.env.EXPO_PUBLIC_CONVERSATION_SCOPE_ENABLED = 'false';
+    mockStatus.mockImplementationOnce(() => new Promise(() => {}));
+    let last: CapturedFlags | null = null;
+    await act(async () => {
+      create(
+        <FeatureFlagsProvider>
+          <Probe onRender={(f) => (last = f)} />
+        </FeatureFlagsProvider>
+      );
+      await Promise.resolve();
+    });
+    expect(last!.conversationScope).toBe(false);
+  });
+});
+
+// zoomIn (Milestone 4: Zoom-In / strict selected-source mode) is
+// server-derived exactly like conversationScope above.
+describe('zoomIn flag', () => {
+  afterEach(() => {
+    delete process.env.EXPO_PUBLIC_ZOOM_IN_ENABLED;
+  });
+
+  it('reads zoomIn=true from a successful GET /status', async () => {
+    mockStatusResponses.push({
+      reject: false,
+      payload: { image_generation_enabled: true, zoom_in_enabled: true },
+    });
+    const { flags } = await renderAndCapture();
+    expect(flags.zoomIn).toBe(true);
+    expect(flags.loaded).toBe(true);
+  });
+
+  it('reads zoomIn=false from a successful GET /status (the disabled/rollback mode)', async () => {
+    mockStatusResponses.push({
+      reject: false,
+      payload: { image_generation_enabled: true, zoom_in_enabled: false },
+    });
+    const { flags } = await renderAndCapture();
+    expect(flags.zoomIn).toBe(false);
+  });
+
+  it('falls back to the build-time default (true) before /status resolves', async () => {
+    mockStatus.mockImplementationOnce(() => new Promise(() => {}));
+    let last: CapturedFlags | null = null;
+    await act(async () => {
+      create(
+        <FeatureFlagsProvider>
+          <Probe onRender={(f) => (last = f)} />
+        </FeatureFlagsProvider>
+      );
+      await Promise.resolve();
+    });
+    expect(last!.zoomIn).toBe(true);
+  });
+
+  it('an explicit EXPO_PUBLIC_ZOOM_IN_ENABLED=false bootstrap default is honored pre-/status', async () => {
+    process.env.EXPO_PUBLIC_ZOOM_IN_ENABLED = 'false';
+    mockStatus.mockImplementationOnce(() => new Promise(() => {}));
+    let last: CapturedFlags | null = null;
+    await act(async () => {
+      create(
+        <FeatureFlagsProvider>
+          <Probe onRender={(f) => (last = f)} />
+        </FeatureFlagsProvider>
+      );
+      await Promise.resolve();
+    });
+    expect(last!.zoomIn).toBe(false);
   });
 });
 
