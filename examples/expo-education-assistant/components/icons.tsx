@@ -417,6 +417,112 @@ export function FolderIcon({ size = 18, color, strokeWidth = 1.75 }: IconProps) 
   );
 }
 
+/** Plain document outline (no folded-corner/lines) — Milestone (Finder-style
+ * Document Library): the default file glyph for a document row/card that
+ * has no more specific file-type treatment, distinct in shape from
+ * DocumentsIcon (the nav item) and FolderIcon (folders) so the two never
+ * get confused at a glance in the same grid/list. */
+export function FileIcon({ size = 18, color, strokeWidth = 1.75 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox={VIEWBOX} fill="none">
+      <Path
+        d="M7 3.5h6.5L18 8v11.5a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1Z"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinejoin="round"
+      />
+      <Path d="M13.2 3.5V8h4.6" stroke={color} strokeWidth={strokeWidth} strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
+/** 2x2 grid of rounded squares — grid view toggle. */
+export function GridIcon({ size = 18, color, strokeWidth = 1.75 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox={VIEWBOX} fill="none">
+      <Rect x={4} y={4} width={7} height={7} rx={1.5} stroke={color} strokeWidth={strokeWidth} />
+      <Rect x={13} y={4} width={7} height={7} rx={1.5} stroke={color} strokeWidth={strokeWidth} />
+      <Rect x={4} y={13} width={7} height={7} rx={1.5} stroke={color} strokeWidth={strokeWidth} />
+      <Rect x={13} y={13} width={7} height={7} rx={1.5} stroke={color} strokeWidth={strokeWidth} />
+    </Svg>
+  );
+}
+
+/** Three left-aligned horizontal rows with a leading dot — list view toggle,
+ * deliberately distinct from MenuIcon's three equal bars (that one triggers
+ * an overlay; this one selects a layout). */
+export function ListIcon({ size = 18, color, strokeWidth = 1.75 }: IconProps) {
+  const rows = [6, 12, 18];
+  return (
+    <Svg width={size} height={size} viewBox={VIEWBOX} fill="none">
+      {rows.map((y) => (
+        <Circle key={`dot-${y}`} cx={4.5} cy={y} r={1.1} fill={color} />
+      ))}
+      {rows.map((y) => (
+        <Line
+          key={`row-${y}`}
+          x1={8}
+          y1={y}
+          x2={20}
+          y2={y}
+          stroke={color}
+          strokeWidth={strokeWidth}
+          strokeLinecap="round"
+        />
+      ))}
+    </Svg>
+  );
+}
+
+/** Up/down arrow pair — sort direction toggle. `direction` fills in the
+ * active arrow so the current order reads at a glance. */
+export function SortIcon({
+  size = 16,
+  color,
+  strokeWidth = 1.75,
+  direction = 'asc',
+}: IconProps & { direction?: 'asc' | 'desc' }) {
+  return (
+    <Svg width={size} height={size} viewBox={VIEWBOX} fill="none">
+      <Path
+        d="M7 16.5V5M4 8.5 7 5l3 3.5"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        opacity={direction === 'asc' ? 1 : 0.4}
+      />
+      <Path
+        d="M17 7.5V19M14 15.5l3 3.5 3-3.5"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        opacity={direction === 'desc' ? 1 : 0.4}
+      />
+    </Svg>
+  );
+}
+
+/** Circled "i" — details/info panel toggle. */
+export function InfoIcon({ size = 18, color, strokeWidth = 1.75 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox={VIEWBOX} fill="none">
+      <Circle cx={12} cy={12} r={8.5} stroke={color} strokeWidth={strokeWidth} />
+      <Circle cx={12} cy={8.3} r={1} fill={color} />
+      <Line
+        x1={12}
+        y1={11}
+        x2={12}
+        y2={16.5}
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+      />
+    </Svg>
+  );
+}
+
 /** X — close a drawer/overlay/dialog. */
 export function CloseIcon({ size = 18, color, strokeWidth = 1.75 }: IconProps) {
   return (
@@ -437,6 +543,60 @@ export function CloseIcon({ size = 18, color, strokeWidth = 1.75 }: IconProps) {
         y2={18}
         stroke={color}
         strokeWidth={strokeWidth}
+        strokeLinecap="round"
+      />
+    </Svg>
+  );
+}
+
+/** Small page with a pencil stroke across it — Frontend Milestone 3.2
+ * (Research Evidence Workspace): the manual-note entry-type glyph, paired
+ * with FileIcon (reused as the highlight/evidence entry-type glyph) so
+ * the two entry kinds are distinguishable structurally at a glance
+ * without leaning on color (M3.2 spec §19). */
+export function NoteIcon({ size = 16, color, strokeWidth = 1.75 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox={VIEWBOX} fill="none">
+      <Path
+        d="M6.5 4h8l3 3v13a.5.5 0 0 1-.5.5h-10.5a.5.5 0 0 1-.5-.5v-15a.5.5 0 0 1 .5-.5Z"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinejoin="round"
+      />
+      <Line
+        x1={9}
+        y1={11.5}
+        x2={15}
+        y2={11.5}
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+      />
+      <Line
+        x1={9}
+        y1={15}
+        x2={13}
+        y2={15}
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+      />
+    </Svg>
+  );
+}
+
+/** Bookmark outline — Frontend Milestone 3.1 (Research Notes Workspace):
+ * the "Notes" nav destination. Distinct in shape from FileIcon/FolderIcon
+ * so a saved-research-excerpt collection never reads as "another document
+ * list" at a glance. */
+export function NotesIcon({ size = 20, color, strokeWidth = 1.75 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox={VIEWBOX} fill="none">
+      <Path
+        d="M6.5 4.5A1.5 1.5 0 0 1 8 3h8a1.5 1.5 0 0 1 1.5 1.5V20l-5.5-3.2L6.5 20V4.5Z"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinejoin="round"
         strokeLinecap="round"
       />
     </Svg>

@@ -31,10 +31,11 @@ from pathlib import Path
 from app.config import get_settings
 from app.core.document_deletion import delete_document_by_id
 from app.core.errors import EmbeddingProviderError
+from app.db.document_highlights_repository import DocumentHighlightsRepository
 from app.db.documents_repository import DocumentRecord, DocumentsRepository
 from app.db.scopes_repository import ScopesRepository
 from app.db.session import get_session_factory
-from app.deps import get_embedding_provider, get_vector_store
+from app.deps import get_document_file_storage, get_embedding_provider, get_vector_store
 from app.ingestion.chunker import chunk_pages
 from app.ingestion.errors import (
     DocumentExtractionError,
@@ -125,6 +126,8 @@ def cmd_remove(args: argparse.Namespace) -> int:
             vector_store=vector_store,
             documents_repository=repository,
             scopes_repository=ScopesRepository(db),
+            document_highlights_repository=DocumentHighlightsRepository(db),
+            document_file_storage=get_document_file_storage(),
         )
     if result is None:
         # Can only happen if the document was deleted by something else
@@ -187,6 +190,8 @@ def cmd_reingest(args: argparse.Namespace) -> int:
             vector_store=vector_store,
             documents_repository=repository,
             scopes_repository=ScopesRepository(db),
+            document_highlights_repository=DocumentHighlightsRepository(db),
+            document_file_storage=get_document_file_storage(),
         )
 
         try:

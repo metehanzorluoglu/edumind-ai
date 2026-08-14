@@ -1,3 +1,4 @@
+import { StyleSheet } from 'react-native';
 import { Button } from '@/components/ui/Button';
 import { DocumentsIcon } from '@/components/icons';
 import { useTheme } from '@/lib/Preferences';
@@ -69,6 +70,14 @@ export function ChatSourcesButton({
     accessibilityLabel = `${count} source${count === 1 ? '' : 's'} selected — open to change`;
   }
 
+  // Frontend Milestone 2: Zoom-In gets a quiet, permanent accent tint —
+  // not the app's warning/danger colors (this is a restricted mode the
+  // user chose, not a problem) — so it stays visually distinct from the
+  // ordinary "N sources" state even at a glance, without looking like an
+  // error. Same accent family the rest of the app already uses for "this
+  // is active/selected" (see Documents' own selected-row tint).
+  const zoomInActive = isZoomIn && !hasError && count !== null;
+
   return (
     <Button
       label={label}
@@ -76,8 +85,22 @@ export function ChatSourcesButton({
       disabled={disabled}
       variant="ghost"
       size="sm"
-      icon={<DocumentsIcon size={15} color={hasError ? theme.danger : theme.subtext} />}
+      icon={
+        <DocumentsIcon
+          size={15}
+          color={hasError ? theme.danger : zoomInActive ? theme.accent : theme.subtext}
+        />
+      }
       accessibilityLabel={accessibilityLabel}
+      style={
+        zoomInActive
+          ? {
+              backgroundColor: theme.accentSoft,
+              borderWidth: StyleSheet.hairlineWidth * 2,
+              borderColor: theme.accent,
+            }
+          : undefined
+      }
     />
   );
 }

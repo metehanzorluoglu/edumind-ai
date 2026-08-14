@@ -22,7 +22,12 @@ import type { HealthResponse, ReadinessResponse } from '../types/health';
 import type { StatusResponse } from '../types/status';
 import type { SearchRequest, SearchResponse } from '../types/search';
 import type {
+  CreateHighlightRequest,
+  DocumentContentResponse,
   DocumentDeleteResponse,
+  DocumentFileRequestInit,
+  DocumentHighlight,
+  DocumentHighlightListResponse,
   DocumentJobResponse,
   DocumentListResponse,
   DocumentMetadataPreviewResponse,
@@ -31,8 +36,22 @@ import type {
   DocumentUploadResponse,
   ListDocumentsParams,
   MoveDocumentRequest,
+  UpdateHighlightRequest,
   UploadableFile,
 } from '../types/documents';
+import type {
+  AddNotebookEntryRequest,
+  CreateNotebookRequest,
+  ListNotebookEntriesParams,
+  ListNotebooksParams,
+  Notebook,
+  NotebookEntry,
+  NotebookEntryListResponse,
+  NotebookListResponse,
+  NotebookMembershipResponse,
+  RenameNotebookRequest,
+  UpdateNotebookEntryRequest,
+} from '../types/notebooks';
 import type {
   CreateFolderRequest,
   DeleteFolderParams,
@@ -236,7 +255,7 @@ export class EducationAssistantClient {
     const { data } = await requestJson<DocumentListResponse>(this.context, {
       method: 'GET',
       path: '/documents',
-      query: { limit: params.limit, offset: params.offset },
+      query: { limit: params.limit, offset: params.offset, q: params.q },
       signal: options.signal,
     });
     return data;
@@ -279,6 +298,283 @@ export class EducationAssistantClient {
       signal: options.signal,
     });
     return data;
+  }
+
+  /**
+   * GET /documents/{document_id}/content — Frontend Milestone 3 (Document
+   * Reader). Returns the document's extracted text in reading order, NOT
+   * the original file (no upload is retained anywhere past ingestion —
+   * see DocumentContentResponse's docstring). Rejects with NotFoundError
+   * (404) if the document doesn't exist or isn't the caller's.
+   */
+  async getDocumentContent(
+    documentId: string,
+    options: RequestOptions = {}
+  ): Promise<DocumentContentResponse> {
+    const { data } = await requestJson<DocumentContentResponse>(this.context, {
+      method: 'GET',
+      path: `/documents/${encodeURIComponent(documentId)}/content`,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /** GET /documents/{document_id}/highlights — every saved highlight for
+   * this document, in reading order. */
+  async listDocumentHighlights(
+    documentId: string,
+    options: RequestOptions = {}
+  ): Promise<DocumentHighlightListResponse> {
+    const { data } = await requestJson<DocumentHighlightListResponse>(this.context, {
+      method: 'GET',
+      path: `/documents/${encodeURIComponent(documentId)}/highlights`,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * POST /documents/{document_id}/highlights — the anchor
+   * (chunkId/chunkIndex/pageNumber) must describe a real chunk of this
+   * document; the backend validates it against the document's actual
+   * current content and rejects (422) a fabricated or mismatched anchor.
+   */
+  async createDocumentHighlight(
+    documentId: string,
+    request: CreateHighlightRequest,
+    options: RequestOptions = {}
+  ): Promise<DocumentHighlight> {
+    const { data } = await requestJson<DocumentHighlight>(this.context, {
+      method: 'POST',
+      path: `/documents/${encodeURIComponent(documentId)}/highlights`,
+      body: {
+        chunk_id: request.chunkId ?? null,
+        chunk_index: request.chunkIndex ?? null,
+        page_number: request.pageNumber,
+        selected_text: request.selectedText,
+        note_text: request.noteText ?? null,
+        visual_anchor: request.visualAnchor ?? null,
+      },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * GET /documents/{document_id}/highlights/{highlight_id}/notebooks —
+   * which of the caller's own notebooks this highlight has already been
+   * saved into. Backs the Reader's "Saved to N notebook(s)" indicator and
+   * the add-to-notebook picker's checkmarks.
+   */
+  async getHighlightNotebookMembership(
+    documentId: string,
+    highlightId: string,
+    options: RequestOptions = {}
+  ): Promise<NotebookMembershipResponse> {
+    const { data } = await requestJson<NotebookMembershipResponse>(this.context, {
+      method: 'GET',
+      path: `/documents/${encodeURIComponent(documentId)}/highlights/${encodeURIComponent(highlightId)}/notebooks`,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * Frontend Milestone 3.1 (Original Document Reader): resolves the
+   * authenticated fetch parameters for GET /documents/{document_id}/file —
+   * the original file's real bytes (a real PDF for a PDF, never
+   * server-rendered images or OCR output). There is no unauthenticated/
+   * public URL for this: hand the returned `url` + `httpHeaders` straight
+   * to pdf.js's `getDocument({ url, httpHeaders })`, which also gets
+   * pdf.js native Range-request support for large-PDF lazy page loading
+   * for free. Does not itself verify the file exists or is available —
+   * callers should only call this when
+   * DocumentSummary/DocumentContentResponse.original_file_available is
+   * true; a 404 from the resulting fetch means "no original file" (legacy
+   * document) or "not this caller's document."
+   */
+  async getDocumentFileRequestInit(documentId: string): Promise<DocumentFileRequestInit> {
+    const token = await this.context.getAccessToken();
+    const httpHeaders: Record<string, string> = {};
+    if (token) httpHeaders.Authorization = `Bearer ${token}`;
+    return {
+      url: `${this.baseUrl}/documents/${encodeURIComponent(documentId)}/file`,
+      httpHeaders,
+    };
+  }
+
+  /** PATCH /documents/{document_id}/highlights/{highlight_id} — the note
+   * is the only mutable field; `noteText: null` clears it. */
+  async updateDocumentHighlight(
+    documentId: string,
+    highlightId: string,
+    request: UpdateHighlightRequest,
+    options: RequestOptions = {}
+  ): Promise<DocumentHighlight> {
+    const { data } = await requestJson<DocumentHighlight>(this.context, {
+      method: 'PATCH',
+      path: `/documents/${encodeURIComponent(documentId)}/highlights/${encodeURIComponent(highlightId)}`,
+      body: { note_text: request.noteText },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /** DELETE /documents/{document_id}/highlights/{highlight_id}. Rejects
+   * with NotFoundError (404) if the highlight doesn't exist or isn't the
+   * caller's. */
+  async deleteDocumentHighlight(
+    documentId: string,
+    highlightId: string,
+    options: RequestOptions = {}
+  ): Promise<void> {
+    await requestJson<undefined>(this.context, {
+      method: 'DELETE',
+      path: `/documents/${encodeURIComponent(documentId)}/highlights/${encodeURIComponent(highlightId)}`,
+      signal: options.signal,
+    });
+  }
+
+  // --- Frontend Milestone 3.1: Notebook ("Research Notes Workspace") ---
+  // Never touches Qdrant/embeddings/retrieval — see notebooks.ts's module
+  // docstring. There is deliberately no "ask" method here: Ask EduM8 from
+  // a Notebook entry reuses the ordinary conversation-message flow (see
+  // the frontend's TransientAIContext), never a second AI endpoint.
+
+  /** GET /notebooks */
+  async listNotebooks(
+    params: ListNotebooksParams = {},
+    options: RequestOptions = {}
+  ): Promise<NotebookListResponse> {
+    const { data } = await requestJson<NotebookListResponse>(this.context, {
+      method: 'GET',
+      path: '/notebooks',
+      query: { limit: params.limit, offset: params.offset },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /** POST /notebooks */
+  async createNotebook(
+    request: CreateNotebookRequest,
+    options: RequestOptions = {}
+  ): Promise<Notebook> {
+    const { data } = await requestJson<Notebook>(this.context, {
+      method: 'POST',
+      path: '/notebooks',
+      body: { name: request.name },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /** PATCH /notebooks/{id} — renames the notebook; nothing else about it changes. */
+  async renameNotebook(
+    notebookId: string,
+    request: RenameNotebookRequest,
+    options: RequestOptions = {}
+  ): Promise<Notebook> {
+    const { data } = await requestJson<Notebook>(this.context, {
+      method: 'PATCH',
+      path: `/notebooks/${encodeURIComponent(notebookId)}`,
+      body: { name: request.name },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * DELETE /notebooks/{id} — deletes the notebook and only its own
+   * entries. Never deletes the source documents, highlights, or
+   * conversations any entry pointed at. Rejects with NotFoundError (404)
+   * if the notebook doesn't exist or isn't the caller's.
+   */
+  async deleteNotebook(notebookId: string, options: RequestOptions = {}): Promise<void> {
+    await requestJson<undefined>(this.context, {
+      method: 'DELETE',
+      path: `/notebooks/${encodeURIComponent(notebookId)}`,
+      signal: options.signal,
+    });
+  }
+
+  /** GET /notebooks/{id}/entries */
+  async listNotebookEntries(
+    notebookId: string,
+    params: ListNotebookEntriesParams = {},
+    options: RequestOptions = {}
+  ): Promise<NotebookEntryListResponse> {
+    const { data } = await requestJson<NotebookEntryListResponse>(this.context, {
+      method: 'GET',
+      path: `/notebooks/${encodeURIComponent(notebookId)}/entries`,
+      query: { limit: params.limit, offset: params.offset },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * POST /notebooks/{id}/entries — either `{ entryType: "highlight",
+   * documentId, highlightId }` (server derives every snapshot field from
+   * the caller's own highlight; idempotent — adding the same highlight to
+   * the same notebook twice returns the existing entry, never a
+   * duplicate) or `{ entryType: "manual", noteText }`.
+   */
+  async addNotebookEntry(
+    notebookId: string,
+    request: AddNotebookEntryRequest,
+    options: RequestOptions = {}
+  ): Promise<NotebookEntry> {
+    const body =
+      request.entryType === 'highlight'
+        ? {
+            entry_type: 'highlight' as const,
+            document_id: request.documentId,
+            highlight_id: request.highlightId,
+            note_text: request.noteText ?? null,
+          }
+        : { entry_type: 'manual' as const, note_text: request.noteText };
+    const { data } = await requestJson<NotebookEntry>(this.context, {
+      method: 'POST',
+      path: `/notebooks/${encodeURIComponent(notebookId)}/entries`,
+      body,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /** PATCH /notebooks/{id}/entries/{entryId} — the note is the only
+   * mutable field, for both highlight-derived and manual entries. */
+  async updateNotebookEntry(
+    notebookId: string,
+    entryId: string,
+    request: UpdateNotebookEntryRequest,
+    options: RequestOptions = {}
+  ): Promise<NotebookEntry> {
+    const { data } = await requestJson<NotebookEntry>(this.context, {
+      method: 'PATCH',
+      path: `/notebooks/${encodeURIComponent(notebookId)}/entries/${encodeURIComponent(entryId)}`,
+      body: { note_text: request.noteText },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * DELETE /notebooks/{id}/entries/{entryId} — removes this entry from
+   * this notebook only. Never deletes the source DocumentHighlight,
+   * Document, or any other notebook's own copy of the same highlight.
+   */
+  async removeNotebookEntry(
+    notebookId: string,
+    entryId: string,
+    options: RequestOptions = {}
+  ): Promise<void> {
+    await requestJson<undefined>(this.context, {
+      method: 'DELETE',
+      path: `/notebooks/${encodeURIComponent(notebookId)}/entries/${encodeURIComponent(entryId)}`,
+      signal: options.signal,
+    });
   }
 
   /**
@@ -328,7 +624,9 @@ export class EducationAssistantClient {
   ): Promise<DocumentUploadResponse> {
     const formData = new FormData();
     appendUploadableFile(formData, 'file', file);
-    formData.append('document_type', metadata.documentType);
+    if (metadata.documentType !== undefined) {
+      formData.append('document_type', metadata.documentType);
+    }
     if (metadata.journalQuartile) {
       formData.append('journal_quartile', metadata.journalQuartile);
     }

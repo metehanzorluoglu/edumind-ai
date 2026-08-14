@@ -44,8 +44,28 @@ config.watchFolders = [sdkPackageRoot];
 // of each is ever loaded. Scoped to just these two module names so it
 // doesn't affect the walk-up resolution other nested packages rely on.
 const singleInstanceModules = new Set(['react', 'react-dom']);
+
+// pdfjs-dist (Frontend Milestone 3.1 — Original Document Reader) ships a
+// single bundle containing BOTH its browser code and a Node.js-only
+// fallback path (NodeCanvasFactory etc., used only when pdf.js detects
+// it's running under Node — never true here) that does `require('canvas')`
+// / `require('path2d-polyfill')`. Real-browser validation found Metro
+// fails the whole bundle at resolve time over this: unlike webpack, Metro
+// does not honor pdfjs-dist's package.json `"browser"` field (which maps
+// `"canvas": false` for exactly this reason) — Metro still statically
+// resolves every `require()` call it finds textually, even inside a
+// runtime branch that can never execute in a browser. Neither module is a
+// real dependency of this app (canvas needs native compilation and buys
+// nothing here — the Reader only ever runs pdf.js in the browser); resolve
+// both to Metro's built-in empty module instead of installing them for
+// real.
+const emptyNodeOnlyModules = new Set(['canvas', 'path2d-polyfill']);
+
 const { resolveRequest: defaultResolveRequest } = config.resolver;
 config.resolver.resolveRequest = (context, moduleName, platform) => {
+  if (emptyNodeOnlyModules.has(moduleName)) {
+    return { type: 'empty' };
+  }
   if (singleInstanceModules.has(moduleName)) {
     const resolve = defaultResolveRequest ?? context.resolveRequest;
     return resolve(

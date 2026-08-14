@@ -44,6 +44,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Protocol
 
+from app.core.citation import Citation
 from app.core.errors import LLMProviderError, VisionErrorCategory, VisionServiceError
 from app.core.generation_events import GenerationUpdate, GenProgress, GenToken
 from app.core.request_timing import RequestTimer
@@ -160,6 +161,7 @@ async def stream_batched_pdf_analysis(
     plan: BatchPlan,
     query: str,
     sources: list[RetrievedChunk],
+    attachment_citations: list[Citation],
     project_context: str | None,
     vision_service: VisionService,
     text_provider: TextChatProvider,
@@ -221,6 +223,7 @@ async def stream_batched_pdf_analysis(
     reduce_system, reduce_user = build_reduce_prompt(
         query,
         sources=sources,
+        attachment_citations=attachment_citations,
         batch_summaries=batch_summaries,
         failed_ranges=failed_ranges,
         truncated_at_page=plan.analyzed_page_count if plan.truncated else None,

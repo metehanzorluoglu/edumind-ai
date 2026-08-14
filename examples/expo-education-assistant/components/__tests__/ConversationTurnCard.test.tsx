@@ -280,6 +280,71 @@ describe('ConversationTurnCard attachment lightbox (milestone V4)', () => {
   });
 });
 
+describe('insufficient-evidence guidance (Frontend Milestone 2 §26)', () => {
+  it('adds Zoom-In-specific guidance when the conversation is currently in Zoom-In', async () => {
+    const assistant = streamingAssistant({
+      streaming: false,
+      thinking: null,
+      thinkingContext: null,
+      insufficientEvidence: true,
+    });
+
+    let renderer!: ReturnType<typeof create>;
+    await act(async () => {
+      renderer = create(
+        <ConversationTurnCard
+          userContent="What does the corpus say about X?"
+          assistant={assistant}
+          onCitationPress={() => {}}
+          sourceMode="zoom-in"
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const note = renderer.root.findAll(
+      (n) =>
+        String(n.type) === 'Text' &&
+        n.children.some((c) => typeof c === 'string' && c.includes('No sources survived retrieval'))
+    )[0];
+    expect(note).toBeTruthy();
+    const joined = note!.children.filter((c): c is string => typeof c === 'string').join('');
+    expect(joined).toContain('Zoom-In is currently restricting answers');
+    expect(joined).toContain('switch to Prioritize');
+  });
+
+  it('omits the Zoom-In guidance when not currently in Zoom-In', async () => {
+    const assistant = streamingAssistant({
+      streaming: false,
+      thinking: null,
+      thinkingContext: null,
+      insufficientEvidence: true,
+    });
+
+    let renderer!: ReturnType<typeof create>;
+    await act(async () => {
+      renderer = create(
+        <ConversationTurnCard
+          userContent="What does the corpus say about X?"
+          assistant={assistant}
+          onCitationPress={() => {}}
+          sourceMode="prioritize"
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const note = renderer.root.findAll(
+      (n) =>
+        String(n.type) === 'Text' &&
+        n.children.some((c) => typeof c === 'string' && c.includes('No sources survived retrieval'))
+    )[0];
+    expect(note).toBeTruthy();
+    const joined = note!.children.filter((c): c is string => typeof c === 'string').join('');
+    expect(joined).not.toContain('Zoom-In is currently restricting answers');
+  });
+});
+
 function streamingAssistant(overrides: Partial<DisplayMessage> = {}): DisplayMessage {
   return {
     id: 'a1',
@@ -821,5 +886,181 @@ describe('ConversationTurnCard cited-only sources', () => {
     expect(badges(renderer.root, '[S3]').length).toBeGreaterThanOrEqual(1);
     expect(badges(renderer.root, '[S1]')).toHaveLength(0);
     expect(queryByText(renderer.root, 'Alpha source')).toBeNull();
+  });
+});
+
+// Frontend/Platform Milestone 3.2.2 Part C — end-to-end fix for a message
+// attachment being able to generate a false "[S1 — unavailable]" citation
+// even when the answer was correctly grounded in it. See
+// app/core/citation.build_attachment_citations for the backend half.
+function attachmentCitationFixture(overrides: Partial<Citation> = {}): Citation {
+  return {
+    source_id: 'S1',
+    source_kind: 'attachment',
+    document_id: null,
+    chunk_id: null,
+    attachment_id: 'a1',
+    display_name: 'notes.pdf',
+    title: null,
+    authors: [],
+    publication_year: null,
+    source_venue: null,
+    document_type: null,
+    journal_quartile: null,
+    page_start: null,
+    page_end: null,
+    doi: null,
+    source_url: null,
+    score: null,
+    ...overrides,
+  };
+}
+
+describe('ConversationTurnCard attachment citations (Frontend/Platform Milestone 3.2.2 Part C)', () => {
+  const originalOS = Platform.OS;
+
+  beforeEach(() => {
+    Platform.OS = 'ios';
+    mockGetAttachmentImageSource.mockResolvedValue({
+      uri: 'http://localhost:8000/conversations/c1/messages/m1/attachments/a1',
+      headers: {},
+    });
+  });
+
+  afterEach(() => {
+    Platform.OS = originalOS;
+    jest.clearAllMocks();
+  });
+
+  it('an attachment citation resolves the marker — no "unavailable" chip — and renders a Sources card', async () => {
+    let renderer!: ReturnType<typeof create>;
+    await act(async () => {
+      renderer = create(
+        <ConversationTurnCard
+          userContent="Summarize this."
+          assistant={streamingAssistant({
+            streaming: false,
+            thinking: null,
+            content: 'The document argues X [S1].',
+            citations: [attachmentCitationFixture()],
+          })}
+          userAttachments={[persistedImage({ key: 'a1', filename: 'notes.pdf' })]}
+          onCitationPress={() => {}}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    // The old bug: a literal "[S1 — unavailable]" in the rendered answer.
+    expect(deepTextIncludes(renderer.root, 'unavailable')).toBe(false);
+    // The honest replacement: a real Sources card for the attachment.
+    expect(queryByText(renderer.root, 'Sources')).toBeTruthy();
+    expect(queryByText(renderer.root, 'notes.pdf')).toBeTruthy();
+  });
+
+  it('tapping the attachment source card opens the same lightbox as the attachment chip', async () => {
+    let renderer!: ReturnType<typeof create>;
+    await act(async () => {
+      renderer = create(
+        <ConversationTurnCard
+          userContent="Summarize this."
+          assistant={streamingAssistant({
+            streaming: false,
+            thinking: null,
+            content: 'The document argues X [S1].',
+            citations: [attachmentCitationFixture()],
+          })}
+          userAttachments={[persistedImage({ key: 'a1', filename: 'notes.pdf' })]}
+          onCitationPress={() => {}}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const sourceCard = renderer.root.find(
+      (node) => node.props.accessibilityLabel === 'Open attached file notes.pdf, source S1'
+    );
+    await act(async () => {
+      sourceCard.props.onPress();
+      await Promise.resolve();
+    });
+
+    // The lightbox's own top bar repeats the filename — now findable twice
+    // (chip + lightbox) proves the modal actually opened, same assertion
+    // shape as the plain attachment-chip lightbox tests above.
+    expect(
+      renderer.root.findAll((n) => String(n.type) === 'Text' && n.children.includes('notes.pdf'))
+        .length
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  it('a genuinely unknown citation (no matching backend citation at all) still shows "unavailable" — attachments never weaken this', async () => {
+    let renderer!: ReturnType<typeof create>;
+    await act(async () => {
+      renderer = create(
+        <ConversationTurnCard
+          userContent="Summarize this."
+          assistant={streamingAssistant({
+            streaming: false,
+            thinking: null,
+            content: 'A real claim [S1]. A fabricated one [S99].',
+            citations: [attachmentCitationFixture()],
+          })}
+          userAttachments={[persistedImage({ key: 'a1', filename: 'notes.pdf' })]}
+          onCitationPress={() => {}}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    expect(deepTextIncludes(renderer.root, 'S99')).toBe(true);
+    expect(deepTextIncludes(renderer.root, 'unavailable')).toBe(true);
+  });
+
+  it('a mixed corpus + attachment answer shows both card kinds, in S-number order', async () => {
+    let renderer!: ReturnType<typeof create>;
+    await act(async () => {
+      renderer = create(
+        <ConversationTurnCard
+          userContent="Compare this with my library."
+          assistant={streamingAssistant({
+            streaming: false,
+            thinking: null,
+            content: 'The corpus says X [S1]. The attachment shows Y [S2].',
+            sources: [sourceFixture(1, 'Alpha source')],
+            citations: [
+              citationFixture(1, 'Alpha source'),
+              attachmentCitationFixture({ source_id: 'S2' }),
+            ],
+          })}
+          userAttachments={[persistedImage({ key: 'a1', filename: 'notes.pdf' })]}
+          onCitationPress={() => {}}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    expect(deepTextIncludes(renderer.root, 'unavailable')).toBe(false);
+    // The corpus SourceCard (S1) renders.
+    expect(queryByText(renderer.root, 'Alpha source')).toBeTruthy();
+    // The attachment card (S2) renders too — its own accessibility label
+    // (not the plain attachment chip's, which reuses the same filename
+    // text above the answer) unambiguously identifies it.
+    const attachmentCard = renderer.root.find(
+      (node) => node.props.accessibilityLabel === 'Open attached file notes.pdf, source S2'
+    );
+    expect(attachmentCard).toBeTruthy();
+    // S-number order: the S1 corpus card's title sits before the S2
+    // attachment card in render order (both are text-node descendants of
+    // the same "Sources" section, appended in the sequence
+    // ConversationTurnCard builds them — citedSources then
+    // citedAttachmentCitations).
+    const allNodes = renderer.root.findAll(() => true);
+    const alphaIndex = allNodes.findIndex(
+      (node) => String(node.type) === 'Text' && node.children.includes('Alpha source')
+    );
+    const attachmentCardIndex = allNodes.indexOf(attachmentCard);
+    expect(alphaIndex).toBeGreaterThan(-1);
+    expect(alphaIndex).toBeLessThan(attachmentCardIndex);
   });
 });

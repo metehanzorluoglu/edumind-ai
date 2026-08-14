@@ -1,5 +1,5 @@
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
-import { Alert, FlatList } from 'react-native';
+import { Alert, Dimensions, FlatList, Platform } from 'react-native';
 import { ConversationTurnCard } from '@/components/ConversationTurnCard';
 import { AuthProvider } from '@/lib/AuthProvider';
 import { ChatConversationsProvider } from '@/lib/ChatConversationsContext';
@@ -49,6 +49,7 @@ jest.mock('expo-router', () => ({
   useLocalSearchParams: () => mockParams,
   usePathname: () => '/chat/c1',
   useGlobalSearchParams: () => ({}),
+  useRouter: () => ({ push: jest.fn(), replace: jest.fn() }),
 }));
 
 function findByText(root: ReactTestInstance, text: string): ReactTestInstance {
@@ -153,7 +154,11 @@ function controllableSseResponse(): ControllableSse {
   };
 }
 
-function conversationDetail(id: string, messages: unknown[] = []): Response {
+function conversationDetail(
+  id: string,
+  messages: unknown[] = [],
+  projects: { id: string; name: string }[] = []
+): Response {
   return new Response(
     JSON.stringify({
       id,
@@ -162,6 +167,7 @@ function conversationDetail(id: string, messages: unknown[] = []): Response {
       created_at: '2026-01-01T00:00:00Z',
       updated_at: '2026-01-01T00:00:00Z',
       messages,
+      projects,
     }),
     { status: 200 }
   );
@@ -1142,11 +1148,32 @@ describe('ChatConversationRoute ([id])', () => {
       return matches[0]!;
     }
 
-    function scopeResponse(zoomInMode = false) {
+    // Non-throwing counterpart, for negative assertions.
+    function queryByTextIncluding(
+      root: ReactTestInstance,
+      substring: string
+    ): ReactTestInstance | null {
+      const matches = root.findAll((node) => {
+        if (String(node.type) !== 'Text') return false;
+        const joined = node.children.filter((c): c is string => typeof c === 'string').join('');
+        return joined.includes(substring);
+      });
+      return matches[0] ?? null;
+    }
+
+    function scopeResponse(
+      zoomInMode = false,
+      overrides: {
+        project_enabled?: boolean;
+        general_enabled?: boolean;
+        chat_enabled?: boolean;
+      } = {}
+    ) {
       return {
         chat_enabled: true,
         project_enabled: true,
         general_enabled: true,
+        ...overrides,
         include_other_project_summaries: false,
         zoom_in_mode: zoomInMode,
       };
@@ -1154,7 +1181,11 @@ describe('ChatConversationRoute ([id])', () => {
 
     function mockFetchWithDocuments(
       documents: { document_id: string; source_filename: string }[],
-      options: { scope?: ReturnType<typeof scopeResponse>; scopeStatus?: number } = {}
+      options: {
+        scope?: ReturnType<typeof scopeResponse>;
+        scopeStatus?: number;
+        projects?: { id: string; name: string }[];
+      } = {}
     ): typeof fetch {
       return jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === 'string' ? input : input.toString();
@@ -1167,7 +1198,9 @@ describe('ChatConversationRoute ([id])', () => {
             status: 200,
           });
         }
-        if (url.endsWith('/conversations/c-sources')) return conversationDetail('c-sources');
+        if (url.endsWith('/conversations/c-sources')) {
+          return conversationDetail('c-sources', [], options.projects ?? []);
+        }
         if (method === 'GET' && url.endsWith('/conversations/c-sources/documents')) {
           return new Response(
             JSON.stringify({
@@ -1287,7 +1320,7 @@ describe('ChatConversationRoute ([id])', () => {
         findPressableByText(renderer.root, '1 source').props.onPress();
       });
 
-      expect(findByTextIncluding(renderer.root, 'Selected (1)')).toBeTruthy(); // preselected from GET
+      expect(findByTextIncluding(renderer.root, 'Selected sources (1)')).toBeTruthy(); // preselected from GET
 
       await act(async () => {
         findPressableByText(renderer.root, 'Save').props.onPress();
@@ -1300,6 +1333,227 @@ describe('ChatConversationRoute ([id])', () => {
       // this proves the composer badge is driven by the picker's onSaved
       // callback (the server's own response), not left stale.
       expect(findByText(renderer.root, '1 source')).toBeTruthy();
+    });
+
+    // Frontend/Platform Milestone 3.2.2 Part D — the composer's inline
+    // SelectedSourceChips only render on wide web (see chat/[id].tsx's
+    // `showSourceChips`), so this scoped describe opts INTO that layout
+    // rather than changing it file-wide (every other test here
+    // deliberately exercises the default non-web layout).
+    describe('Removing the sole selected source inline while in Zoom-In', () => {
+      const originalPlatformOS = Platform.OS;
+
+      afterEach(() => {
+        Platform.OS = originalPlatformOS;
+      });
+
+      it(
+        'DELETEs the association THEN PATCHes zoom_in_mode=false — never leaves the backend holding ' +
+          'zoom_in_mode=true with zero documents, even momentarily',
+        async () => {
+          Platform.OS = 'web';
+          Dimensions.set({
+            window: { width: 1200, height: 900, scale: 1, fontScale: 1 },
+            screen: { width: 1200, height: 900, scale: 1, fontScale: 1 },
+          });
+          mockParams.id = 'c-sources';
+
+          const patchBodies: unknown[] = [];
+          let deleteCalled = false;
+          // Stateful, like the real backend: the DELETE and PATCH below
+          // actually mutate what subsequent GETs (fired by
+          // refreshSources()) report, so the test can tell a real
+          // fire-and-forget-optimistic-only fix apart from one that
+          // correctly round-trips through the server.
+          let documentsOnServer = [{ document_id: 'd1', source_filename: 'a.pdf' as const }] as {
+            document_id: string;
+            source_filename: string;
+          }[];
+          let zoomInOnServer = true;
+          global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = typeof input === 'string' ? input : input.toString();
+            const method = (init?.method ?? 'GET').toUpperCase();
+            if (url.includes('/auth/refresh')) {
+              return new Response(JSON.stringify({ detail: 'none' }), { status: 401 });
+            }
+            if (url.includes('/auth/providers')) {
+              return new Response(JSON.stringify({ providers: [], dev_login_enabled: false }), {
+                status: 200,
+              });
+            }
+            if (url.endsWith('/conversations/c-sources')) return conversationDetail('c-sources');
+            if (method === 'GET' && url.endsWith('/conversations/c-sources/documents')) {
+              return new Response(
+                JSON.stringify({
+                  documents: documentsOnServer.map((d) => ({
+                    ...d,
+                    document_type: 'report',
+                    added_at: '2026-01-01T00:00:00Z',
+                  })),
+                  total: documentsOnServer.length,
+                }),
+                { status: 200 }
+              );
+            }
+            if (method === 'DELETE' && url.endsWith('/conversations/c-sources/documents/d1')) {
+              deleteCalled = true;
+              documentsOnServer = documentsOnServer.filter((d) => d.document_id !== 'd1');
+              return new Response(null, { status: 204 });
+            }
+            if (method === 'GET' && url.endsWith('/conversations/c-sources/scope')) {
+              return new Response(
+                JSON.stringify({
+                  chat_enabled: true,
+                  project_enabled: true,
+                  general_enabled: true,
+                  include_other_project_summaries: false,
+                  zoom_in_mode: zoomInOnServer,
+                }),
+                { status: 200 }
+              );
+            }
+            if (method === 'PATCH' && url.endsWith('/conversations/c-sources/scope')) {
+              // Asserts the DELETE has already landed by the time the PATCH
+              // fires — the safe ordering this fix depends on.
+              expect(deleteCalled).toBe(true);
+              const body = JSON.parse(String(init?.body));
+              patchBodies.push(body);
+              zoomInOnServer = Boolean(body.zoom_in_mode);
+              return new Response(
+                JSON.stringify({
+                  chat_enabled: true,
+                  project_enabled: true,
+                  general_enabled: true,
+                  include_other_project_summaries: false,
+                  zoom_in_mode: zoomInOnServer,
+                }),
+                { status: 200 }
+              );
+            }
+            throw new Error(`Unexpected fetch call to ${url} in this test`);
+          }) as unknown as typeof fetch;
+
+          const renderer = await renderChat();
+          expect(findByText(renderer.root, 'Zoom-In · 1')).toBeTruthy();
+
+          const removeChip = renderer.root.find(
+            (node) => node.props.accessibilityLabel === 'Remove a.pdf from selected sources'
+          );
+
+          await act(async () => {
+            removeChip.props.onPress();
+            await Promise.resolve();
+            await Promise.resolve();
+            await Promise.resolve();
+            await Promise.resolve();
+          });
+
+          expect(deleteCalled).toBe(true);
+          expect(patchBodies).toEqual([{ zoom_in_mode: false }]);
+          // The badge falls back to ordinary Prioritize copy — no trapped
+          // Zoom-In-with-nothing-selected state left on screen.
+          expect(queryByText(renderer.root, 'Zoom-In · 1')).toBeNull();
+        }
+      );
+    });
+
+    describe('Project context (Frontend Milestone 2.1)', () => {
+      it('an ordinary (non-project) conversation shows no Project indicator and ordinary Prioritize copy', async () => {
+        mockParams.id = 'c-sources';
+        global.fetch = mockFetchWithDocuments([{ document_id: 'd1', source_filename: 'a.pdf' }], {
+          projects: [],
+        });
+        const renderer = await renderChat();
+
+        await act(async () => {
+          findPressableByText(renderer.root, '1 source').props.onPress();
+        });
+
+        expect(queryByText(renderer.root, 'Project')).toBeNull();
+        expect(
+          queryByText(
+            renderer.root,
+            'Use these sources first, then broaden to other available library knowledge when useful.'
+          )
+        ).toBeTruthy();
+      });
+
+      it('a project-associated conversation shows the Project indicator and project-aware Prioritize copy — restored together with mode and selection on load, no flicker', async () => {
+        mockParams.id = 'c-sources';
+        global.fetch = mockFetchWithDocuments([{ document_id: 'd1', source_filename: 'a.pdf' }], {
+          projects: [{ id: 'p1', name: 'AI Literacy Study' }],
+        });
+        const renderer = await renderChat();
+
+        await act(async () => {
+          findPressableByText(renderer.root, '1 source').props.onPress();
+        });
+
+        expect(findByText(renderer.root, 'Project')).toBeTruthy();
+        expect(queryByTextIncluding(renderer.root, 'AI Literacy Study')).toBeTruthy();
+        expect(
+          queryByText(
+            renderer.root,
+            'Use these sources first, then broaden to project knowledge and other available library knowledge when useful.'
+          )
+        ).toBeTruthy();
+      });
+
+      it('project_enabled=false on a project-associated conversation never claims project knowledge is available', async () => {
+        mockParams.id = 'c-sources';
+        global.fetch = mockFetchWithDocuments([{ document_id: 'd1', source_filename: 'a.pdf' }], {
+          projects: [{ id: 'p1', name: 'AI Literacy Study' }],
+          scope: scopeResponse(false, { project_enabled: false }),
+        });
+        const renderer = await renderChat();
+
+        await act(async () => {
+          findPressableByText(renderer.root, '1 source').props.onPress();
+        });
+
+        expect(
+          queryByText(
+            renderer.root,
+            'Use these sources first, then broaden to project knowledge and other available library knowledge when useful.'
+          )
+        ).toBeNull();
+        expect(
+          queryByText(
+            renderer.root,
+            'Use these sources first, then broaden to other available library knowledge when useful.'
+          )
+        ).toBeTruthy();
+      });
+
+      it('a conversation still loading its detail renders no composer/Sources control at all — the "no flicker" requirement is structurally satisfied, not just handled in copy', async () => {
+        mockParams.id = 'c-sources';
+        // The conversation-detail fetch never resolves in this test.
+        // ChatConversationScreen gates its ENTIRE body (composer included)
+        // behind loadState — see chat/[id].tsx's own `if (loadState.status
+        // === 'loading') return <spinner/>` — so there is no code path
+        // where the Sources button/picker can render with an unresolved
+        // `conversation`, and therefore no path where project copy could
+        // ever flicker between "ordinary" and "project" while it loads.
+        global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+          const url = typeof input === 'string' ? input : input.toString();
+          if (url.includes('/auth/refresh')) {
+            return new Response(JSON.stringify({ detail: 'none' }), { status: 401 });
+          }
+          if (url.includes('/auth/providers')) {
+            return new Response(JSON.stringify({ providers: [], dev_login_enabled: false }), {
+              status: 200,
+            });
+          }
+          if (url.endsWith('/conversations/c-sources')) {
+            return new Promise<Response>(() => {}); // never resolves
+          }
+          throw new Error(`Unexpected fetch call to ${url} in this test`);
+        }) as unknown as typeof fetch;
+        const renderer = await renderChat();
+
+        expect(queryByText(renderer.root, 'Add sources')).toBeNull();
+        expect(queryByText(renderer.root, 'Project')).toBeNull();
+      });
     });
   });
 

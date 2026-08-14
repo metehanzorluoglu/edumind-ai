@@ -21,9 +21,11 @@ from app.core.request_timing import DISABLED_TIMER, RequestTimer, bind_timer, un
 from app.core.retriever import Retriever
 from app.db.conversation_scope_repository import ConversationScopeRepository
 from app.db.conversations_repository import ConversationsRepository
+from app.db.document_highlights_repository import DocumentHighlightsRepository
 from app.db.document_jobs_repository import DocumentJobsRepository
 from app.db.documents_repository import DocumentsRepository
 from app.db.folders_repository import FoldersRepository
+from app.db.notebooks_repository import NotebooksRepository
 from app.db.project_knowledge_repository import ProjectKnowledgeRepository
 from app.db.project_profile_repository import ProjectProfileRepository
 from app.db.projects_repository import ProjectsRepository
@@ -31,6 +33,7 @@ from app.db.research_preference_repository import ResearchPreferenceRepository
 from app.db.scopes_repository import ScopesRepository
 from app.db.session import get_db, get_session_factory
 from app.services.attachment_storage import AttachmentStorage
+from app.services.document_file_storage import DocumentFileStorage
 from app.services.vision_service import VisionService
 from app.vectorstore.qdrant_client import QdrantVectorStore
 
@@ -188,6 +191,18 @@ AttachmentStorageDep = Annotated[AttachmentStorage, Depends(get_attachment_stora
 
 
 @lru_cache
+def get_document_file_storage() -> DocumentFileStorage:
+    # Frontend Milestone 3.1 — see app/services/document_file_storage.py's
+    # module docstring for why this is a separate instance/directory from
+    # get_attachment_storage() above.
+    settings = get_settings()
+    return DocumentFileStorage(root_dir=settings.document_storage_dir)
+
+
+DocumentFileStorageDep = Annotated[DocumentFileStorage, Depends(get_document_file_storage)]
+
+
+@lru_cache
 def get_image_generation_service() -> ImageGenerationService:
     settings = get_settings()
     return ImageGenerationService(
@@ -282,6 +297,17 @@ def get_documents_repository(db: DBSessionDep) -> DocumentsRepository:
 DocumentsRepositoryDep = Annotated[DocumentsRepository, Depends(get_documents_repository)]
 
 
+def get_document_highlights_repository(db: DBSessionDep) -> DocumentHighlightsRepository:
+    # Same reasoning as get_documents_repository above: fresh per-request,
+    # never cached across requests.
+    return DocumentHighlightsRepository(db)
+
+
+DocumentHighlightsRepositoryDep = Annotated[
+    DocumentHighlightsRepository, Depends(get_document_highlights_repository)
+]
+
+
 def get_folders_repository(db: DBSessionDep) -> FoldersRepository:
     # Same reasoning as get_documents_repository above: fresh per-request,
     # never cached across requests.
@@ -303,6 +329,15 @@ def get_document_jobs_repository(db: DBSessionDep) -> DocumentJobsRepository:
 DocumentJobsRepositoryDep = Annotated[
     DocumentJobsRepository, Depends(get_document_jobs_repository)
 ]
+
+
+def get_notebooks_repository(db: DBSessionDep) -> NotebooksRepository:
+    # Same reasoning as get_documents_repository above: fresh per-request,
+    # never cached across requests.
+    return NotebooksRepository(db)
+
+
+NotebooksRepositoryDep = Annotated[NotebooksRepository, Depends(get_notebooks_repository)]
 
 
 def get_conversations_repository(db: DBSessionDep) -> ConversationsRepository:

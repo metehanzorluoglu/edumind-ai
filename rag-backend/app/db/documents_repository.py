@@ -9,10 +9,11 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.models_documents import Document
+from app.db.models_folders import Folder
 from app.ingestion.metadata_schema import DocumentMetadata
 
 
@@ -39,9 +40,32 @@ class DocumentRecord:
     page_count: int
     file_format: str
     ingested_at: datetime
+    storage_key: str | None
+    original_mime_type: str | None
+    original_file_size_bytes: int | None
+    # Frontend/Platform Milestone 3.2.1 Part D — populated only by
+    # search_for_user() below (a LEFT JOIN against folders), None
+    # everywhere else. Optional/defaulted so every existing caller of
+    # _to_record()/list_for_user()/list_in_folder() is unaffected.
+    folder_name: str | None = None
+
+    @property
+    def original_file_available(self) -> bool:
+        """Frontend/Platform Milestone 3.2.1: DELIBERATELY NOT what
+        response-building code should use anymore — this only reflects
+        whether `storage_key` was ever set, not whether the physical file
+        still exists (see this milestone's report: a misconfigured
+        storage root can leave `storage_key` set forever while the bytes
+        it points at are gone). Kept for cheap non-response-facing checks
+        that only care "did this document ever get a stored original"
+        (there are none in this codebase today). Every route that reports
+        `original_file_available` in an API response MUST instead call
+        routes_documents.py's `_original_file_available(record,
+        document_file_storage)`, which adds the real existence check."""
+        return self.storage_key is not None
 
 
-def _to_record(row: Document) -> DocumentRecord:
+def _to_record(row: Document, *, folder_name: str | None = None) -> DocumentRecord:
     return DocumentRecord(
         document_id=row.document_id,
         user_id=row.user_id,
@@ -60,6 +84,10 @@ def _to_record(row: Document) -> DocumentRecord:
         page_count=row.page_count,
         file_format=row.file_format,
         ingested_at=row.ingested_at,
+        storage_key=row.storage_key,
+        original_mime_type=row.original_mime_type,
+        original_file_size_bytes=row.original_file_size_bytes,
+        folder_name=folder_name,
     )
 
 
@@ -95,6 +123,9 @@ class DocumentsRepository:
         metadata: DocumentMetadata,
         chunk_count: int,
         folder_id: uuid.UUID | None = None,
+        storage_key: str | None = None,
+        original_mime_type: str | None = None,
+        original_file_size_bytes: int | None = None,
     ) -> DocumentRecord:
         # folder_id is deliberately not part of DocumentMetadata (see
         # app/ingestion/metadata_schema.py) — it's Milestone 1's
@@ -123,6 +154,9 @@ class DocumentsRepository:
             page_count=metadata.page_count,
             file_format=metadata.file_format,
             ingested_at=metadata.ingested_at,
+            storage_key=storage_key,
+            original_mime_type=original_mime_type,
+            original_file_size_bytes=original_file_size_bytes,
         )
         self._db.add(row)
         self._db.commit()
@@ -190,6 +224,46 @@ class DocumentsRepository:
             .all()
         )
         return [_to_record(row) for row in rows], total
+
+    def search_for_user(
+        self, user_id: uuid.UUID, q: str, *, limit: int = 20, offset: int = 0
+    ) -> tuple[list[DocumentRecord], int]:
+        """Frontend/Platform Milestone 3.2.1 Part D — LIBRARY search, not
+        semantic corpus retrieval: a plain case-insensitive substring match
+        against `title`/`source_filename`, across every folder (never
+        scoped to "whichever folder happens to be open" — see this
+        milestone's report on why "search my whole library" is the
+        expected mental model here). Deliberately does NOT touch Qdrant/
+        embeddings/chunks — that's GET /search's job (app/api/
+        routes_search.py), a fundamentally different feature this one is
+        not a replacement for.
+
+        LEFT JOINs folders once, server-side, so each result can show
+        where it lives (`folder_name`, None for root) without the caller
+        making a second round trip per result — see DocumentRecord.
+        folder_name's own docstring for why that field defaults to None
+        everywhere else."""
+        needle = f"%{q.strip()}%"
+        conditions = (
+            Document.user_id == user_id,
+            or_(Document.title.ilike(needle), Document.source_filename.ilike(needle)),
+        )
+        total = self._db.execute(
+            select(func.count()).select_from(Document).where(*conditions)
+        ).scalar_one()
+
+        rows = (
+            self._db.execute(
+                select(Document, Folder.name)
+                .outerjoin(Folder, Document.folder_id == Folder.id)
+                .where(*conditions)
+                .order_by(Document.ingested_at.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+            .all()
+        )
+        return [_to_record(row[0], folder_name=row[1]) for row in rows], total
 
     def move_to_folder(
         self, user_id: uuid.UUID, document_id: str, folder_id: uuid.UUID | None

@@ -11,11 +11,17 @@ simplifies: an individual batch's output is never shown to the user, so
 its prompt carries none of that module's citation-marker instructions —
 only build_reduce_prompt's does, since the reduce step is the one whose
 output the user actually reads and that may cite retrieved corpus
-sources.
+sources AND (Frontend/Platform Milestone 3.2.2 Part C) the one attached
+PDF itself, now a real registered citation too — see
+app/core/citation.build_attachment_citations and
+vision_prompt_builder.py's module docstring for why "document findings"
+being flatly unciteable was a provenance bug, not a safety feature.
 """
 
+from app.core.citation import Citation
 from app.core.prompt_builder import format_project_context_block, format_sources_block
 from app.core.retrieval_schemas import RetrievedChunk
+from app.core.vision_prompt_builder import format_attachment_labels_block
 
 _BATCH_VISION_SYSTEM_PROMPT = """You are analyzing one part of a longer document, page by page, as an \
 intermediate step in answering a user's question about the whole document. You will see one or \
@@ -83,10 +89,11 @@ it's relevant to the completeness of your answer — never invent what might hav
 silently picking one side.
 
 Citation rules:
-- Cite a numbered source inline using [S1], [S2], etc. only for a claim actually drawn from that \
-source's text.
-- Never write a citation marker for something drawn from the document findings below — those are \
-not numbered sources and must never be cited, even though both may inform the same answer.
+- The attached document itself is listed below with its own [S<n>] label (see "Attached file(s)") \
+— cite that label for a claim drawn from the document findings.
+- Cite a numbered corpus source inline using [S1], [S2], etc. (its own listed label) only for a \
+claim actually drawn from that source's text.
+- Never write a citation marker for a label that isn't listed below.
 
 Output rules:
 - Write one coherent, well-organized answer to the user's question — not a list of per-part \
@@ -127,6 +134,7 @@ def build_reduce_prompt(
     query: str,
     *,
     sources: list[RetrievedChunk],
+    attachment_citations: list[Citation],
     batch_summaries: list[tuple[int, int, str]],
     failed_ranges: list[tuple[int, int]],
     truncated_at_page: int | None,
@@ -139,7 +147,12 @@ def build_reduce_prompt(
     see vision_batch_orchestrator.py) and `truncated_at_page` (non-None
     when the document was longer than the analysis ceiling — see
     app/config.py's vision_batch_max_pages) are both surfaced to the
-    model as honest gaps it may mention, never silently hidden."""
+    model as honest gaps it may mention, never silently hidden.
+    `attachment_citations` (see app/core/citation.build_attachment_citations)
+    is always exactly the one PDF this whole batched pipeline exists to
+    analyze — listed the same way build_vision_prompt lists its
+    attachments, so the reduce step can honestly cite "the document
+    findings" as [S<n>] instead of being told never to."""
     system_prompt = _REDUCE_SYSTEM_PROMPT
     if project_context:
         system_prompt += _PROJECT_CONTEXT_RULE
@@ -161,6 +174,8 @@ def build_reduce_prompt(
 
     if sources:
         parts.append(format_sources_block(sources))
+
+    parts.append(format_attachment_labels_block(attachment_citations))
 
     parts.append(f"Question: {query}")
     user_prompt = "\n\n".join(parts)

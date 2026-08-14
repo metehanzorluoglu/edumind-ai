@@ -1,0 +1,21 @@
+# Repo-root .dockerignore — only deploy/frontend/Dockerfile currently uses
+# the repo root as its build context (see docker-compose.oracle.yml's
+# `frontend.build.context: ../..`); every other service's context is
+# scoped to its own subdirectory. Without this file, `docker build` was
+# packing the *entire* monorepo (~6.8GB, including other packages'
+# node_modules/.venv and .git history) into the build context on every
+# frontend build — none of which the Dockerfile's COPY instructions
+# actually need, since npm ci reinstalls dependencies fresh inside the
+# image. Trimming this is what "context" cleanup refers to in the M3.1
+# production build hotfix.
+.git/
+**/node_modules/
+**/.venv/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/dist/
+**/.expo/
+**/web-build/
+**/expo-env.d.ts
+rag-backend/data/

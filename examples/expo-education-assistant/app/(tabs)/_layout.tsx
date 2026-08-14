@@ -27,6 +27,7 @@ const ROUTE_BY_SECTION: Record<NavSection, string> = {
   chat: '/chat',
   search: '/search',
   documents: '/documents',
+  notes: '/notes',
   settings: '/settings',
 };
 
@@ -67,6 +68,7 @@ export default function TabsLayout() {
     segments[0] === 'chat' ||
     segments[0] === 'search' ||
     segments[0] === 'documents' ||
+    segments[0] === 'notes' ||
     segments[0] === 'settings'
       ? (segments[0] as NavSection)
       : null;
@@ -104,6 +106,28 @@ export default function TabsLayout() {
   }
 
   function handleNavigate(section: NavSection): void {
+    // Frontend/Platform Milestone 3.2.2 Part A — desktop-only: the Chat
+    // nav icon becomes the Chat drawer's toggle once already inside Chat,
+    // reusing `preferences.sidebarCollapsed` (the SAME state the lower
+    // NavRail collapse control already drives — see NavRail.tsx and this
+    // milestone's report on why that control was removed rather than
+    // leaving two buttons that do the same thing). Never touches route/
+    // conversation state: toggling the drawer must not navigate, reset
+    // the composer, or change which conversation is active. `isWide`
+    // gates this entirely off on mobile/narrow web, which keeps
+    // BottomNav's own "Chat" press exactly as it was before this
+    // milestone (mobile has no persistent drawer to toggle).
+    if (isWide && section === 'chat') {
+      if (activeSection === 'chat') {
+        update('sidebarCollapsed', !preferences.sidebarCollapsed);
+        return;
+      }
+      // Coming from a non-Chat route: land on New Chat AND make sure the
+      // drawer is visible (never toggle it closed if it already is open).
+      router.push('/chat/new');
+      if (preferences.sidebarCollapsed) update('sidebarCollapsed', false);
+      return;
+    }
     router.push(ROUTE_BY_SECTION[section] as never);
     setDrawerOpen(false);
   }
@@ -125,6 +149,7 @@ export default function TabsLayout() {
             onNavigate={handleNavigate}
             drawerCollapsed={preferences.sidebarCollapsed}
             onToggleDrawer={() => update('sidebarCollapsed', !preferences.sidebarCollapsed)}
+            onLogoPress={handleNewChat}
           />
         )}
 
@@ -149,7 +174,13 @@ export default function TabsLayout() {
                 onPress={() => setDrawerOpen(true)}
                 icon={<MenuIcon size={20} color={theme.text} />}
               />
-              <View style={styles.topBarBrand}>
+              <Pressable
+                onPress={handleNewChat}
+                accessibilityRole="button"
+                accessibilityLabel="EduM8 — New chat"
+                style={styles.topBarBrand}
+                hitSlop={6}
+              >
                 <EduM8Symbol size={18} />
                 <Text
                   style={[
@@ -159,7 +190,7 @@ export default function TabsLayout() {
                 >
                   EduM8
                 </Text>
-              </View>
+              </Pressable>
               {activeSection === 'chat' ? (
                 <IconButton
                   label="New chat"

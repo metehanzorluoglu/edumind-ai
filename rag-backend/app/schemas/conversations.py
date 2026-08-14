@@ -90,6 +90,21 @@ class MessageResponse(BaseModel):
     error_message: str | None = None
 
 
+class ConversationProjectResponse(BaseModel):
+    """Frontend Milestone 2.1: the authoritative "which project(s) is this
+    conversation actually in" signal — see
+    ProjectsRepository.get_project_refs_for_conversation. A conversation
+    can belong to zero, one, or several projects (ProjectConversation is a
+    genuine many-to-many association, never assume exactly one), so this
+    is always a list, never a single nullable project. The frontend must
+    not infer project membership from anything else (conversation_scope's
+    `project_enabled` toggle, sidebar location, title, ...) — this list is
+    the one source of truth."""
+
+    id: str
+    name: str
+
+
 class ConversationDetailResponse(BaseModel):
     id: str
     title: str
@@ -97,6 +112,12 @@ class ConversationDetailResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     messages: list[MessageResponse]
+    # Frontend Milestone 2.1 — see ConversationProjectResponse. Populated
+    # from the existing project_conversations association (one extra
+    # bounded query, no new HTTP round trip for the frontend since this
+    # rides along the conversation detail fetch chat/[id].tsx already
+    # makes on mount).
+    projects: list[ConversationProjectResponse] = Field(default_factory=list)
 
 
 class RenameConversationRequest(BaseModel):

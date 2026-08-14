@@ -1,45 +1,60 @@
 import { useEducationDocuments, useFolderLibrary } from 'education-assistant-client';
-import type {
-  DocumentSummary,
-  DocumentType,
-  FolderResponse,
-  JournalQuartile,
-  UploadableFile,
-} from 'education-assistant-client';
+import type { DocumentSummary, FolderResponse, UploadableFile } from 'education-assistant-client';
 import * as DocumentPicker from 'expo-document-picker';
+import { useRouter } from 'expo-router';
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
-import { FilterChip } from '@/components/ui/FilterChip';
 import { Notice } from '@/components/ui/Notice';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { TextField } from '@/components/ui/TextField';
 import { Breadcrumbs } from '@/components/Breadcrumbs';
-import { FolderRow } from '@/components/FolderRow';
 import { MoveToFolderDialog } from '@/components/MoveToFolderDialog';
-import { DOCUMENT_TYPES, DOCUMENT_TYPE_LABELS, JOURNAL_QUARTILES } from '@/lib/enums';
+import { LibraryToolbar } from '@/components/documents/LibraryToolbar';
+import { LibraryContentsView } from '@/components/documents/LibraryContentsView';
+import { DetailsPanel } from '@/components/documents/DetailsPanel';
+import { DOCUMENT_TYPE_LABELS } from '@/lib/enums';
 import { fileExtension, formatFileSize, validateCandidateFile } from '@/lib/documentUpload';
 import { safeText } from '@/lib/format';
 import { useClient } from '@/lib/ClientProvider';
 import { useFeatureFlags } from '@/lib/FeatureFlags';
-import { useTheme, type Theme } from '@/lib/Preferences';
+import { usePreferences, useTheme, type Theme } from '@/lib/Preferences';
+import {
+  libraryItemId,
+  sortLibraryContents,
+  toDocumentItems,
+  toFolderItems,
+  type LibraryItem,
+  type LibrarySortDirection,
+  type LibrarySortKey,
+} from '@/lib/libraryItems';
+import { useLibrarySelection } from '@/lib/useLibrarySelection';
+import { useLibraryDnD } from '@/lib/useLibraryDnD';
 import {
   SAMPLE_DOCUMENT_FILENAME,
   SAMPLE_DOCUMENT_TITLE,
   buildSampleUploadFile,
   isSampleSource,
 } from '@/lib/sampleDocument';
+
+/** Below this width, the optional details panel (requirement #12) never
+ * shows — there's no room for a third column next to the library and the
+ * upload form, and mobile/tablet already fall back to tap + the actions
+ * menu (requirement #17). */
+const DESKTOP_DETAILS_PANEL_BREAKPOINT_PX = 900;
 
 /**
  * Converts a picked DocumentPicker asset into the shape the SDK's
@@ -95,6 +110,7 @@ export default function DocumentsScreen() {
   const styles = useMemo(() => buildStyles(theme), [theme]);
   const { client, hydrated } = useClient();
   const featureFlags = useFeatureFlags();
+  const router = useRouter();
   const {
     listState,
     refresh,
@@ -132,14 +148,104 @@ export default function DocumentsScreen() {
   const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [sampleError, setSampleError] = useState<string | null>(null);
-  const [documentType, setDocumentType] = useState<DocumentType>('journal_article');
-  const [journalQuartile, setJournalQuartile] = useState<JournalQuartile | undefined>(undefined);
-  const [title, setTitle] = useState('');
+  // Frontend/Platform Milestone 3.2.1 Part D — library search (title/
+  // filename, across every folder). `searchInput` is the live text field;
+  // `activeSearchQuery` is only set on submit, so search results replace
+  // the normal Finder-style view exactly when the user asked for them
+  // (not on every keystroke) and "Clear search" has an unambiguous
+  // "go back to" state. Reuses `listState`/`refresh` from
+  // useEducationDocuments above — that hook's flat list is otherwise
+  // unrendered whenever featureFlags.folderLibrary is true, so this
+  // never conflicts with the folder-tree view's own data.
+  const [searchInput, setSearchInput] = useState('');
+  const [activeSearchQuery, setActiveSearchQuery] = useState('');
+
+  function handleSearchSubmit(): void {
+    const trimmed = searchInput.trim();
+    if (!trimmed) return;
+    setActiveSearchQuery(trimmed);
+    refresh({ q: trimmed, limit: 50 });
+  }
+
+  function handleClearSearch(): void {
+    setSearchInput('');
+    setActiveSearchQuery('');
+  }
   const [authorsText, setAuthorsText] = useState('');
   const [publicationYearText, setPublicationYearText] = useState('');
   const [sourceVenue, setSourceVenue] = useState('');
   const [doi, setDoi] = useState('');
   const [sourceUrl, setSourceUrl] = useState('');
+  // Frontend Milestone 1 (Finder-style Document Library): overrides the
+  // upload target folder for exactly one upload — set when a file is
+  // dropped from the OS directly onto the library area/a folder card
+  // (requirement #8) rather than picked/dropped on the upload form above.
+  // `null` inside the wrapper means "root"; the wrapper itself absent
+  // means "no override, use whichever folder is currently open" (the
+  // pre-existing behavior). Reset alongside the rest of the form.
+  const [libraryUploadTarget, setLibraryUploadTarget] = useState<{
+    folderId: string | null;
+  } | null>(null);
+
+  const { preferences, update: updatePreferences } = usePreferences();
+  const documentsViewMode = preferences.documentsViewMode;
+  const [sortKey, setSortKey] = useState<LibrarySortKey>('name');
+  const [sortDirection, setSortDirection] = useState<LibrarySortDirection>('asc');
+  const [detailsPanelOpen, setDetailsPanelOpen] = useState(true);
+  const { width: windowWidth } = useWindowDimensions();
+  const isDesktopWidth = windowWidth >= DESKTOP_DETAILS_PANEL_BREAKPOINT_PX;
+  const selection = useLibrarySelection();
+  const scrollViewRef = useRef<ScrollView>(null);
+
+  const folderContents =
+    folderLibrary.contentsState.status === 'success' ? folderLibrary.contentsState.contents : null;
+  // Root→…→currently-open-folder id chain (includes the open folder
+  // itself — see routes_folders.py's own breadcrumbs field) — fed to
+  // useLibraryDnD purely to build each drop target's cycle-guard
+  // ancestor chain, never re-fetched separately (requirement #16).
+  const breadcrumbIds = useMemo(
+    () => (folderContents?.breadcrumbs ?? []).map((crumb) => crumb.id),
+    [folderContents]
+  );
+  const sortedContents = useMemo(
+    () =>
+      sortLibraryContents(
+        folderContents?.folders ?? [],
+        folderContents?.documents ?? [],
+        sortKey,
+        sortDirection
+      ),
+    [folderContents, sortKey, sortDirection]
+  );
+  const libraryItemsById = useMemo(() => {
+    const map = new Map<string, LibraryItem>();
+    toFolderItems(sortedContents.folders).forEach((item) => map.set(libraryItemId(item), item));
+    toDocumentItems(sortedContents.documents).forEach((item) => map.set(libraryItemId(item), item));
+    return map;
+  }, [sortedContents]);
+
+  // Drops any selected id that's no longer part of the currently-open
+  // folder's contents — covers both navigating to a different folder and
+  // an item disappearing after a move/delete/refresh.
+  useEffect(() => {
+    selection.pruneSelection(Array.from(libraryItemsById.keys()));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [libraryItemsById]);
+
+  const selectedLibraryItem =
+    selection.selectedCount === 1
+      ? (libraryItemsById.get(Array.from(selection.selectedIds)[0]!) ?? null)
+      : null;
+  const selectedDocumentCount = Array.from(selection.selectedIds).filter(
+    (id) => libraryItemsById.get(id)?.kind === 'document'
+  ).length;
+  const currentFolderLocationLabel = folderContents?.folder
+    ? safeText(folderContents.folder.name, 'Untitled folder')
+    : 'My Library';
+  const deletingItemIds = useMemo(
+    () => new Set([...deletingFolderIds, ...deletingDocumentIds]),
+    [deletingFolderIds, deletingDocumentIds]
+  );
 
   // Web-only drag-and-drop state. `isDragOver` drives the highlight;
   // `dragCounterRef` is what makes that highlight reliable across nested
@@ -172,13 +278,11 @@ export default function DocumentsScreen() {
   }, [hydrated, featureFlags.folderLibrary]);
 
   function resetMetadataFields(): void {
-    setTitle('');
     setAuthorsText('');
     setPublicationYearText('');
     setSourceVenue('');
     setDoi('');
     setSourceUrl('');
-    setJournalQuartile(undefined);
   }
 
   // Single entry point for "the user has now selected this file" from
@@ -194,6 +298,11 @@ export default function DocumentsScreen() {
     (candidate: SelectedFile) => {
       setSelectedFile(candidate);
       resetMetadataFields();
+      // Cleared by default on every new selection — handleExternalFileDrop
+      // (below) sets it again, synchronously right after calling this, when
+      // the selection came from dropping a file onto a specific library
+      // folder rather than picked/dropped on the upload form itself.
+      setLibraryUploadTarget(null);
       const validationError = validateCandidateFile(candidate.name, candidate.size);
       setFileError(validationError);
       if (validationError) {
@@ -205,6 +314,42 @@ export default function DocumentsScreen() {
     [previewMetadata, resetPreview]
   );
 
+  // Frontend Milestone 1 (Finder-style Document Library) — requirement #8:
+  // a file dragged in from the user's OS (not from within this page) and
+  // dropped on the library area or a specific folder card. Reuses
+  // applySelectedFile() exactly (duplicate-check + metadata preview +
+  // manual review before the user presses Upload), the same as picking a
+  // file or dropping one on the upload form's own drop zone — never a
+  // silent auto-upload that would skip that review.
+  const handleExternalFileDrop = useCallback(
+    (file: File, targetFolderId: string | null) => {
+      applySelectedFile({ file, name: file.name, size: file.size, mimeType: file.type || null });
+      setLibraryUploadTarget({ folderId: targetFolderId });
+      // The review form (title/type/metadata + the actual Upload button)
+      // lives in the Upload section above the library — scroll it into
+      // view so a file dropped onto a folder card further down the page
+      // doesn't silently stage without the user noticing.
+      scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+    },
+    [applySelectedFile]
+  );
+
+  const selectOnlyForDrag = useCallback(
+    (id: string) => selection.selectItem(id, [id], { toggle: false, range: false }),
+    [selection]
+  );
+
+  const libraryDnD = useLibraryDnD({
+    client,
+    visibleFolders: sortedContents.folders,
+    visibleDocuments: sortedContents.documents,
+    breadcrumbFolderIds: breadcrumbIds,
+    selectedIds: selection.selectedIds,
+    selectOnly: selectOnlyForDrag,
+    onMoveSettled: folderLibrary.refresh,
+    onExternalFileDrop: handleExternalFileDrop,
+  });
+
   // Populates the editable fields from the backend's detected metadata once
   // a preview resolves — the user can still change any of these before
   // pressing Upload (see requirement that detected values are a starting
@@ -212,7 +357,6 @@ export default function DocumentsScreen() {
   useEffect(() => {
     if (previewState.status !== 'success') return;
     const { preview } = previewState;
-    setTitle(preview.title ?? '');
     setAuthorsText((preview.authors ?? []).join(', '));
     setPublicationYearText(
       preview.publication_year != null ? String(preview.publication_year) : ''
@@ -321,6 +465,7 @@ export default function DocumentsScreen() {
     setFileError(null);
     resetPreview();
     resetMetadataFields();
+    setLibraryUploadTarget(null);
   }
 
   function handleUpload(): void {
@@ -332,9 +477,13 @@ export default function DocumentsScreen() {
     const parsedYear = Number.parseInt(publicationYearText.trim(), 10);
 
     upload(selectedFile.file, {
-      documentType,
-      journalQuartile: documentType === 'journal_article' ? journalQuartile : undefined,
-      title: title.trim() || undefined,
+      // Frontend/Platform Milestone 3.2.1 Part C: documentType/
+      // journalQuartile/title are no longer collected in the normal
+      // upload UI (see this milestone's report) — omitted here rather
+      // than sent as a guessed/forced value; the backend defaults
+      // document_type to "unknown" and re-derives title from the file's
+      // own metadata or filename (already-existing fallback behavior,
+      // unrelated to this milestone — see app/ingestion/ingest.py).
       authors: authors.length > 0 ? authors : undefined,
       publicationYear: Number.isFinite(parsedYear) ? parsedYear : undefined,
       sourceVenue: sourceVenue.trim() || undefined,
@@ -346,8 +495,14 @@ export default function DocumentsScreen() {
       // requirement #6 (folder upload). No-op when the flag is off:
       // folderLibrary.currentFolderId never leaves null in that case since
       // navigate() is never called (see the load effect above).
+      //
+      // Frontend Milestone 1 (Finder-style Document Library), requirement
+      // #8: `libraryUploadTarget` overrides this to whichever folder an
+      // externally-dropped file actually landed on, when that isn't the
+      // currently-open folder (e.g. dropped directly on a folder card).
       folderId: featureFlags.folderLibrary
-        ? (folderLibrary.currentFolderId ?? undefined)
+        ? ((libraryUploadTarget ? libraryUploadTarget.folderId : folderLibrary.currentFolderId) ??
+          undefined)
         : undefined,
     });
   }
@@ -382,8 +537,6 @@ export default function DocumentsScreen() {
     setFileError(null);
     resetPreview();
     resetMetadataFields();
-    setDocumentType('curriculum_document');
-    setTitle(SAMPLE_DOCUMENT_TITLE);
     upload(sampleFile, { documentType: 'curriculum_document', title: SAMPLE_DOCUMENT_TITLE });
   }
 
@@ -482,13 +635,23 @@ export default function DocumentsScreen() {
         });
     };
 
-    // FolderRow already confirmed a plain delete for an empty folder (see
-    // its own handleDeletePress) — this only ever runs for a non-empty
-    // folder, where the least-destructive path is asking explicitly rather
-    // than either silently deleting contents or refusing outright with no
-    // recourse (see the milestone's "least destructive" requirement).
+    // Frontend Milestone 1 (Finder-style Document Library): the actions
+    // menu's Delete item calls this directly (there is no longer a
+    // dedicated per-row delete button with its own pre-confirmation, as
+    // the pre-redesign FolderRow had) — an empty folder still gets a
+    // plain confirm here, so deleting one is never a single accidental
+    // click either way.
     if (isEmpty) {
-      run(false);
+      const label = safeText(folder.name, 'this folder');
+      const message = `Delete "${label}"? This cannot be undone.`;
+      if (Platform.OS === 'web') {
+        if (window.confirm(message)) run(false);
+        return;
+      }
+      Alert.alert('Delete folder', message, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: () => run(false) },
+      ]);
       return;
     }
     const label = safeText(folder.name, 'this folder');
@@ -505,6 +668,59 @@ export default function DocumentsScreen() {
     ]);
   }
 
+  // --- Frontend Milestone 2 (Chat Sources & Zoom-In Workspace UX) -------
+  //
+  // "Use in chat": Documents and Chat are separate routes, and a genuine
+  // same-gesture HTML5 drag from a Documents card into Chat's composer is
+  // not achievable — the browser only starts a real OS drag session from
+  // a trusted mouse-down-and-move gesture, and there is no way to trigger
+  // an SPA route change *during* that same held-mouse-button gesture (no
+  // link/button is clickable while the button is down for a drag), so the
+  // Chat page (and its drop target) can never exist yet for the drop to
+  // land on. This isn't a "fragile global drag state" problem to work
+  // around — it's a hard browser/OS constraint. See the milestone report's
+  // "Drag / Use-in-Chat Behavior" section for the full writeup, including
+  // why a document dragged onto the (persistent) nav rail was considered
+  // and deliberately not built this milestone.
+  //
+  // Instead: a deterministic action, reusing chat/new.tsx's own pending-
+  // source architecture exactly as instructed — no parallel source state,
+  // no extra fetch on either side of the navigation (the document's id and
+  // display name are already in hand from whatever list/card the user
+  // acted on).
+  function navigateToChatWithSources(docs: { documentId: string; displayName: string }[]): void {
+    if (docs.length === 0) return;
+    router.push({ pathname: '/chat/new', params: { sources: JSON.stringify(docs) } });
+  }
+
+  // Frontend Milestone 3 (Document Reader): the stable per-document route
+  // — see app/(tabs)/documents/[id].tsx. document_id is already a stable,
+  // globally-unique identifier (see the backend's Document model docs),
+  // so this is the only thing the URL needs to carry; the reader fetches
+  // everything else itself.
+  function handleOpenDocument(doc: DocumentSummary): void {
+    router.push(`/documents/${encodeURIComponent(doc.document_id)}`);
+  }
+
+  function handleUseInChat(doc: DocumentSummary): void {
+    navigateToChatWithSources([
+      { documentId: doc.document_id, displayName: safeText(doc.title, doc.source_filename) },
+    ]);
+  }
+
+  function handleUseSelectedInChat(): void {
+    const docs = Array.from(selection.selectedIds)
+      .map((id) => libraryItemsById.get(id))
+      .filter(
+        (item): item is Extract<LibraryItem, { kind: 'document' }> => item?.kind === 'document'
+      )
+      .map((item) => ({
+        documentId: item.data.document_id,
+        displayName: safeText(item.data.title, item.data.source_filename),
+      }));
+    navigateToChatWithSources(docs);
+  }
+
   if (!hydrated) {
     return (
       <View style={styles.screenCentered}>
@@ -515,6 +731,17 @@ export default function DocumentsScreen() {
 
   const isUploading = uploadState.status === 'uploading' || uploadState.status === 'processing';
   const canUpload = selectedFile !== null && !fileError && !isUploading;
+  // What the "Uploads land in …" hint (below) names — the override target
+  // when a file was dropped directly on a specific folder card
+  // (requirement #8), otherwise whichever folder is currently open.
+  const uploadTargetFolderName = libraryUploadTarget
+    ? libraryUploadTarget.folderId === null
+      ? 'My Library'
+      : (() => {
+          const target = libraryItemsById.get(libraryUploadTarget.folderId);
+          return target?.kind === 'folder' ? safeText(target.data.name, 'this folder') : null;
+        })()
+    : (folderContents?.folder?.name ?? null);
   const chooseFileButton = (
     <Button
       label="Choose file…"
@@ -528,7 +755,7 @@ export default function DocumentsScreen() {
   return (
     <View style={styles.container}>
       <PageHeader title="Documents" />
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView ref={scrollViewRef} contentContainerStyle={styles.content}>
         <View style={styles.pageInner}>
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Upload</Text>
@@ -536,9 +763,8 @@ export default function DocumentsScreen() {
               Parsing and duplicate checks happen immediately; embedding and indexing run in the
               background afterward and can take a while on this hardware — progress is shown below.
               {featureFlags.folderLibrary &&
-                folderLibrary.contentsState.status === 'success' &&
-                folderLibrary.contentsState.contents.folder &&
-                ` Uploads land in "${folderLibrary.contentsState.contents.folder.name}".`}
+                uploadTargetFolderName &&
+                ` Uploads land in "${uploadTargetFolderName}".`}
             </Text>
 
             {Platform.OS === 'web'
@@ -609,50 +835,6 @@ export default function DocumentsScreen() {
                 {sampleError && <Notice tone="danger" body={sampleError} />}
               </View>
             )}
-
-            <Text style={styles.filterLabel}>Document type</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow}>
-              {DOCUMENT_TYPES.map((type) => (
-                <FilterChip
-                  key={type}
-                  label={DOCUMENT_TYPE_LABELS[type]}
-                  selected={documentType === type}
-                  onPress={() => setDocumentType(type)}
-                />
-              ))}
-            </ScrollView>
-
-            {documentType === 'journal_article' && (
-              <>
-                <Text style={styles.filterLabel}>Journal quartile</Text>
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  style={styles.chipRow}
-                >
-                  {JOURNAL_QUARTILES.map((quartile) => (
-                    <FilterChip
-                      key={quartile}
-                      label={quartile}
-                      selected={journalQuartile === quartile}
-                      onPress={() =>
-                        setJournalQuartile((current) =>
-                          current === quartile ? undefined : quartile
-                        )
-                      }
-                    />
-                  ))}
-                </ScrollView>
-              </>
-            )}
-
-            <TextField
-              label="Title"
-              value={title}
-              onChangeText={setTitle}
-              placeholder="Title (optional)"
-              editable={!isUploading}
-            />
 
             {selectedFile && (
               <View style={styles.metadataReview}>
@@ -761,7 +943,106 @@ export default function DocumentsScreen() {
             )}
           </View>
 
-          {!featureFlags.folderLibrary && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Search</Text>
+            <View style={styles.searchRow}>
+              <View style={styles.searchField}>
+                <TextField
+                  label="Search this library"
+                  value={searchInput}
+                  onChangeText={setSearchInput}
+                  placeholder="Search by title or filename…"
+                  onSubmitEditing={handleSearchSubmit}
+                  returnKeyType="search"
+                  accessibilityLabel="Search this library"
+                />
+              </View>
+              <Button
+                label="Search"
+                variant="secondary"
+                size="sm"
+                onPress={handleSearchSubmit}
+                disabled={!searchInput.trim()}
+              />
+              {activeSearchQuery && (
+                <Button
+                  label="Clear search"
+                  variant="ghost"
+                  size="sm"
+                  onPress={handleClearSearch}
+                />
+              )}
+            </View>
+          </View>
+
+          {activeSearchQuery && (
+            <View style={styles.section}>
+              <View style={styles.listHeader}>
+                <Text style={styles.sectionTitle}>Results for &quot;{activeSearchQuery}&quot;</Text>
+              </View>
+              {listState.status === 'loading' && (
+                <View style={styles.skeletonList}>
+                  {[1, 2, 3].map((i) => (
+                    <Skeleton key={i} width="100%" height={56} radius={theme.radius.md} />
+                  ))}
+                </View>
+              )}
+              {listState.status === 'error' && (
+                <Notice tone="danger" body={listState.error.message} />
+              )}
+              {listState.status === 'success' && listState.total === 0 && (
+                <EmptyState
+                  title="No documents match this search."
+                  description="Try a different word, or clear the search to browse your library normally."
+                  actionLabel="Clear search"
+                  onAction={handleClearSearch}
+                />
+              )}
+              {listState.status === 'success' && listState.total > 0 && (
+                <>
+                  <Text style={styles.hint}>
+                    {listState.total} document{listState.total === 1 ? '' : 's'} found
+                  </Text>
+                  {listState.documents.map((doc) => (
+                    <Pressable
+                      key={doc.document_id}
+                      onPress={() => handleOpenDocument(doc)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Open ${safeText(doc.title, doc.source_filename)}`}
+                      style={styles.docCard}
+                    >
+                      <View style={styles.docCardRow}>
+                        <View style={styles.docCardMain}>
+                          <View style={styles.docTitleRow}>
+                            <Text style={styles.docTitle}>
+                              {safeText(doc.title, doc.source_filename)}
+                            </Text>
+                            {isSampleSource(doc.source_filename) && (
+                              <Badge label="Sample" tone="warning" />
+                            )}
+                          </View>
+                          <Text style={styles.docMeta}>
+                            {doc.folder_name ?? 'My Library'} ·{' '}
+                            {DOCUMENT_TYPE_LABELS[doc.document_type]}
+                          </Text>
+                        </View>
+                        {featureFlags.conversationScope && (
+                          <Button
+                            label="Use in chat"
+                            variant="ghost"
+                            size="sm"
+                            onPress={() => handleUseInChat(doc)}
+                          />
+                        )}
+                      </View>
+                    </Pressable>
+                  ))}
+                </>
+              )}
+            </View>
+          )}
+
+          {!activeSearchQuery && !featureFlags.folderLibrary && (
             <View style={styles.section}>
               <View style={styles.listHeader}>
                 <Text style={styles.sectionTitle}>Documents</Text>
@@ -837,167 +1118,162 @@ export default function DocumentsScreen() {
             </View>
           )}
 
-          {featureFlags.folderLibrary && (
-            <View style={styles.section}>
-              <Breadcrumbs
-                path={
-                  folderLibrary.contentsState.status === 'success'
-                    ? folderLibrary.contentsState.contents.breadcrumbs
-                    : []
-                }
-                onNavigate={folderLibrary.navigate}
-              />
-              <View style={styles.listHeader}>
-                <Text style={styles.sectionTitle}>
-                  {folderLibrary.contentsState.status === 'success' &&
-                  folderLibrary.contentsState.contents.folder
-                    ? folderLibrary.contentsState.contents.folder.name
-                    : 'My Library'}
-                </Text>
-                <View style={styles.libraryHeaderActions}>
-                  <Button
-                    label="New folder"
-                    variant="ghost"
-                    size="sm"
-                    onPress={() => setNewFolderFormOpen(true)}
-                  />
-                  <Button
-                    label="Refresh"
-                    variant="ghost"
-                    size="sm"
-                    onPress={() => folderLibrary.refresh()}
-                  />
-                </View>
-              </View>
+          {!activeSearchQuery && featureFlags.folderLibrary && (
+            <View style={styles.librarySection}>
+              <View style={styles.libraryMain}>
+                <Breadcrumbs
+                  path={folderContents?.breadcrumbs ?? []}
+                  onNavigate={folderLibrary.navigate}
+                  dnd={libraryDnD}
+                />
 
-              {newFolderFormOpen && (
-                <View style={styles.newFolderForm}>
-                  <TextField
-                    label="Folder name"
-                    value={newFolderName}
-                    onChangeText={setNewFolderName}
-                    placeholder="e.g. Research"
-                    editable={!creatingFolder}
-                    autoFocus
-                    onSubmitEditing={handleCreateFolder}
-                    returnKeyType="done"
-                  />
-                  {createFolderError && <Notice tone="danger" body={createFolderError} />}
-                  <View style={styles.newFolderActions}>
-                    <Button
-                      label="Cancel"
-                      variant="ghost"
-                      size="sm"
-                      disabled={creatingFolder}
-                      onPress={() => {
-                        setNewFolderFormOpen(false);
-                        setNewFolderName('');
-                        setCreateFolderError(null);
-                      }}
+                <LibraryToolbar
+                  viewMode={documentsViewMode}
+                  onChangeViewMode={(mode) => updatePreferences('documentsViewMode', mode)}
+                  sortKey={sortKey}
+                  sortDirection={sortDirection}
+                  onChangeSort={setSortKey}
+                  onChangeSortDirection={setSortDirection}
+                  onNewFolder={() => setNewFolderFormOpen(true)}
+                  onUpload={handlePickFile}
+                  onRefresh={() => folderLibrary.refresh()}
+                  detailsPanelOpen={detailsPanelOpen}
+                  onToggleDetailsPanel={() => setDetailsPanelOpen((prev) => !prev)}
+                  showDetailsPanelToggle={isDesktopWidth}
+                />
+
+                {newFolderFormOpen && (
+                  <View style={styles.newFolderForm}>
+                    <TextField
+                      label="Folder name"
+                      value={newFolderName}
+                      onChangeText={setNewFolderName}
+                      placeholder="e.g. Research"
+                      editable={!creatingFolder}
+                      autoFocus
+                      onSubmitEditing={handleCreateFolder}
+                      returnKeyType="done"
                     />
-                    <Button
-                      label="Create"
-                      variant="secondary"
-                      size="sm"
-                      loading={creatingFolder}
-                      disabled={creatingFolder || !newFolderName.trim()}
-                      onPress={handleCreateFolder}
-                    />
+                    {createFolderError && <Notice tone="danger" body={createFolderError} />}
+                    <View style={styles.newFolderActions}>
+                      <Button
+                        label="Cancel"
+                        variant="ghost"
+                        size="sm"
+                        disabled={creatingFolder}
+                        onPress={() => {
+                          setNewFolderFormOpen(false);
+                          setNewFolderName('');
+                          setCreateFolderError(null);
+                        }}
+                      />
+                      <Button
+                        label="Create"
+                        variant="secondary"
+                        size="sm"
+                        loading={creatingFolder}
+                        disabled={creatingFolder || !newFolderName.trim()}
+                        onPress={handleCreateFolder}
+                      />
+                    </View>
                   </View>
-                </View>
-              )}
+                )}
 
-              {folderActionError && (
-                <Notice
-                  tone="danger"
-                  body={folderActionError}
-                  actionLabel="Dismiss"
-                  onAction={() => setFolderActionError(null)}
-                />
-              )}
-              {documentActionError && (
-                <Notice
-                  tone="danger"
-                  body={documentActionError}
-                  actionLabel="Dismiss"
-                  onAction={() => setDocumentActionError(null)}
-                />
-              )}
+                {folderActionError && (
+                  <Notice
+                    tone="danger"
+                    body={folderActionError}
+                    actionLabel="Dismiss"
+                    onAction={() => setFolderActionError(null)}
+                  />
+                )}
+                {documentActionError && (
+                  <Notice
+                    tone="danger"
+                    body={documentActionError}
+                    actionLabel="Dismiss"
+                    onAction={() => setDocumentActionError(null)}
+                  />
+                )}
+                {libraryDnD.error && (
+                  <Notice
+                    tone="danger"
+                    body={libraryDnD.error}
+                    actionLabel="Dismiss"
+                    onAction={libraryDnD.dismissError}
+                  />
+                )}
 
-              {folderLibrary.contentsState.status === 'loading' && (
-                <View style={styles.skeletonList}>
-                  {[1, 2, 3].map((i) => (
-                    <Skeleton key={i} width="100%" height={56} radius={theme.radius.md} />
-                  ))}
-                </View>
-              )}
-              {folderLibrary.contentsState.status === 'error' && (
-                <Notice tone="danger" body={folderLibrary.contentsState.error.message} />
-              )}
-              {folderLibrary.contentsState.status === 'success' && (
-                <>
-                  {folderLibrary.contentsState.contents.folders.length === 0 &&
-                    folderLibrary.contentsState.contents.documents.length === 0 && (
-                      <EmptyState
-                        title="This folder is empty"
-                        description="Create a subfolder, or upload a PDF, DOCX, TXT, or HTML file above — it lands here automatically."
+                {folderLibrary.contentsState.status === 'loading' && (
+                  <View style={styles.skeletonList}>
+                    {[1, 2, 3].map((i) => (
+                      <Skeleton key={i} width="100%" height={56} radius={theme.radius.md} />
+                    ))}
+                  </View>
+                )}
+                {folderLibrary.contentsState.status === 'error' && (
+                  <Notice tone="danger" body={folderLibrary.contentsState.error.message} />
+                )}
+                {folderLibrary.contentsState.status === 'success' && (
+                  <>
+                    {sortedContents.folders.length === 0 &&
+                      sortedContents.documents.length === 0 && (
+                        <EmptyState
+                          title="This folder is empty"
+                          description="Create a subfolder, or add a PDF, DOCX, TXT, or HTML file above. Drop files here to add them — review the details, then press Upload."
+                        />
+                      )}
+                    {(sortedContents.folders.length > 0 || sortedContents.documents.length > 0) && (
+                      <LibraryContentsView
+                        layout={documentsViewMode}
+                        folders={sortedContents.folders}
+                        documents={sortedContents.documents}
+                        selection={selection}
+                        dnd={libraryDnD}
+                        onOpenFolder={folderLibrary.navigate}
+                        onPreviewDocument={(doc) => {
+                          selection.selectItem(doc.document_id, [doc.document_id], {
+                            toggle: false,
+                            range: false,
+                          });
+                          setDetailsPanelOpen(true);
+                        }}
+                        onOpenDocument={handleOpenDocument}
+                        onRenameFolder={folderLibrary.renameFolder}
+                        onMoveItem={(item) =>
+                          item.kind === 'folder'
+                            ? setMovingFolder(item.data)
+                            : setMovingDocument(item.data)
+                        }
+                        onDeleteItem={(item) =>
+                          item.kind === 'folder'
+                            ? handleFolderDelete(item.data)
+                            : handleFolderDeleteDocument(item.data)
+                        }
+                        deletingIds={deletingItemIds}
+                        onUseInChat={featureFlags.conversationScope ? handleUseInChat : undefined}
                       />
                     )}
+                  </>
+                )}
+              </View>
 
-                  {folderLibrary.contentsState.contents.folders.map((folder) => (
-                    <FolderRow
-                      key={folder.id}
-                      folder={folder}
-                      onOpen={folderLibrary.navigate}
-                      onRename={folderLibrary.renameFolder}
-                      onMove={setMovingFolder}
-                      onDelete={handleFolderDelete}
-                      deleting={deletingFolderIds.has(folder.id)}
-                    />
-                  ))}
-
-                  {folderLibrary.contentsState.contents.documents.map((doc) => {
-                    const isDeleting = deletingDocumentIds.has(doc.document_id);
-                    return (
-                      <View key={doc.document_id} style={styles.docCard}>
-                        <View style={styles.docCardRow}>
-                          <View style={styles.docCardMain}>
-                            <View style={styles.docTitleRow}>
-                              <Text style={styles.docTitle}>
-                                {safeText(doc.title, doc.source_filename)}
-                              </Text>
-                              {isSampleSource(doc.source_filename) && (
-                                <Badge label="Sample" tone="warning" />
-                              )}
-                            </View>
-                            <Text style={styles.docMeta}>
-                              {DOCUMENT_TYPE_LABELS[doc.document_type]} · {doc.chunk_count} chunk(s)
-                            </Text>
-                          </View>
-                          <View style={styles.docCardActions}>
-                            <Button
-                              label="Move"
-                              variant="ghost"
-                              size="sm"
-                              accessibilityLabel={`Move ${safeText(doc.title, doc.source_filename)}`}
-                              onPress={() => setMovingDocument(doc)}
-                              disabled={isDeleting}
-                            />
-                            <Button
-                              label="Delete"
-                              variant="dangerGhost"
-                              size="sm"
-                              accessibilityLabel={`Delete ${safeText(doc.title, doc.source_filename)}`}
-                              onPress={() => handleFolderDeleteDocument(doc)}
-                              disabled={isDeleting}
-                              loading={isDeleting}
-                            />
-                          </View>
-                        </View>
-                      </View>
-                    );
-                  })}
-                </>
+              {isDesktopWidth && detailsPanelOpen && (
+                <DetailsPanel
+                  item={selectedLibraryItem}
+                  locationLabel={currentFolderLocationLabel}
+                  selectedCount={selection.selectedCount}
+                  onClose={() => setDetailsPanelOpen(false)}
+                  onUseSelectedInChat={
+                    featureFlags.conversationScope ? handleUseSelectedInChat : undefined
+                  }
+                  selectedDocumentCount={selectedDocumentCount}
+                  onOpenDocument={
+                    selectedLibraryItem?.kind === 'document'
+                      ? () => handleOpenDocument(selectedLibraryItem.data)
+                      : undefined
+                  }
+                />
               )}
             </View>
           )}
@@ -1035,8 +1311,15 @@ function buildStyles(theme: Theme) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: theme.background },
     content: { padding: 24, alignItems: 'center' },
-    pageInner: { width: '100%', maxWidth: 760, gap: 24 },
+    // Widened from the pre-redesign 760px: the Finder-style library
+    // (requirement #19 — "the quality level of Finder/Linear/Notion/Arc/
+    // Vercel") needs room for a multi-column grid, a comfortably-spaced
+    // list, and the optional details panel side by side; the Upload
+    // section above it simply gets a bit more breathing room too.
+    pageInner: { width: '100%', maxWidth: 1100, gap: 24 },
     section: { gap: 8 },
+    librarySection: { flexDirection: 'row', alignItems: 'flex-start', gap: 16 },
+    libraryMain: { flex: 1, minWidth: 0, gap: 10 },
     sectionTitle: { fontSize: 16, color: theme.text, fontFamily: theme.fonts.display },
     screenCentered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
     hint: { fontSize: 12, color: theme.subtext, fontFamily: theme.fonts.body },
@@ -1048,6 +1331,8 @@ function buildStyles(theme: Theme) {
       marginTop: 4,
     },
     chipRow: { flexDirection: 'row' },
+    searchRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap' },
+    searchField: { flex: 1, minWidth: 220 },
     centered: { alignItems: 'center', gap: 8 },
     metadataReview: { gap: 8 },
     listHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },

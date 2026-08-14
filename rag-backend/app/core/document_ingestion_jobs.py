@@ -46,6 +46,7 @@ import json
 import logging
 import time
 import uuid
+from pathlib import Path
 
 from app.config import get_settings
 from app.core.embedding_provider import EmbeddingProvider
@@ -55,6 +56,7 @@ from app.db.documents_repository import DocumentsRepository
 from app.db.session import get_session_factory
 from app.ingestion.chunker import Chunk
 from app.ingestion.metadata_schema import DocumentMetadata
+from app.services.document_file_storage import DocumentFileStorage
 from app.vectorstore.qdrant_client import QdrantVectorStore
 
 logger = logging.getLogger(__name__)
@@ -70,6 +72,15 @@ def run_ingestion_job(
     vector_store: QdrantVectorStore,
     timer: RequestTimer,
     folder_id: uuid.UUID | None = None,
+    # Frontend Milestone 3.1 (Original Document Reader) — all four optional
+    # and default None/absent so any OTHER caller of this function (there
+    # are none today, but this keeps the "original file" concern additive)
+    # gets exactly the pre-3.1 behavior: no file persisted, storage_key
+    # stays NULL, Reader falls back to extracted text for that document.
+    original_tmp_path: Path | None = None,
+    original_mime_type: str | None = None,
+    original_file_size_bytes: int | None = None,
+    document_file_storage: DocumentFileStorage | None = None,
 ) -> None:
     session = get_session_factory()()
     jobs_repository = DocumentJobsRepository(session)
@@ -85,6 +96,10 @@ def run_ingestion_job(
             documents_repository=DocumentsRepository(session),
             timer=timer,
             folder_id=folder_id,
+            original_tmp_path=original_tmp_path,
+            original_mime_type=original_mime_type,
+            original_file_size_bytes=original_file_size_bytes,
+            document_file_storage=document_file_storage,
         )
     except Exception as exc:
         logger.exception(
@@ -97,6 +112,15 @@ def run_ingestion_job(
         if timer.enabled:
             jobs_repository.set_timings(job_id, timings_json=json.dumps(timer.as_dict()))
     finally:
+        # The temp file is only ever consumed by _run's own file_persist
+        # step (moved into permanent storage, at which point it no longer
+        # exists at this path) — if any stage failed before that move ran
+        # (or the move itself never happened because no original file was
+        # captured for this upload), this is the one guaranteed place left
+        # to reclaim it. unlink(missing_ok=True) is a safe no-op once the
+        # file has already been moved or was never created.
+        if original_tmp_path is not None:
+            original_tmp_path.unlink(missing_ok=True)
         session.close()
 
 
@@ -112,6 +136,10 @@ def _run(
     documents_repository: DocumentsRepository,
     timer: RequestTimer,
     folder_id: uuid.UUID | None = None,
+    original_tmp_path: Path | None = None,
+    original_mime_type: str | None = None,
+    original_file_size_bytes: int | None = None,
+    document_file_storage: DocumentFileStorage | None = None,
 ) -> None:
     total = len(chunks)
     logger.info(
@@ -164,10 +192,43 @@ def _run(
 
     jobs_repository.update_progress(job_id, stage="persisting", embedded_chunks=total)
     persist_start = time.monotonic()
-    with timer.stage("database"):
-        documents_repository.create(
-            user_id=user_id, metadata=metadata, chunk_count=total, folder_id=folder_id
-        )
+    # Frontend Milestone 3.1: the original file is moved into permanent
+    # storage HERE — as late as possible, immediately before (and in the
+    # same try/except as) the SQL `documents` row being created — rather
+    # than earlier (e.g. before embedding). That keeps the window in which
+    # a file could exist on disk with no corresponding DB row as small as
+    # this codebase can make it: if either the move or documents_repository
+    # .create() raises, the except below deletes whatever was already
+    # moved and re-raises, so run_ingestion_job's outer handler still marks
+    # the job failed exactly as before this milestone (no DB row this time
+    # either, matching pre-3.1 behavior) and no orphaned file is left
+    # behind. Embedding/Qdrant failing *before* this point never touches
+    # storage at all — the temp file is reclaimed by run_ingestion_job's
+    # finally block instead.
+    storage_key: str | None = None
+    try:
+        if original_tmp_path is not None and document_file_storage is not None:
+            with timer.stage("file_persist"):
+                storage_key = document_file_storage.move_into_storage(
+                    user_id=user_id,
+                    document_id=metadata.document_id,
+                    file_format=metadata.file_format,
+                    tmp_path=original_tmp_path,
+                )
+        with timer.stage("database"):
+            documents_repository.create(
+                user_id=user_id,
+                metadata=metadata,
+                chunk_count=total,
+                folder_id=folder_id,
+                storage_key=storage_key,
+                original_mime_type=original_mime_type,
+                original_file_size_bytes=original_file_size_bytes,
+            )
+    except Exception:
+        if storage_key is not None and document_file_storage is not None:
+            document_file_storage.delete(storage_key)
+        raise
     logger.info(
         "Ingestion job %s: metadata persisted in %.2fs", job_id, time.monotonic() - persist_start
     )

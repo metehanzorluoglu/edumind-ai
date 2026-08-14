@@ -9,6 +9,18 @@ export type ScopeTierName = RetrievedChunk['scope'];
 export type ConversationSummary = components['schemas']['ConversationSummaryResponse'];
 export type ConversationListResponse = components['schemas']['ConversationListResponse'];
 export type ConversationDetail = components['schemas']['ConversationDetailResponse'];
+/**
+ * Frontend Milestone 2.1: the authoritative "which project(s) does this
+ * conversation actually belong to" signal, carried on `ConversationDetail.
+ * projects` — see GET /conversations/{id}. Always an array (0, 1, or many
+ * — ProjectConversation is a genuine many-to-many association on the
+ * backend), never a single nullable project; never infer membership from
+ * anything else (conversation-scope's `project_enabled` toggle defaults
+ * true for every conversation, project or not, and says nothing about
+ * actual membership — see ChatSourcesPicker's `modeCopy` for the
+ * truthfulness gap this closes).
+ */
+export type ConversationProjectRef = components['schemas']['ConversationProjectResponse'];
 export type ConversationMessage = components['schemas']['MessageResponse'];
 export type ConversationMessageSource = components['schemas']['MessageSourceResponse'];
 /**

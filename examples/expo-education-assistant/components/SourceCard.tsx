@@ -1,6 +1,7 @@
-import type { MappedSource } from 'education-assistant-client';
+import type { Citation, MappedSource } from 'education-assistant-client';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Clipboard, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { FileIcon } from '@/components/icons';
 import { formatAuthorsCompact, parseJournalCitation, safeText } from '@/lib/format';
 import { useTheme } from '@/lib/Preferences';
 import { isSampleSource } from '@/lib/sampleDocument';
@@ -170,6 +171,34 @@ export function SourceCard({ source, highlighted = false }: SourceCardProps) {
         >
           [{source.sourceId}]
         </Text>
+        {chunk.scope === 'project' && (
+          // Frontend Milestone 2.1 §19 — `scope` already reaches every
+          // source/citation end-to-end (RetrievedChunk.scope ->
+          // MessageSourceResponse.scope -> DisplaySource.scope, stamped
+          // server-side by execute_scope_plan — see
+          // app/core/retrieval_schemas.py), so this only ever labels a
+          // chunk that genuinely came from the project retrieval tier —
+          // never a guess. Deliberately doesn't also label "chat"/
+          // "general" sources: those are the default, unlabeled
+          // expectation: "this citation came from somewhere other than
+          // your own selected/general library" is the one distinction
+          // worth surfacing here.
+          <View
+            style={[
+              styles.projectBadge,
+              { backgroundColor: theme.accentSoft, borderRadius: theme.radius.sm },
+            ]}
+          >
+            <Text
+              style={[
+                styles.projectBadgeText,
+                { color: theme.accent, fontFamily: theme.fonts.bodyBold },
+              ]}
+            >
+              Project
+            </Text>
+          </View>
+        )}
         {isSample && (
           <View
             style={[
@@ -273,6 +302,72 @@ export function SourceCard({ source, highlighted = false }: SourceCardProps) {
   );
 }
 
+export interface AttachmentSourceCardProps {
+  citation: Citation;
+  highlighted?: boolean;
+  /** Present only when this citation's attachment is actually openable in
+   * this turn's lightbox (see ConversationTurnCard's viewableAttachments
+   * lookup by attachment_id) — omitted rather than a no-op so the card
+   * never looks pressable when there's nothing to open (e.g. a citation
+   * surviving from an attachment that failed to load). */
+  onPress?: () => void;
+}
+
+/**
+ * Frontend/Platform Milestone 3.2.2 Part C — the display half of making a
+ * message attachment a real, citeable source (see
+ * app/core/citation.build_attachment_citations for the backend half).
+ * Deliberately much thinner than SourceCard: an attachment citation has
+ * no chunk text/score/DOI/venue — the honest thing to show is its label
+ * and filename, with a way to open the actual file, never a fabricated
+ * excerpt or metadata SourceCard implies exists for a retrieved corpus
+ * chunk.
+ */
+export function AttachmentSourceCard({
+  citation,
+  highlighted = false,
+  onPress,
+}: AttachmentSourceCardProps) {
+  const theme = useTheme();
+  const body = (
+    <>
+      <Text
+        style={[styles.sourceId, { color: theme.citation, fontFamily: theme.fonts.bodyBold }]}
+      >
+        [{citation.source_id}]
+      </Text>
+      <FileIcon size={14} color={theme.subtext} />
+      <Text
+        style={[styles.attachmentName, { color: theme.text, fontFamily: theme.fonts.bodySemibold }]}
+        numberOfLines={1}
+      >
+        {safeText(citation.display_name, 'Attached file')}
+      </Text>
+    </>
+  );
+
+  const cardStyle = [
+    styles.card,
+    styles.attachmentCard,
+    { backgroundColor: theme.card, borderColor: theme.border, borderRadius: theme.radius.md },
+    highlighted && { borderColor: theme.citation, backgroundColor: theme.citationSoft },
+  ];
+
+  if (!onPress) {
+    return <View style={cardStyle}>{body}</View>;
+  }
+  return (
+    <Pressable
+      onPress={onPress}
+      style={cardStyle}
+      accessibilityRole="button"
+      accessibilityLabel={`Open attached file ${safeText(citation.display_name, 'attachment')}, source ${citation.source_id}`}
+    >
+      {body}
+    </Pressable>
+  );
+}
+
 /** Rendered for a [S<n>] marker whose id has no matching backend citation — never invents a source. */
 export function UnavailableSourceChip({ sourceId }: { sourceId: string }) {
   const theme = useTheme();
@@ -298,11 +393,18 @@ const styles = StyleSheet.create({
   },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2 },
   sourceId: {},
+  attachmentCard: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  attachmentName: { fontSize: 14, flexShrink: 1 },
   sampleBadge: {
     paddingHorizontal: 6,
     paddingVertical: 2,
   },
   sampleBadgeText: { fontSize: 10 },
+  projectBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  projectBadgeText: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.3 },
   title: { fontSize: 15, marginBottom: 2 },
   meta: { fontSize: 12 },
   excerpt: { fontSize: 13, marginTop: 6, marginBottom: 4, lineHeight: 19 },

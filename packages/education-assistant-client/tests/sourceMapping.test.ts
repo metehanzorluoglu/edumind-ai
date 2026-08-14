@@ -63,6 +63,41 @@ describe('mapSourcesToCitations', () => {
     const mapped = mapSourcesToCitations([chunk], []);
     expect(mapped).toEqual([]);
   });
+
+  // Frontend/Platform Milestone 3.2.2 Part C — an attachment-kind citation
+  // (source_kind: 'attachment') has no chunk_id-addressable backing chunk
+  // by design (see app/core/citation.build_attachment_citations on the
+  // backend) — it must never be joined into a fabricated MappedSource
+  // here. ConversationTurnCard reads attachment citations straight off
+  // the `citations` list instead (see its own citedAttachmentCitations),
+  // never through this chunk-join path.
+  it('never fabricates a mapped source for an attachment-kind citation (no chunk to join)', () => {
+    const chunk = makeChunk('doc-a', 'chunk-a');
+    const documentCitation = makeCitation('S1', 'doc-a', 'chunk-a');
+    const attachmentCitation: Citation = {
+      source_id: 'S2',
+      source_kind: 'attachment',
+      document_id: null,
+      chunk_id: null,
+      attachment_id: 'att-1',
+      display_name: 'notes.pdf',
+      title: null,
+      authors: [],
+      publication_year: null,
+      source_venue: null,
+      document_type: null,
+      journal_quartile: null,
+      page_start: null,
+      page_end: null,
+      doi: null,
+      source_url: null,
+      score: null,
+    };
+
+    const mapped = mapSourcesToCitations([chunk], [documentCitation, attachmentCitation]);
+
+    expect(mapped.map((m) => m.sourceId)).toEqual(['S1']);
+  });
 });
 
 describe('findMappedSourceById', () => {

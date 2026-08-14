@@ -4,7 +4,7 @@ import { AuthProvider } from '@/lib/AuthProvider';
 import { ClientProvider } from '@/lib/ClientProvider';
 import { MAX_UPLOAD_FILE_SIZE_BYTES, formatFileSize } from '@/lib/documentUpload';
 import { FeatureFlagsProvider } from '@/lib/FeatureFlags';
-import DocumentsScreen from '../documents';
+import DocumentsScreen from '../index';
 
 // This whole file predates Milestone 1 (Document Library / Folder
 // Management) and exercises the flat, pre-Milestone-1 Documents UI —
@@ -267,6 +267,14 @@ describe('DocumentsScreen metadata preview', () => {
     );
   }
 
+  function queryTextInputByPlaceholder(root: ReactTestInstance, placeholder: string) {
+    return (
+      root.findAll(
+        (node) => String(node.type) === 'TextInput' && node.props.placeholder === placeholder
+      )[0] ?? null
+    );
+  }
+
   it('populates editable fields from a successful metadata preview after a valid file is selected', async () => {
     global.fetch = jest.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -301,9 +309,6 @@ describe('DocumentsScreen metadata preview', () => {
       await flushAsync();
     });
 
-    expect(findTextInputByPlaceholder(renderer.root, 'Title (optional)').props.value).toBe(
-      'Detected Title'
-    );
     expect(
       findTextInputByPlaceholder(renderer.root, 'Authors, comma-separated (optional)').props.value
     ).toBe('Ada Lovelace, Grace Hopper');
@@ -321,7 +326,7 @@ describe('DocumentsScreen metadata preview', () => {
     );
   });
 
-  it('displays the exact title and full 9-author list from the IJAIED-style regression case', async () => {
+  it('displays the full 9-author list from the IJAIED-style regression case', async () => {
     global.fetch = jest.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/documents/metadata-preview')) {
@@ -370,9 +375,6 @@ describe('DocumentsScreen metadata preview', () => {
       await flushAsync();
     });
 
-    expect(findTextInputByPlaceholder(renderer.root, 'Title (optional)').props.value).toBe(
-      'Lessons Learned for AI Education with Elementary Students and Teachers'
-    );
     expect(
       findTextInputByPlaceholder(renderer.root, 'Authors, comma-separated (optional)').props.value
     ).toBe(
@@ -398,7 +400,7 @@ describe('DocumentsScreen metadata preview', () => {
             title: `Detected Title ${previewCallCount}`,
             authors: [],
             publication_year: null,
-            source_venue: null,
+            source_venue: `Detected Venue ${previewCallCount}`,
             doi: null,
             source_url: null,
             page_count: 1,
@@ -422,9 +424,9 @@ describe('DocumentsScreen metadata preview', () => {
       );
       await flushAsync();
     });
-    expect(findTextInputByPlaceholder(renderer.root, 'Title (optional)').props.value).toBe(
-      'Detected Title 1'
-    );
+    expect(
+      findTextInputByPlaceholder(renderer.root, 'Source venue / journal (optional)').props.value
+    ).toBe('Detected Venue 1');
 
     // Re-drop a file with the exact same name — must issue a brand new
     // preview request rather than reusing the previous response.
@@ -438,9 +440,9 @@ describe('DocumentsScreen metadata preview', () => {
     });
 
     expect(previewCallCount).toBe(2);
-    expect(findTextInputByPlaceholder(renderer.root, 'Title (optional)').props.value).toBe(
-      'Detected Title 2'
-    );
+    expect(
+      findTextInputByPlaceholder(renderer.root, 'Source venue / journal (optional)').props.value
+    ).toBe('Detected Venue 2');
   });
 
   it('does not block upload when metadata preview fails — fields stay editable manually', async () => {
@@ -502,15 +504,20 @@ describe('DocumentsScreen metadata preview', () => {
       );
       await flushAsync();
     });
-    expect(findTextInputByPlaceholder(renderer.root, 'Title (optional)').props.value).toBe(
-      'Detected Title'
-    );
+    expect(
+      findTextInputByPlaceholder(renderer.root, 'Authors, comma-separated (optional)').props.value
+    ).toBe('Ada Lovelace');
 
     await act(async () => {
       findPressableByText(renderer.root, 'Remove').props.onPress();
     });
 
-    expect(findTextInputByPlaceholder(renderer.root, 'Title (optional)').props.value).toBe('');
+    // The whole metadata-review section (Authors included) is gated on a
+    // file being selected — once removed, it's gone entirely rather than
+    // merely emptied, which is the real proof its state was cleared.
+    expect(
+      queryTextInputByPlaceholder(renderer.root, 'Authors, comma-separated (optional)')
+    ).toBeNull();
   });
 });
 
@@ -732,5 +739,131 @@ describe('DocumentsScreen web drag-and-drop', () => {
     // Both paths also land on an identically-disabled Upload button.
     expect(findPressableByText(pickerRenderer.root, 'Upload').props.disabled).toBe(true);
     expect(findPressableByText(dropRenderer.root, 'Upload').props.disabled).toBe(true);
+  });
+});
+
+describe('DocumentsScreen library search', () => {
+  const originalFetch = global.fetch;
+
+  function findTextInputByLabel(root: ReactTestInstance, label: string) {
+    return root.find(
+      (node) => String(node.type) === 'TextInput' && node.props.accessibilityLabel === label
+    );
+  }
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it('searches by title/filename and shows folder location in results', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/documents') && url.includes('q=speckle')) {
+        return new Response(
+          JSON.stringify({
+            documents: [
+              {
+                document_id: 'doc-1',
+                source_filename: 'speckle.pdf',
+                folder_id: 'folder-1',
+                folder_name: 'Literature Review',
+                document_type: 'journal_article',
+                journal_quartile: null,
+                title: 'Speckle Imaging Techniques',
+                authors: [],
+                chunk_count: 3,
+                ingested_at: '2026-01-01T00:00:00Z',
+                original_file_available: false,
+              },
+            ],
+            total: 1,
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response(JSON.stringify({ documents: [], total: 0 }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const renderer = await renderHydrated();
+
+    const searchInput = findTextInputByLabel(renderer.root, 'Search this library');
+    await act(async () => {
+      searchInput.props.onChangeText('speckle');
+    });
+    await act(async () => {
+      findPressableByText(renderer.root, 'Search').props.onPress();
+      await flushAsync();
+    });
+
+    expect(findByText(renderer.root, 'Speckle Imaging Techniques')).toBeTruthy();
+    expect(queryByText(renderer.root, 'Literature Review · Journal article')).toBeTruthy();
+  });
+
+  it('shows a clear empty state and a Clear search action for no matches', async () => {
+    global.fetch = jest.fn(
+      async () => new Response(JSON.stringify({ documents: [], total: 0 }), { status: 200 })
+    ) as unknown as typeof fetch;
+
+    const renderer = await renderHydrated();
+    const searchInput = findTextInputByLabel(renderer.root, 'Search this library');
+    await act(async () => {
+      searchInput.props.onChangeText('nothing matches this');
+    });
+    await act(async () => {
+      findPressableByText(renderer.root, 'Search').props.onPress();
+      await flushAsync();
+    });
+
+    expect(findByText(renderer.root, 'No documents match this search.')).toBeTruthy();
+  });
+
+  it('Clear search returns to the normal library view', async () => {
+    global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/documents') && url.includes('q=anything')) {
+        return new Response(
+          JSON.stringify({
+            documents: [
+              {
+                document_id: 'doc-1',
+                source_filename: 'anything.pdf',
+                folder_id: null,
+                folder_name: null,
+                document_type: 'report',
+                journal_quartile: null,
+                title: 'Anything',
+                authors: [],
+                chunk_count: 1,
+                ingested_at: '2026-01-01T00:00:00Z',
+                original_file_available: false,
+              },
+            ],
+            total: 1,
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response(JSON.stringify({ documents: [], total: 0 }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const renderer = await renderHydrated();
+    const searchInput = findTextInputByLabel(renderer.root, 'Search this library');
+    await act(async () => {
+      searchInput.props.onChangeText('anything');
+    });
+    await act(async () => {
+      findPressableByText(renderer.root, 'Search').props.onPress();
+      await flushAsync();
+    });
+    expect(queryByText(renderer.root, 'Results for "anything"')).toBeTruthy();
+
+    // Exactly one "Clear search" pressable in this state — the search
+    // bar's own, since the EmptyState-driven one only renders when a
+    // search comes back with zero results (a different scenario, covered
+    // by the previous test).
+    await act(async () => {
+      findPressableByText(renderer.root, 'Clear search').props.onPress();
+    });
+    expect(queryByText(renderer.root, 'Results for "anything"')).toBeNull();
   });
 });

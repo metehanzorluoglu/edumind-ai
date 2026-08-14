@@ -307,7 +307,7 @@ export function ConversationRow({
         >
           {safeText(item.title, 'New conversation')}
         </Text>
-        {item.lastMessagePreview && (
+        {Boolean(item.lastMessagePreview) && (
           <Text
             numberOfLines={1}
             style={[

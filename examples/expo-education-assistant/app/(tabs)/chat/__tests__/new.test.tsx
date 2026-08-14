@@ -30,10 +30,12 @@ jest.mock('expo-image-picker', () => ({
 }));
 
 const mockReplace = jest.fn();
+const mockSearchParams: { sources?: string; selectionContext?: string } = {};
 jest.mock('expo-router', () => ({
   useRouter: () => ({ replace: mockReplace, push: jest.fn() }),
   usePathname: () => '/chat',
   useGlobalSearchParams: () => ({}),
+  useLocalSearchParams: () => mockSearchParams,
 }));
 
 function findByText(root: ReactTestInstance, text: string): ReactTestInstance {
@@ -139,6 +141,8 @@ describe('NewChatScreen', () => {
 
   beforeEach(() => {
     mockReplace.mockReset();
+    delete mockSearchParams.sources;
+    delete mockSearchParams.selectionContext;
   });
 
   afterEach(() => {
@@ -1037,7 +1041,7 @@ describe('NewChatScreen', () => {
           );
           checkbox.props.onPress();
         });
-        expect(findByTextIncluding(renderer.root, 'Selected (1)')).toBeTruthy();
+        expect(findByTextIncluding(renderer.root, 'Selected sources (1)')).toBeTruthy();
         await act(async () => {
           findPressableByText(renderer.root, 'Save').props.onPress();
         });
@@ -1125,6 +1129,232 @@ describe('NewChatScreen', () => {
       });
 
       expect(queryByText(renderer.root, 'Add sources')).toBeNull();
+    });
+  });
+
+  describe('Frontend Milestone 2 — "Use in chat" from Documents', () => {
+    it('seeds pendingSources from the sources search param, with no extra network call for it', async () => {
+      mockSearchParams.sources = JSON.stringify([
+        { documentId: 'doc-a', displayName: 'AI Education' },
+      ]);
+      global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        const authResponse = AUTH_ROUTES(url);
+        if (authResponse) return authResponse;
+        if (url.includes('/documents')) {
+          return new Response(JSON.stringify({ documents: [], total: 0 }), { status: 200 });
+        }
+        throw new Error(`Unexpected fetch call to ${url} in this test`);
+      }) as unknown as typeof fetch;
+
+      const renderer = await renderNewChat();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // The Sources button already shows the seeded count — no document
+      // fetch/lookup was needed since the name travelled in the param.
+      expect(findByText(renderer.root, '1 source')).toBeTruthy();
+    });
+
+    it('ignores a malformed sources param instead of crashing the composer', async () => {
+      mockSearchParams.sources = '{not valid json';
+      global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        const authResponse = AUTH_ROUTES(url);
+        if (authResponse) return authResponse;
+        if (url.includes('/documents')) {
+          return new Response(JSON.stringify({ documents: [], total: 0 }), { status: 200 });
+        }
+        throw new Error(`Unexpected fetch call to ${url} in this test`);
+      }) as unknown as typeof fetch;
+
+      const renderer = await renderNewChat();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(findByText(renderer.root, 'Add sources')).toBeTruthy();
+    });
+  });
+
+  describe('Frontend Milestone 3 — "Ask EduM8" about a selected passage', () => {
+    function findByTextIncluding(root: ReactTestInstance, substring: string): ReactTestInstance {
+      const matches = root.findAll((node) => {
+        if (String(node.type) !== 'Text') return false;
+        const joined = node.children.filter((c): c is string => typeof c === 'string').join('');
+        return joined.includes(substring);
+      });
+      if (matches.length === 0) {
+        throw new Error(`No Text node found containing ${JSON.stringify(substring)}`);
+      }
+      return matches[0]!;
+    }
+
+    function queryByTextIncluding(
+      root: ReactTestInstance,
+      substring: string
+    ): ReactTestInstance | null {
+      const matches = root.findAll((node) => {
+        if (String(node.type) !== 'Text') return false;
+        const joined = node.children.filter((c): c is string => typeof c === 'string').join('');
+        return joined.includes(substring);
+      });
+      return matches[0] ?? null;
+    }
+
+    const SELECTION_CONTEXT = {
+      documentId: 'doc-a',
+      documentName: 'AI Education',
+      pageNumber: 3,
+      selectedText: 'Students completed a 12-week program.',
+    };
+
+    it('seeds a removable SelectionContextChip and defaults the mode to Zoom-In', async () => {
+      mockSearchParams.sources = JSON.stringify([
+        { documentId: 'doc-a', displayName: 'AI Education' },
+      ]);
+      mockSearchParams.selectionContext = JSON.stringify(SELECTION_CONTEXT);
+      global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        const authResponse = AUTH_ROUTES(url);
+        if (authResponse) return authResponse;
+        throw new Error(`Unexpected fetch call to ${url} in this test`);
+      }) as unknown as typeof fetch;
+
+      const renderer = await renderNewChat();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(
+        findByTextIncluding(renderer.root, 'Selected passage — AI Education, page 3')
+      ).toBeTruthy();
+      expect(
+        findByTextIncluding(renderer.root, 'Students completed a 12-week program.')
+      ).toBeTruthy();
+      // The composer badge already reads "Zoom-In · 1" — the mode was
+      // defaulted, not left at Prioritize, without the user opening the
+      // Sources picker at all.
+      expect(findByTextIncluding(renderer.root, 'Zoom-In')).toBeTruthy();
+    });
+
+    it('removing the chip clears the selection context — it never silently reappears', async () => {
+      mockSearchParams.sources = JSON.stringify([
+        { documentId: 'doc-a', displayName: 'AI Education' },
+      ]);
+      mockSearchParams.selectionContext = JSON.stringify(SELECTION_CONTEXT);
+      global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        const authResponse = AUTH_ROUTES(url);
+        if (authResponse) return authResponse;
+        throw new Error(`Unexpected fetch call to ${url} in this test`);
+      }) as unknown as typeof fetch;
+
+      const renderer = await renderNewChat();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      act(() => {
+        renderer.root
+          .find((n) => n.props.accessibilityLabel === 'Remove selected passage from this question')
+          .props.onPress();
+      });
+
+      expect(queryByTextIncluding(renderer.root, 'Selected passage —')).toBeNull();
+    });
+
+    it('ignores a malformed selectionContext param instead of crashing the composer', async () => {
+      mockSearchParams.selectionContext = '{not valid json';
+      global.fetch = jest.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        const authResponse = AUTH_ROUTES(url);
+        if (authResponse) return authResponse;
+        throw new Error(`Unexpected fetch call to ${url} in this test`);
+      }) as unknown as typeof fetch;
+
+      const renderer = await renderNewChat();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(queryByTextIncluding(renderer.root, 'Selected passage —')).toBeNull();
+    });
+
+    it('sends the selected passage as explicit, visible primary context folded into the actual question — never silently, never the whole document', async () => {
+      mockSearchParams.sources = JSON.stringify([
+        { documentId: 'doc-a', displayName: 'AI Education' },
+      ]);
+      mockSearchParams.selectionContext = JSON.stringify(SELECTION_CONTEXT);
+
+      let messageBody: string | null = null;
+      let scopePatchBody: string | null = null;
+      global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        const method = (init?.method ?? 'GET').toUpperCase();
+        const authResponse = AUTH_ROUTES(url);
+        if (authResponse) return authResponse;
+        if (method === 'POST' && url.endsWith('/conversations')) {
+          return conversationCreatedResponse();
+        }
+        if (method === 'PUT' && url.endsWith('/conversations/new-conversation-id/documents')) {
+          return new Response(JSON.stringify({ documents: [], total: 1 }), { status: 200 });
+        }
+        if (method === 'PATCH' && url.endsWith('/conversations/new-conversation-id/scope')) {
+          scopePatchBody = String(init?.body);
+          return new Response(
+            JSON.stringify({
+              chat_enabled: true,
+              project_enabled: true,
+              general_enabled: true,
+              include_other_project_summaries: false,
+              zoom_in_mode: true,
+            }),
+            { status: 200 }
+          );
+        }
+        if (method === 'POST' && url.endsWith('/conversations/new-conversation-id/messages')) {
+          messageBody = String(init?.body);
+          return controllableSseResponse().response;
+        }
+        throw new Error(`Unexpected fetch call to ${url} in this test`);
+      }) as unknown as typeof fetch;
+
+      const renderer = await renderNewChat();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const input = renderer.root.find((node) => String(node.type) === 'TextInput');
+      act(() => {
+        input.props.onChangeText('What does this mean?');
+      });
+      await act(async () => {
+        findPressableByText(renderer.root, 'Ask').props.onPress();
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(JSON.parse(scopePatchBody!)).toEqual({ zoom_in_mode: true });
+      const sentQuery = JSON.parse(messageBody!).query as string;
+      expect(sentQuery).toContain('AI Education');
+      expect(sentQuery).toContain('page 3');
+      expect(sentQuery).toContain('Students completed a 12-week program.');
+      expect(sentQuery).toContain('What does this mean?');
+      // Bounded: only the selected passage, never a broader document dump.
+      expect(sentQuery.length).toBeLessThan(500);
+
+      // The chip is cleared from the composer immediately on submit — it
+      // must not silently linger or reappear for the next question.
+      expect(queryByTextIncluding(renderer.root, 'Selected passage —')).toBeNull();
     });
   });
 

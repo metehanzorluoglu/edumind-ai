@@ -41,6 +41,19 @@ COPY examples/expo-education-assistant/package.json \
 COPY examples/expo-education-assistant/package-lock.json \
   examples/expo-education-assistant/package-lock.json
 
+# npm ci below runs this package's "postinstall" (scripts/copy-pdf-worker.js,
+# see that file's docstring), which (a) must exist to be require()'d at all
+# and (b) writes into public/pdf.worker.min.js — so both scripts/ and
+# public/ have to be present in the build context *before* npm ci, not only
+# in the bulk COPY further down. They're copied separately from the rest of
+# the app source (rather than moving the bulk COPY earlier) to keep the
+# npm-ci Docker layer cached across app-source-only changes.
+COPY examples/expo-education-assistant/scripts/ \
+  examples/expo-education-assistant/scripts/
+
+COPY examples/expo-education-assistant/public/ \
+  examples/expo-education-assistant/public/
+
 WORKDIR /workspace/examples/expo-education-assistant
 
 RUN npm ci --no-audit --no-fund

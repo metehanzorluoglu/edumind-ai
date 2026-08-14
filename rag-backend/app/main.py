@@ -15,6 +15,7 @@ from app.api.routes_documents import router as documents_router
 from app.api.routes_folders import router as folders_router
 from app.api.routes_health import router as health_router
 from app.api.routes_images import router as images_router
+from app.api.routes_notebooks import router as notebooks_router
 from app.api.routes_projects import router as projects_router
 from app.api.routes_search import router as search_router
 from app.api.routes_status import router as status_router
@@ -92,6 +93,7 @@ def create_app() -> FastAPI:
     # documents_router mounted just above and can't be gated by simply not
     # including a second router — see routes_folders.py's module docstring.
     app.include_router(folders_router)
+    app.include_router(notebooks_router)
     app.include_router(attachments_router)
     # Image generation is wholly gated on IMAGE_GENERATION_ENABLED — when
     # disabled the router is simply not mounted, so every /images/* request

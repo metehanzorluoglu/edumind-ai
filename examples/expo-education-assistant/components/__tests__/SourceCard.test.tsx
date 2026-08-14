@@ -1,7 +1,7 @@
 import type { Citation, MappedSource, RetrievedChunk } from 'education-assistant-client';
 import { Clipboard, Linking, Platform } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
-import { SourceCard } from '../SourceCard';
+import { AttachmentSourceCard, SourceCard } from '../SourceCard';
 
 const SHORT_TEXT = 'Guided reading improves outcomes for early readers.';
 // Comfortably past the component's own truncation-estimate threshold, so
@@ -380,5 +380,98 @@ describe('SourceCard', () => {
 
     expect(Clipboard.setString).toHaveBeenCalledWith(SHORT_TEXT);
     expect(findByText(renderer.root, 'Copied!')).toBeTruthy();
+  });
+
+  describe('Project scope badge (Frontend Milestone 2.1 §19)', () => {
+    it('shows a "Project" badge for a source retrieved from the project tier', async () => {
+      const renderer = (activeRenderer = await renderSourceCard(
+        buildSource({ chunk: { scope: 'project' } })
+      ));
+      expect(findByText(renderer.root, 'Project')).toBeTruthy();
+    });
+
+    it('shows no badge for a source retrieved from the chat (selected-sources) tier', async () => {
+      const renderer = (activeRenderer = await renderSourceCard(
+        buildSource({ chunk: { scope: 'chat' } })
+      ));
+      expect(queryByText(renderer.root, 'Project')).toBeNull();
+    });
+
+    it('shows no badge for a source retrieved from the general library tier', async () => {
+      const renderer = (activeRenderer = await renderSourceCard(
+        buildSource({ chunk: { scope: 'general' } })
+      ));
+      expect(queryByText(renderer.root, 'Project')).toBeNull();
+    });
+  });
+});
+
+// Frontend/Platform Milestone 3.2.2 Part C — the display half of making a
+// message attachment a real, citeable source.
+function buildAttachmentCitation(overrides: Partial<Citation> = {}): Citation {
+  return {
+    source_id: 'S1',
+    source_kind: 'attachment',
+    document_id: null,
+    chunk_id: null,
+    attachment_id: 'att-1',
+    display_name: 'notes.pdf',
+    title: null,
+    authors: [],
+    publication_year: null,
+    source_venue: null,
+    document_type: null,
+    journal_quartile: null,
+    page_start: null,
+    page_end: null,
+    doi: null,
+    source_url: null,
+    score: null,
+    ...overrides,
+  };
+}
+
+describe('AttachmentSourceCard', () => {
+  it('shows the source label and the attachment filename, never a fabricated excerpt or metadata', async () => {
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(<AttachmentSourceCard citation={buildAttachmentCitation()} />);
+    });
+    expect(findByText(renderer.root, '[S1]')).toBeTruthy();
+    expect(findByText(renderer.root, 'notes.pdf')).toBeTruthy();
+  });
+
+  it('falls back to an honest placeholder rather than blank when display_name is missing', async () => {
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <AttachmentSourceCard citation={buildAttachmentCitation({ display_name: null })} />
+      );
+    });
+    expect(findByText(renderer.root, 'Attached file')).toBeTruthy();
+  });
+
+  it('is not pressable when no onPress is given (nothing to open)', async () => {
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(<AttachmentSourceCard citation={buildAttachmentCitation()} />);
+    });
+    const pressable = renderer.root.findAll((node) => typeof node.props.onPress === 'function');
+    expect(pressable).toHaveLength(0);
+  });
+
+  it('calls onPress when tapped, when one is given', async () => {
+    const onPress = jest.fn();
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <AttachmentSourceCard citation={buildAttachmentCitation()} onPress={onPress} />
+      );
+    });
+    const pressable = renderer.root.find((node) => typeof node.props.onPress === 'function');
+    act(() => {
+      pressable.props.onPress();
+    });
+    expect(onPress).toHaveBeenCalledTimes(1);
   });
 });

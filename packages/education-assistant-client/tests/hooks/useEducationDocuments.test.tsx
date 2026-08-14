@@ -17,6 +17,7 @@ const uploadResponse: DocumentUploadResponse = {
   page_count: 1,
   chunk_count: 1,
   ingested_at: '2026-01-01T00:00:00Z',
+  original_file_available: false,
 };
 
 function makeDocument(overrides: Partial<DocumentSummary> = {}): DocumentSummary {
@@ -27,6 +28,7 @@ function makeDocument(overrides: Partial<DocumentSummary> = {}): DocumentSummary
     authors: [],
     chunk_count: 3,
     ingested_at: '2026-01-01T00:00:00Z',
+    original_file_available: false,
     ...overrides,
   };
 }

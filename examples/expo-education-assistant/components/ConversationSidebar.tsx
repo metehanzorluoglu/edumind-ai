@@ -183,14 +183,20 @@ export function ConversationSidebar({
 
   return (
     <View style={[styles.container, { backgroundColor: dark.background }]}>
-      <View style={styles.brandHeader}>
+      <Pressable
+        onPress={handleNewChat}
+        accessibilityRole="button"
+        accessibilityLabel="EduM8 — New chat"
+        style={styles.brandHeader}
+        hitSlop={6}
+      >
         <EduM8Symbol size={20} />
         <Text
           style={[styles.brandHeaderText, { color: dark.text, fontFamily: theme.fonts.display }]}
         >
           EduM8
         </Text>
-      </View>
+      </Pressable>
 
       {/* SidebarContextMenuProvider wraps the FlatList (and everything it
           renders, including ProjectRow's own three-dot menu and its own

@@ -15,7 +15,7 @@ from starlette.datastructures import UploadFile
 
 from app.config import Settings
 from app.core.answer_transparency import build_transparency_snapshot, transparency_to_dict
-from app.core.citation import Citation
+from app.core.citation import Citation, build_attachment_citations
 from app.core.citation_validation import validate_citations
 from app.core.conversation_title import generate_title, sanitize_title
 from app.core.document_scoping import (
@@ -91,6 +91,7 @@ from app.schemas.conversations import (
     ConversationDocumentListResponse,
     ConversationDocumentResponse,
     ConversationListResponse,
+    ConversationProjectResponse,
     ConversationScopeResponse,
     ConversationSummaryResponse,
     MessageAttachmentResponse,
@@ -304,12 +305,16 @@ def list_conversations(
 
 @router.get("/{conversation_id}", response_model=ConversationDetailResponse)
 def get_conversation(
-    conversation_id: uuid.UUID, user: CurrentUserDep, repository: ConversationsRepositoryDep
+    conversation_id: uuid.UUID,
+    user: CurrentUserDep,
+    repository: ConversationsRepositoryDep,
+    projects_repository: ProjectsRepositoryDep,
 ) -> ConversationDetailResponse:
     conversation = repository.get(user.id, conversation_id)
     if conversation is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     messages = repository.get_messages(user.id, conversation_id) or []
+    project_refs = projects_repository.get_project_refs_for_conversation(user.id, conversation_id)
     return ConversationDetailResponse(
         id=str(conversation.id),
         title=conversation.title,
@@ -317,6 +322,9 @@ def get_conversation(
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
         messages=[_message_response(m) for m in messages],
+        projects=[
+            ConversationProjectResponse(id=str(ref.id), name=ref.name) for ref in project_refs
+        ],
     )
 
 
@@ -1154,6 +1162,32 @@ def _stream_vision_reply(
     else:
         evidence = CorpusEvidence(sources=[], citations=[])
 
+    # Frontend/Platform Milestone 3.2.2 Part C — this call is only ever
+    # reached for a message with at least one attachment (see the
+    # model-routing comment in _handle_conversation_message), and those
+    # attachments were already persisted before this function was called
+    # (see _store_new_attachments). Registering them as real citations
+    # here — continuing the numbering past any corpus citations so the
+    # two never collide — is what makes a [S<n>] the model uses for an
+    # attachment resolve instead of rendering the false "[S<n> —
+    # unavailable]" (see app/core/citation.build_attachment_citations for
+    # the full root-cause writeup).
+    # parent_message_id is nullable at the column-type level (a user
+    # message has none) but always set on an assistant message reached
+    # via this function (see create_pending_assistant_message) — the
+    # explicit None-check is defensive typing hygiene, not a real
+    # runtime possibility, and degrades to "no attachments found" rather
+    # than crashing in the genuinely-impossible case it doesn't hold.
+    message_attachments = (
+        repository.list_attachments_for_message(assistant_message.parent_message_id)
+        if assistant_message.parent_message_id is not None
+        else []
+    )
+    attachment_citations = build_attachment_citations(
+        message_attachments, start_index=len(evidence.citations) + 1
+    )
+    all_citations = [*evidence.citations, *attachment_citations]
+
     # The batched pipeline builds its own, smaller per-batch/reduce
     # prompts lazily (see vision_batch_orchestrator.py) rather than one
     # big single-shot prompt up front, so there is nothing to size-check
@@ -1163,7 +1197,7 @@ def _stream_vision_reply(
     system_prompt = user_prompt = ""
     if batched_pdf is None:
         system_prompt, user_prompt = build_vision_prompt(
-            parsed.query, evidence.sources, project_context=project_context
+            parsed.query, evidence.sources, attachment_citations, project_context=project_context
         )
         prompt_chars = len(system_prompt) + len(user_prompt)
         if prompt_chars > settings.vision_max_prompt_chars:
@@ -1234,6 +1268,7 @@ def _stream_vision_reply(
                     plan=batched_pdf.plan,
                     query=parsed.query,
                     sources=evidence.sources,
+                    attachment_citations=attachment_citations,
                     project_context=project_context,
                     vision_service=vision_service,
                     text_provider=llm_provider,
@@ -1245,7 +1280,7 @@ def _stream_vision_reply(
                 assistant_message_id=assistant_message.id,
                 stream_updates=_stream_updates,
                 retrieved_sources=evidence.sources,
-                citations=evidence.citations,
+                citations=all_citations,
                 transparency=transparency,
                 attachment_storage=attachment_storage,
                 timer=timer,
@@ -1264,7 +1299,7 @@ def _stream_vision_reply(
                 assistant_message_id=assistant_message.id,
                 stream_chat=_stream_chat,
                 retrieved_sources=evidence.sources,
-                citations=evidence.citations,
+                citations=all_citations,
                 transparency=transparency,
                 attachment_storage=attachment_storage,
                 timer=timer,

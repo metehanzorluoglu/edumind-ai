@@ -111,3 +111,17 @@ class VectorSearchResult(BaseModel):
     payload: ChunkPayload
     score: float
     vector: list[float] | None = None
+
+
+class DocumentChunkContent(BaseModel):
+    """Frontend Milestone 3 (Document Reader): one chunk's reading-order
+    content — no score, no vector, nothing retrieval-specific, just what
+    the reader needs to render the document's extracted text. `chunk_id`
+    is the same deterministic id (`_point_id`) citations already use, so a
+    reader anchor and a citation's "go to source" link key off the
+    identical value — see QdrantVectorStore.get_document_chunks."""
+
+    chunk_id: str
+    chunk_index: int
+    page_number: int
+    text: str

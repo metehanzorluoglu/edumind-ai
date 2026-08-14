@@ -32,6 +32,18 @@ class ProjectConversationRecord:
     updated_at: datetime
 
 
+@dataclass(frozen=True)
+class ConversationProjectRef:
+    """The minimum a UI needs to say "this conversation belongs to project
+    X" truthfully — see get_project_refs_for_conversation. Deliberately not
+    the full ProjectSummary (no description/conversation_count): this is
+    for a conversation screen naming which project(s) it's in, not a
+    project listing."""
+
+    id: uuid.UUID
+    name: str
+
+
 def _to_summary(row: Project, *, conversation_count: int) -> ProjectSummary:
     return ProjectSummary(
         id=row.id,
@@ -206,6 +218,29 @@ class ProjectsRepository:
             )
         )
         return list(self._db.execute(stmt).scalars().all())
+
+    def get_project_refs_for_conversation(
+        self, user_id: uuid.UUID, conversation_id: uuid.UUID
+    ) -> list[ConversationProjectRef]:
+        """Frontend Milestone 2.1: the authoritative "which project(s) is
+        this conversation actually in" signal for a conversation screen —
+        id+name only, one joined query (no N+1 per-project lookup).
+        Ordered by name for a stable, predictable display order (a
+        conversation in more than one project is possible — see
+        ProjectConversation's own docstring — so this is never truncated
+        to "the first one"). Returns [] (never an error) for a
+        conversation in zero projects, the common case, same convention as
+        get_project_ids_for_conversation."""
+        stmt = (
+            select(Project.id, Project.name)
+            .join(ProjectConversation, ProjectConversation.project_id == Project.id)
+            .where(
+                ProjectConversation.conversation_id == conversation_id,
+                Project.user_id == user_id,
+            )
+            .order_by(Project.name, Project.id)
+        )
+        return [ConversationProjectRef(id=row.id, name=row.name) for row in self._db.execute(stmt)]
 
     def list_conversations(
         self, user_id: uuid.UUID, project_id: uuid.UUID, *, limit: int, offset: int

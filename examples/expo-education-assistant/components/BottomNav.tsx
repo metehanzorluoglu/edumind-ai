@@ -1,12 +1,16 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { ChatIcon, DocumentsIcon, SearchIcon, SettingsIcon } from '@/components/icons';
+import { ChatIcon, DocumentsIcon, NotesIcon, SettingsIcon } from '@/components/icons';
 import type { NavSection } from '@/components/NavRail';
 import { useTheme } from '@/lib/Preferences';
 
+// Frontend/Platform Milestone 3.2.1 Part E — 'search' dropped from this
+// list (mobile bottom nav was becoming crowded, and Documents' own
+// in-library search — Part D — already covers the "find my paper" need
+// this used to serve). See NavRail.tsx's matching comment.
 const ITEMS: { key: NavSection; label: string; Icon: typeof ChatIcon }[] = [
   { key: 'chat', label: 'Chat', Icon: ChatIcon },
-  { key: 'search', label: 'Search', Icon: SearchIcon },
   { key: 'documents', label: 'Documents', Icon: DocumentsIcon },
+  { key: 'notes', label: 'Notes', Icon: NotesIcon },
   { key: 'settings', label: 'Settings', Icon: SettingsIcon },
 ];
 

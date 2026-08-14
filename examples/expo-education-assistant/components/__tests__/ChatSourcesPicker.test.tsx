@@ -1,7 +1,14 @@
+import type { ConversationProjectRef } from 'education-assistant-client';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { AuthProvider } from '@/lib/AuthProvider';
 import { ClientProvider } from '@/lib/ClientProvider';
-import { ChatSourcesPicker, type PendingSourceDoc, type SourceMode } from '../ChatSourcesPicker';
+import {
+  ChatSourcesPicker,
+  describeProjectNames,
+  prioritizeModeCopy,
+  type PendingSourceDoc,
+  type SourceMode,
+} from '../ChatSourcesPicker';
 
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(),
@@ -9,23 +16,33 @@ jest.mock('expo-secure-store', () => ({
   deleteItemAsync: jest.fn(),
 }));
 
+const mockPush = jest.fn();
+jest.mock('expo-router', () => ({
+  useRouter: () => ({ push: mockPush, replace: jest.fn() }),
+  usePathname: () => '/chat',
+  useGlobalSearchParams: () => ({}),
+  useLocalSearchParams: () => ({}),
+}));
+
 function textContent(node: ReactTestInstance): string {
   return node.children.filter((child): child is string => typeof child === 'string').join('');
 }
 
-function findByText(root: ReactTestInstance, text: string): ReactTestInstance {
-  const matches = root.findAll(
-    (node) => String(node.type) === 'Text' && textContent(node) === text
-  );
+function matchesText(node: ReactTestInstance, text: string | RegExp): boolean {
+  if (String(node.type) !== 'Text') return false;
+  const content = textContent(node);
+  return typeof text === 'string' ? content === text : text.test(content);
+}
+
+function findByText(root: ReactTestInstance, text: string | RegExp): ReactTestInstance {
+  const matches = root.findAll((node) => matchesText(node, text));
   if (matches.length === 0)
-    throw new Error(`No Text node found with content ${JSON.stringify(text)}`);
+    throw new Error(`No Text node found with content ${JSON.stringify(String(text))}`);
   return matches[0]!;
 }
 
-function queryByText(root: ReactTestInstance, text: string): ReactTestInstance | null {
-  const matches = root.findAll(
-    (node) => String(node.type) === 'Text' && textContent(node) === text
-  );
+function queryByText(root: ReactTestInstance, text: string | RegExp): ReactTestInstance | null {
+  const matches = root.findAll((node) => matchesText(node, text));
   return matches[0] ?? null;
 }
 
@@ -108,6 +125,8 @@ async function renderPicker(props: {
   initialSelection: PendingSourceDoc[];
   initialMode?: SourceMode;
   zoomInEnabled?: boolean;
+  projectContext?: ConversationProjectRef[] | null;
+  scope?: { chatEnabled?: boolean; projectEnabled?: boolean; generalEnabled?: boolean };
   onClose?: () => void;
   onSaved?: (selection: PendingSourceDoc[], mode: SourceMode) => void;
   routes: FetchRoute[];
@@ -123,6 +142,8 @@ async function renderPicker(props: {
             initialSelection={props.initialSelection}
             initialMode={props.initialMode}
             zoomInEnabled={props.zoomInEnabled}
+            projectContext={props.projectContext}
+            scope={props.scope}
             onClose={props.onClose ?? jest.fn()}
             onSaved={props.onSaved ?? jest.fn()}
           />
@@ -184,7 +205,7 @@ describe('ChatSourcesPicker — browsing', () => {
       routes: [rootContentsRoute([ROOT_FOLDER], [DOC_A])],
     });
 
-    expect(findByText(renderer.root, 'Add sources')).toBeTruthy();
+    expect(findByText(renderer.root, 'Sources')).toBeTruthy();
     expect(findByText(renderer.root, 'Research')).toBeTruthy();
     expect(findByText(renderer.root, 'AI Education')).toBeTruthy();
   });
@@ -233,13 +254,13 @@ describe('ChatSourcesPicker — selection', () => {
       routes: [rootContentsRoute([], [DOC_A])],
     });
 
-    expect(findByText(renderer.root, 'Selected (0)')).toBeTruthy();
+    expect(findByText(renderer.root, 'Selected sources (0)')).toBeTruthy();
 
     await act(async () => {
       findPressableByAccessibilityLabel(renderer.root, 'Add AI Education').props.onPress();
     });
 
-    expect(findByText(renderer.root, 'Selected (1)')).toBeTruthy();
+    expect(findByText(renderer.root, 'Selected sources (1)')).toBeTruthy();
   });
 
   it('unselecting a document via its checkbox removes it', async () => {
@@ -249,13 +270,13 @@ describe('ChatSourcesPicker — selection', () => {
       routes: [rootContentsRoute([], [DOC_A])],
     });
 
-    expect(findByText(renderer.root, 'Selected (1)')).toBeTruthy();
+    expect(findByText(renderer.root, 'Selected sources (1)')).toBeTruthy();
 
     await act(async () => {
       findPressableByAccessibilityLabel(renderer.root, 'Remove AI Education').props.onPress();
     });
 
-    expect(findByText(renderer.root, 'Selected (0)')).toBeTruthy();
+    expect(findByText(renderer.root, 'Selected sources (0)')).toBeTruthy();
   });
 
   it('removing a document from the Selected summary also unchecks it', async () => {
@@ -272,7 +293,7 @@ describe('ChatSourcesPicker — selection', () => {
       ).props.onPress();
     });
 
-    expect(findByText(renderer.root, 'Selected (0)')).toBeTruthy();
+    expect(findByText(renderer.root, 'Selected sources (0)')).toBeTruthy();
     expect(findPressableByAccessibilityLabel(renderer.root, 'Add AI Education')).toBeTruthy(); // now unchecked in the browse list too
   });
 
@@ -286,7 +307,7 @@ describe('ChatSourcesPicker — selection', () => {
     await act(async () => {
       findPressableByAccessibilityLabel(renderer.root, 'Add AI Education').props.onPress();
     });
-    expect(findByText(renderer.root, 'Selected (1)')).toBeTruthy();
+    expect(findByText(renderer.root, 'Selected sources (1)')).toBeTruthy();
 
     await act(async () => {
       findPressableByText(renderer.root, 'Research').props.onPress();
@@ -294,7 +315,7 @@ describe('ChatSourcesPicker — selection', () => {
     });
 
     // Still selected after navigating away from the folder it lives in.
-    expect(findByText(renderer.root, 'Selected (1)')).toBeTruthy();
+    expect(findByText(renderer.root, 'Selected sources (1)')).toBeTruthy();
     expect(findByText(renderer.root, 'AI Education')).toBeTruthy(); // in the Selected summary
   });
 });
@@ -428,7 +449,7 @@ describe('ChatSourcesPicker — save/cancel (existing conversation)', () => {
     expect(onSaved).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
     // The picker is still open and the selection is intact — Save can be retried.
-    expect(findByText(renderer.root, 'Selected (1)')).toBeTruthy();
+    expect(findByText(renderer.root, 'Selected sources (1)')).toBeTruthy();
   });
 });
 
@@ -473,7 +494,7 @@ describe('ChatSourcesPicker — pending (new conversation) mode', () => {
       routes: [rootContentsRoute([], [])],
     });
 
-    expect(findByText(renderer.root, 'Selected (1)')).toBeTruthy();
+    expect(findByText(renderer.root, 'Selected sources (1)')).toBeTruthy();
     expect(findByText(renderer.root, 'Previously picked.pdf')).toBeTruthy();
   });
 });
@@ -656,7 +677,7 @@ describe('ChatSourcesPicker — Zoom-In mode', () => {
     // The selection itself already saved server-side (PUT succeeded) — the
     // picker stays open showing the error so Save can simply be retried
     // (idempotent: the PUT would just re-apply the same selection).
-    expect(findByText(renderer.root, 'Selected (1)')).toBeTruthy();
+    expect(findByText(renderer.root, 'Selected sources (1)')).toBeTruthy();
   });
 
   it('initialMode="zoom-in" preselects the Zoom-In chip on open', async () => {
@@ -684,5 +705,438 @@ describe('ChatSourcesPicker — Zoom-In mode', () => {
 
     expect(queryByText(renderer.root, 'Zoom-In')).toBeNull();
     expect(queryByText(renderer.root, 'Prioritize')).toBeNull();
+  });
+
+  // Frontend/Platform Milestone 3.2.2 Part D — the old guard that disabled
+  // removing the sole remaining Zoom-In source was a trapped-state bug
+  // (PO-identified). Removing it must now be always allowed, and doing so
+  // auto-switches the mode to Prioritize in the same update rather than
+  // leaving Zoom-In selected with zero sources (which the Save button's
+  // zoomInNeedsASource guard would otherwise silently block with no
+  // explanation of why).
+  it('removing the sole remaining source in Zoom-In is allowed and auto-falls-back to Prioritize', async () => {
+    const renderer = await renderPicker({
+      target: { kind: 'pending' },
+      initialSelection: [{ documentId: 'doc-a', displayName: 'AI Education' }],
+      initialMode: 'zoom-in',
+      routes: [rootContentsRoute([], [DOC_A])],
+    });
+
+    const removeButton = findPressableByAccessibilityLabel(
+      renderer.root,
+      'Remove AI Education from selection'
+    );
+    expect(removeButton.props.disabled).toBeFalsy();
+
+    await act(async () => {
+      removeButton.props.onPress();
+    });
+
+    expect(queryByText(renderer.root, 'Selected sources (1)')).toBeNull();
+    const zoomInChip = findPressableByAccessibilityLabel(
+      renderer.root,
+      'Zoom-In — chat answers ONLY from the selected sources, nothing else'
+    );
+    expect(zoomInChip.props.accessibilityState.checked).toBe(false);
+    const prioritizeChip = findPressableByAccessibilityLabel(
+      renderer.root,
+      'Prioritize — selected sources rank first, other sources still available'
+    );
+    expect(prioritizeChip.props.accessibilityState.checked).toBe(true);
+    // Save is not trapped behind the old guard — nothing selected in
+    // Prioritize is a perfectly valid, saveable state.
+    expect(findPressableByText(renderer.root, 'Save').props.disabled).toBeFalsy();
+  });
+
+  it('removing one of two Zoom-In sources leaves the mode untouched (only the LAST source triggers fallback)', async () => {
+    const renderer = await renderPicker({
+      target: { kind: 'pending' },
+      initialSelection: [
+        { documentId: 'doc-a', displayName: 'AI Education' },
+        { documentId: 'doc-b', displayName: 'b.pdf' },
+      ],
+      initialMode: 'zoom-in',
+      routes: [rootContentsRoute([], [DOC_A])],
+    });
+
+    const removeButton = findPressableByAccessibilityLabel(
+      renderer.root,
+      'Remove AI Education from selection'
+    );
+
+    await act(async () => {
+      removeButton.props.onPress();
+    });
+
+    expect(findByText(renderer.root, 'Selected sources (1)')).toBeTruthy();
+    const zoomInChip = findPressableByAccessibilityLabel(
+      renderer.root,
+      'Zoom-In — chat answers ONLY from the selected sources, nothing else'
+    );
+    expect(zoomInChip.props.accessibilityState.checked).toBe(true);
+  });
+});
+
+const PROJECT_A: ConversationProjectRef = { id: 'p1', name: 'AI Literacy Study' };
+const PROJECT_B: ConversationProjectRef = { id: 'p2', name: 'Reading Group' };
+const PROJECT_C: ConversationProjectRef = { id: 'p3', name: 'Curriculum Design' };
+
+const withOneSelected = (): PendingSourceDoc[] => [{ documentId: 'doc-a', displayName: 'a.pdf' }];
+
+describe('ChatSourcesPicker — Prioritize copy truthfulness (Frontend Milestone 2.1)', () => {
+  it('ordinary chat, sources selected: broadens to library knowledge, never mentions project knowledge', async () => {
+    const renderer = await renderPicker({
+      target: { kind: 'conversation', conversationId: 'c1' },
+      initialSelection: withOneSelected(),
+      projectContext: [],
+      routes: [rootContentsRoute([], [DOC_A])],
+    });
+    expect(
+      queryByText(
+        renderer.root,
+        'Use these sources first, then broaden to other available library knowledge when useful.'
+      )
+    ).toBeTruthy();
+    expect(queryByText(renderer.root, /project knowledge/)).toBeNull();
+  });
+
+  it('project chat, sources selected: mentions both project and library knowledge', async () => {
+    const renderer = await renderPicker({
+      target: { kind: 'conversation', conversationId: 'c1' },
+      initialSelection: withOneSelected(),
+      projectContext: [PROJECT_A],
+      routes: [rootContentsRoute([], [DOC_A])],
+    });
+    expect(
+      queryByText(
+        renderer.root,
+        'Use these sources first, then broaden to project knowledge and other available library knowledge when useful.'
+      )
+    ).toBeTruthy();
+  });
+
+  it('ordinary chat, zero sources selected: never says "use these sources first"', async () => {
+    const renderer = await renderPicker({
+      target: { kind: 'conversation', conversationId: 'c1' },
+      initialSelection: [],
+      projectContext: [],
+      routes: [rootContentsRoute([], [DOC_A])],
+    });
+    expect(queryByText(renderer.root, 'Use your available library knowledge.')).toBeTruthy();
+    expect(queryByText(renderer.root, /Use these sources first/)).toBeNull();
+  });
+
+  it('project chat, zero sources selected: mentions project knowledge, never "use these sources first"', async () => {
+    const renderer = await renderPicker({
+      target: { kind: 'conversation', conversationId: 'c1' },
+      initialSelection: [],
+      projectContext: [PROJECT_A],
+      routes: [rootContentsRoute([], [DOC_A])],
+    });
+    expect(
+      queryByText(renderer.root, 'Use project knowledge and your available library knowledge.')
+    ).toBeTruthy();
+    expect(queryByText(renderer.root, /Use these sources first/)).toBeNull();
+  });
+
+  it('Zoom-In copy stays "only from the selected sources" regardless of project membership — no automatic project fallback', async () => {
+    const renderer = await renderPicker({
+      target: { kind: 'conversation', conversationId: 'c1' },
+      initialSelection: [],
+      projectContext: [PROJECT_A],
+      routes: [rootContentsRoute([], [DOC_A])],
+    });
+    expect(queryByText(renderer.root, 'Answer only from the selected sources.')).toBeTruthy();
+  });
+
+  it('a conversation not yet in a project (projectContext=[]) never shows project copy even with project_enabled defaulting true', async () => {
+    const renderer = await renderPicker({
+      target: { kind: 'conversation', conversationId: 'c1' },
+      initialSelection: withOneSelected(),
+      projectContext: [],
+      // project_enabled omitted — defaults true, same as the backend's own
+      // column default for every conversation, project or not. Copy must
+      // still stay silent about project knowledge with zero membership.
+      routes: [rootContentsRoute([], [DOC_A])],
+    });
+    expect(queryByText(renderer.root, /project knowledge/)).toBeNull();
+  });
+
+  it('projectContext=null (still loading) is treated as no project — never invents membership', async () => {
+    const renderer = await renderPicker({
+      target: { kind: 'conversation', conversationId: 'c1' },
+      initialSelection: withOneSelected(),
+      projectContext: null,
+      routes: [rootContentsRoute([], [DOC_A])],
+    });
+    expect(
+      queryByText(
+        renderer.root,
+        'Use these sources first, then broaden to other available library knowledge when useful.'
+      )
+    ).toBeTruthy();
+  });
+});
+
+describe('ChatSourcesPicker — non-default scope truthfulness (Frontend Milestone 2.1 §11)', () => {
+  it('project_enabled=false: a project-associated conversation never claims project knowledge is available', async () => {
+    const renderer = await renderPicker({
+      target: { kind: 'conversation', conversationId: 'c1' },
+      initialSelection: withOneSelected(),
+      projectContext: [PROJECT_A],
+      scope: { projectEnabled: false },
+      routes: [rootContentsRoute([], [DOC_A])],
+    });
+    // The project-context indicator legitimately still names the project
+    // and explains project knowledge is off (see the §7 tests above) — the
+    // thing that must never happen is the Prioritize card itself claiming
+    // project knowledge is available to broaden into.
+    expect(
+      queryByText(
+        renderer.root,
+        'Use these sources first, then broaden to project knowledge and other available library knowledge when useful.'
+      )
+    ).toBeNull();
+    expect(
+      queryByText(
+        renderer.root,
+        'Use these sources first, then broaden to other available library knowledge when useful.'
+      )
+    ).toBeTruthy();
+  });
+
+  it('general_enabled=false: never claims broader library search is available', async () => {
+    const renderer = await renderPicker({
+      target: { kind: 'conversation', conversationId: 'c1' },
+      initialSelection: withOneSelected(),
+      projectContext: [],
+      scope: { generalEnabled: false },
+      routes: [rootContentsRoute([], [DOC_A])],
+    });
+    expect(queryByText(renderer.root, /library knowledge/)).toBeNull();
+    expect(
+      queryByText(
+        renderer.root,
+        'Use only these selected sources — broader search is currently turned off for this chat.'
+      )
+    ).toBeTruthy();
+  });
+
+  it('project_enabled=false AND general_enabled=false, zero selected: honestly says nothing will be searched', async () => {
+    const renderer = await renderPicker({
+      target: { kind: 'conversation', conversationId: 'c1' },
+      initialSelection: [],
+      projectContext: [PROJECT_A],
+      scope: { projectEnabled: false, generalEnabled: false },
+      routes: [rootContentsRoute([], [DOC_A])],
+    });
+    expect(
+      queryByText(
+        renderer.root,
+        'No sources selected, and broader search is currently turned off for this chat — add sources to get an answer.'
+      )
+    ).toBeTruthy();
+  });
+});
+
+describe('ChatSourcesPicker — project context indicator (Frontend Milestone 2.1 §7)', () => {
+  it('shows a Project indicator with the project name for a project-associated conversation', async () => {
+    const renderer = await renderPicker({
+      target: { kind: 'conversation', conversationId: 'c1' },
+      initialSelection: [],
+      projectContext: [PROJECT_A],
+      routes: [rootContentsRoute([], [DOC_A])],
+    });
+    expect(findByText(renderer.root, 'Project')).toBeTruthy();
+    expect(queryByText(renderer.root, /AI Literacy Study/)).toBeTruthy();
+  });
+
+  it('shows nothing for an ordinary (non-project) conversation', async () => {
+    const renderer = await renderPicker({
+      target: { kind: 'conversation', conversationId: 'c1' },
+      initialSelection: [],
+      projectContext: [],
+      routes: [rootContentsRoute([], [DOC_A])],
+    });
+    expect(queryByText(renderer.root, 'Project')).toBeNull();
+    expect(queryByText(renderer.root, 'Projects')).toBeNull();
+  });
+
+  it('shows nothing while project context is still loading (projectContext=null) — no flicker', async () => {
+    const renderer = await renderPicker({
+      target: { kind: 'conversation', conversationId: 'c1' },
+      initialSelection: [],
+      projectContext: null,
+      routes: [rootContentsRoute([], [DOC_A])],
+    });
+    expect(queryByText(renderer.root, 'Project')).toBeNull();
+  });
+
+  it('a conversation in multiple projects reports every one of them, never an arbitrary "first" project', async () => {
+    const renderer = await renderPicker({
+      target: { kind: 'conversation', conversationId: 'c1' },
+      initialSelection: [],
+      projectContext: [PROJECT_A, PROJECT_B],
+      routes: [rootContentsRoute([], [DOC_A])],
+    });
+    expect(findByText(renderer.root, 'Projects')).toBeTruthy();
+    expect(queryByText(renderer.root, /AI Literacy Study and Reading Group/)).toBeTruthy();
+  });
+
+  it('never displays project documents as selected sources — membership and selection stay visually distinct', async () => {
+    const renderer = await renderPicker({
+      target: { kind: 'conversation', conversationId: 'c1' },
+      initialSelection: [],
+      projectContext: [PROJECT_A],
+      routes: [rootContentsRoute([], [DOC_A])],
+    });
+    // The indicator names the project; the Selected sources list still
+    // reports zero — project membership never inflates the selection.
+    expect(findByText(renderer.root, 'Selected sources (0)')).toBeTruthy();
+  });
+
+  it('notes Zoom-In restricts the chat to selected sources even though the conversation is in a project', async () => {
+    const renderer = await renderPicker({
+      target: { kind: 'conversation', conversationId: 'c1' },
+      initialSelection: withOneSelected(),
+      initialMode: 'zoom-in',
+      projectContext: [PROJECT_A],
+      routes: [rootContentsRoute([], [DOC_A])],
+    });
+    expect(
+      queryByText(renderer.root, /Zoom-In restricts this chat to only the selected sources/)
+    ).toBeTruthy();
+  });
+});
+
+describe('describeProjectNames (pure function)', () => {
+  it('formats zero, one, two, and three+ names correctly, never truncating silently', () => {
+    expect(describeProjectNames([])).toBe('');
+    expect(describeProjectNames(['AI Literacy Study'])).toBe('AI Literacy Study');
+    expect(describeProjectNames(['AI Literacy Study', 'Reading Group'])).toBe(
+      'AI Literacy Study and Reading Group'
+    );
+    expect(describeProjectNames([PROJECT_A.name, PROJECT_B.name, PROJECT_C.name])).toBe(
+      'AI Literacy Study, Reading Group +1 more'
+    );
+  });
+});
+
+describe('prioritizeModeCopy (pure function)', () => {
+  it('covers the full effective-scope matrix truthfully', () => {
+    expect(
+      prioritizeModeCopy({
+        selectedCount: 2,
+        chatEnabled: true,
+        projectAvailable: true,
+        generalEnabled: true,
+      })
+    ).toBe(
+      'Use these sources first, then broaden to project knowledge and other available library knowledge when useful.'
+    );
+    expect(
+      prioritizeModeCopy({
+        selectedCount: 0,
+        chatEnabled: true,
+        projectAvailable: false,
+        generalEnabled: true,
+      })
+    ).toBe('Use your available library knowledge.');
+    expect(
+      prioritizeModeCopy({
+        selectedCount: 2,
+        chatEnabled: false,
+        projectAvailable: false,
+        generalEnabled: false,
+      })
+    ).toBe(
+      "Your selected sources aren't currently included in this chat's search, and no other retrieval sources are enabled for this chat."
+    );
+    expect(
+      prioritizeModeCopy({
+        selectedCount: 0,
+        chatEnabled: true,
+        projectAvailable: false,
+        generalEnabled: false,
+      })
+    ).toBe(
+      'No sources selected, and broader search is currently turned off for this chat — add sources to get an answer.'
+    );
+  });
+});
+
+describe('ChatSourcesPicker — filter and library actions', () => {
+  it('filters the currently-loaded folder by name, client-side, without any network call', async () => {
+    const renderer = await renderPicker({
+      target: { kind: 'pending' },
+      initialSelection: [],
+      routes: [rootContentsRoute([ROOT_FOLDER], [DOC_A])],
+    });
+    const fetchCallsBefore = (global.fetch as jest.Mock).mock.calls.length;
+
+    const filterInput = renderer.root.find(
+      (node) => String(node.type) === 'TextInput' && node.props.placeholder === 'Filter by name…'
+    );
+    await act(async () => {
+      filterInput.props.onChangeText('Research');
+    });
+
+    expect(findByText(renderer.root, 'Research')).toBeTruthy();
+    expect(queryByText(renderer.root, 'AI Education')).toBeNull();
+    expect((global.fetch as jest.Mock).mock.calls.length).toBe(fetchCallsBefore);
+  });
+
+  it('shows a truthful "no matches" state rather than an empty list when the filter matches nothing', async () => {
+    const renderer = await renderPicker({
+      target: { kind: 'pending' },
+      initialSelection: [],
+      routes: [rootContentsRoute([ROOT_FOLDER], [DOC_A])],
+    });
+    const filterInput = renderer.root.find(
+      (node) => String(node.type) === 'TextInput' && node.props.placeholder === 'Filter by name…'
+    );
+    await act(async () => {
+      filterInput.props.onChangeText('nonexistent-xyz');
+    });
+
+    expect(
+      findByText(renderer.root, 'No items in this folder match "nonexistent-xyz".')
+    ).toBeTruthy();
+  });
+
+  it('"Manage library" closes the picker and navigates to Documents', async () => {
+    mockPush.mockClear();
+    const onClose = jest.fn();
+    const renderer = await renderPicker({
+      target: { kind: 'pending' },
+      initialSelection: [],
+      onClose,
+      routes: [rootContentsRoute([ROOT_FOLDER], [DOC_A])],
+    });
+
+    await act(async () => {
+      findPressableByText(renderer.root, 'Manage library').props.onPress();
+    });
+
+    expect(onClose).toHaveBeenCalled();
+    expect(mockPush).toHaveBeenCalledWith('/documents');
+  });
+
+  it('shows the empty-library state with a Go to Documents action when the root has nothing', async () => {
+    mockPush.mockClear();
+    const onClose = jest.fn();
+    const renderer = await renderPicker({
+      target: { kind: 'pending' },
+      initialSelection: [],
+      onClose,
+      routes: [rootContentsRoute([], [])],
+    });
+
+    expect(findByText(renderer.root, 'No documents yet.')).toBeTruthy();
+    await act(async () => {
+      findPressableByText(renderer.root, 'Go to Documents').props.onPress();
+    });
+    expect(onClose).toHaveBeenCalled();
+    expect(mockPush).toHaveBeenCalledWith('/documents');
   });
 });

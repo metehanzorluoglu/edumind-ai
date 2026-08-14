@@ -8,7 +8,7 @@ import {
   useEducationDocuments,
 } from 'education-assistant-client';
 import type { DisplayMessage, PostConversationMessageRequest } from 'education-assistant-client';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { createElement, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -18,6 +18,7 @@ import {
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { AttachmentButton } from '@/components/AttachmentButton';
 import { AttachmentPreviewRow } from '@/components/AttachmentPreviewRow';
@@ -29,6 +30,12 @@ import {
   type SourceMode,
 } from '@/components/ChatSourcesPicker';
 import { ConversationTurnCard } from '@/components/ConversationTurnCard';
+import { SelectedSourceChips } from '@/components/SelectedSourceChips';
+import {
+  SelectionContextChip,
+  type PendingSelectionContext,
+} from '@/components/SelectionContextChip';
+import { TransientContextChips } from '@/components/TransientContextChips';
 import { CorpusToggle } from '@/components/CorpusToggle';
 import { EduM8Symbol } from '@/components/EduM8Logo';
 import { ImageGenerateButton } from '@/components/ImageGenerateButton';
@@ -55,11 +62,22 @@ import { useChatAttachments } from '@/lib/useChatAttachments';
 import { generateClientMessageId } from '@/lib/clientMessageId';
 import { describeApiError } from '@/lib/errorDisplay';
 import { SAMPLE_DOCUMENT_TITLE, buildSampleUploadFile } from '@/lib/sampleDocument';
+import {
+  buildTransientContextPrefix,
+  MAX_TRANSIENT_AI_CONTEXT_ENTRIES,
+  type TransientAIContextEntry,
+} from '@/lib/transientAIContext';
 
 /** Explicit state machine for the composer-to-persisted-answer flow — see
  * this screen's module doc for why sending must fully finish here, before
  * any navigation, rather than being handed off to chat/[id].tsx. */
 type Phase = 'idle' | 'creating' | 'sending' | 'error';
+
+/** Frontend Milestone 2 §8: below this width the compact selected-source
+ * chip row above the composer is skipped entirely (the Sources button's
+ * own count is the sole indicator there) — matches requirement #8's "if
+ * chips make mobile cramped, use only the Sources button/count". */
+const SOURCE_CHIPS_BREAKPOINT_PX = 760;
 
 /** Clickable first-question starters on the empty composer — concise,
  * educator-shaped examples of what the corpus can answer. Pressing one
@@ -139,6 +157,33 @@ export default function NewChatScreen() {
     zoomIn: zoomInEnabled,
   } = useFeatureFlags();
   const router = useRouter();
+  // Frontend Milestone 2 §12: Documents' "Use in chat" action navigates
+  // here with a `sources` param — a JSON-encoded PendingSourceDoc[] built
+  // entirely from data the Documents screen already had in hand (no
+  // extra fetch either side of the navigation). Read once below, into the
+  // exact same `pendingSources` state the Sources workspace itself
+  // writes to — reusing chat/new.tsx's own pending-source architecture,
+  // never a second parallel place sources are held.
+  const {
+    sources: sourcesParam,
+    selectionContext: selectionContextParam,
+    notebookContext: notebookContextParam,
+  } = useLocalSearchParams<{
+    sources?: string;
+    selectionContext?: string;
+    /** Frontend Milestone 3.1 (M3.1 Notebook spec §18/§19): the
+     * Notebook's multi-select "Ask EduM8" hands off up to
+     * MAX_TRANSIENT_AI_CONTEXT_ENTRIES entries here — a JSON-encoded
+     * TransientAIContextEntry[], the SAME generalized shape/formatter
+     * used for the Reader's single-selection case below (see
+     * lib/transientAIContext.ts). A separate param from
+     * `selectionContext` (kept byte-compatible with Milestone 3) rather
+     * than replacing it — see this screen's TransientAIContext handling
+     * below for how the two are reconciled at submit time. */
+    notebookContext?: string;
+  }>();
+  const { width: windowWidth } = useWindowDimensions();
+  const showSourceChips = Platform.OS === 'web' && windowWidth >= SOURCE_CHIPS_BREAKPOINT_PX;
   const refreshConversations = useRefreshConversations();
   const { createConversation } = useConversations(client);
   const {
@@ -170,6 +215,21 @@ export default function NewChatScreen() {
   // before the first message's own retrieval runs).
   const [pendingMode, setPendingMode] = useState<SourceMode>('prioritize');
   const [submittedMode, setSubmittedMode] = useState<SourceMode>('prioritize');
+  // Frontend Milestone 3 (Document Reader) — "Ask EduM8" about a selected
+  // passage hands off here via `selectionContext`, read once below
+  // exactly like `sourcesParam`. Never silently baked into the request:
+  // shown as a removable SelectionContextChip (§17) until the user
+  // actually submits.
+  const [pendingSelectionContext, setPendingSelectionContext] =
+    useState<PendingSelectionContext | null>(null);
+  // Frontend Milestone 3.1 — the Notebook's multi-select counterpart to
+  // pendingSelectionContext above; see lib/transientAIContext.ts. Mutually
+  // exclusive with it in practice (a navigation arrives from either the
+  // Reader or the Notebook, never both), reconciled into one shared
+  // formatter at submit time (see handleAsk).
+  const [pendingNotebookContext, setPendingNotebookContext] = useState<TransientAIContextEntry[]>(
+    []
+  );
   const [sourcesPickerOpen, setSourcesPickerOpen] = useState(false);
   const [assistantTurn, setAssistantTurn] = useState<DisplayMessage | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -215,6 +275,93 @@ export default function NewChatScreen() {
     return () => {
       abortControllerRef.current?.abort();
     };
+  }, []);
+
+  // Runs once on mount only — a real user edit to pendingSources afterward
+  // (adding/removing via the Sources workspace or a chip) must never be
+  // clobbered by this re-applying the URL param on some later re-render.
+  useEffect(() => {
+    if (!sourcesParam) return;
+    try {
+      const parsed = JSON.parse(sourcesParam) as unknown;
+      if (
+        Array.isArray(parsed) &&
+        parsed.every(
+          (item): item is PendingSourceDoc =>
+            typeof item === 'object' &&
+            item !== null &&
+            typeof (item as PendingSourceDoc).documentId === 'string' &&
+            typeof (item as PendingSourceDoc).displayName === 'string'
+        )
+      ) {
+        setPendingSources(parsed);
+      }
+    } catch {
+      // Malformed/tampered param — silently ignored rather than crashing
+      // the composer; the user can still add sources normally.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Same mount-only, validate-before-trusting pattern as sourcesParam
+  // above. Arriving with a real selection context means the user
+  // deliberately picked one specific passage to ask about — Zoom-In is
+  // the closest EXISTING mode to "answer only from this," so it's
+  // defaulted here (never a new retrieval mode of its own — see the
+  // milestone report's AI Context Contract section for why global
+  // Zoom-In architecture itself was never touched to make this work).
+  // The user can still switch back to Prioritize via the Sources
+  // workspace like any other conversation.
+  useEffect(() => {
+    if (!selectionContextParam) return;
+    try {
+      const parsed = JSON.parse(selectionContextParam) as unknown;
+      if (
+        typeof parsed === 'object' &&
+        parsed !== null &&
+        typeof (parsed as PendingSelectionContext).documentId === 'string' &&
+        typeof (parsed as PendingSelectionContext).documentName === 'string' &&
+        typeof (parsed as PendingSelectionContext).pageNumber === 'number' &&
+        typeof (parsed as PendingSelectionContext).selectedText === 'string' &&
+        (parsed as PendingSelectionContext).selectedText.length > 0
+      ) {
+        setPendingSelectionContext(parsed as PendingSelectionContext);
+        setPendingMode('zoom-in');
+      }
+    } catch {
+      // Malformed/tampered param — silently ignored; the composer still
+      // works normally without it.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Same mount-only, validate-before-trusting pattern — the Notebook's
+  // multi-select counterpart to selectionContextParam above (M3.1
+  // Notebook spec §18/§19). Also defaults Zoom-In: the user picked
+  // specific evidence to ask about, same reasoning as the Reader case.
+  useEffect(() => {
+    if (!notebookContextParam) return;
+    try {
+      const parsed = JSON.parse(notebookContextParam) as unknown;
+      if (
+        Array.isArray(parsed) &&
+        parsed.length > 0 &&
+        parsed.every(
+          (item): item is TransientAIContextEntry =>
+            typeof item === 'object' &&
+            item !== null &&
+            typeof (item as TransientAIContextEntry).excerpt === 'string' &&
+            (item as TransientAIContextEntry).excerpt.length > 0
+        )
+      ) {
+        setPendingNotebookContext(parsed.slice(0, MAX_TRANSIENT_AI_CONTEXT_ENTRIES));
+        setPendingMode('zoom-in');
+      }
+    } catch {
+      // Malformed/tampered param — silently ignored; the composer still
+      // works normally without it.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -404,24 +551,52 @@ export default function NewChatScreen() {
   }
 
   async function handleAsk(): Promise<void> {
-    const question = query.trim();
+    const typedQuestion = query.trim();
     // A plain `phase` check isn't enough: two onPress calls fired back to
     // back (a fast double-click, or — the same failure mode — React Strict
     // Mode invoking a handler twice before either state update has landed)
     // would both read the same pre-update `phase` and both pass. The ref is
     // mutated synchronously, so the second call always sees the first's claim.
-    if (!question || isSubmittingRef.current) return;
+    if (!typedQuestion || isSubmittingRef.current) return;
     if (attachments.some((a) => a.error !== null)) return;
     isSubmittingRef.current = true;
     const attachmentsSnapshot = attachments;
     const useCorpusSnapshot = useCorpus;
     const sourceIdsSnapshot = pendingSources.map((doc) => doc.documentId);
     const modeSnapshot = pendingMode;
+    // Frontend Milestone 3 §14/§17, generalized by M3.1 Notebook spec §19
+    // — explicit, visible evidence (shown as chip(s) before this point)
+    // that becomes part of the actual question sent, not a separate
+    // hidden field: there is no per-turn "evidence" slot in the existing
+    // message contract, and adding one would mean a second message model
+    // (explicitly forbidden). Folding it into the query text is the
+    // smallest way to make it real, primary context for this one turn
+    // while reusing the EXACT existing send path — see
+    // lib/transientAIContext.ts's buildTransientContextPrefix, which
+    // produces byte-identical output to Milestone 3's original single-
+    // passage phrasing when there's exactly one entry.
+    const transientEntries: TransientAIContextEntry[] =
+      pendingNotebookContext.length > 0
+        ? pendingNotebookContext
+        : pendingSelectionContext
+          ? [
+              {
+                sourceType: 'reader-selection',
+                documentId: pendingSelectionContext.documentId,
+                documentTitle: pendingSelectionContext.documentName,
+                pageNumber: pendingSelectionContext.pageNumber,
+                excerpt: pendingSelectionContext.selectedText,
+              },
+            ]
+          : [];
+    const question = `${buildTransientContextPrefix(transientEntries)}${typedQuestion}`;
     setQuery('');
     clearAttachments();
     setUseCorpus(false);
     setPendingSources([]);
     setPendingMode('prioritize');
+    setPendingSelectionContext(null);
+    setPendingNotebookContext([]);
     setErrorMessage(null);
     setSubmittedQuestion(question);
     setSubmittedAttachments(attachmentsSnapshot);
@@ -446,7 +621,8 @@ export default function NewChatScreen() {
       );
     } catch (error) {
       // No conversation exists yet, so there's nothing for Retry to target
-      // — restore the input instead and let the user resubmit from scratch.
+      // — restore the input (and the selection context chip, if there was
+      // one) instead and let the user resubmit from scratch.
       isSubmittingRef.current = false;
       pendingRef.current = null;
       setSubmittedQuestion(null);
@@ -454,7 +630,9 @@ export default function NewChatScreen() {
       setAssistantTurn(null);
       setPhase('error');
       setErrorMessage(formatRequestError('POST', baseUrl, '/conversations', error));
-      setQuery(question);
+      setQuery(typedQuestion);
+      if (pendingSelectionContext) setPendingSelectionContext(pendingSelectionContext);
+      if (pendingNotebookContext.length > 0) setPendingNotebookContext(pendingNotebookContext);
     }
   }
 
@@ -581,6 +759,37 @@ export default function NewChatScreen() {
         </>
       }
     >
+      {pendingSelectionContext && (
+        <SelectionContextChip
+          context={pendingSelectionContext}
+          onRemove={() => setPendingSelectionContext(null)}
+        />
+      )}
+      {pendingNotebookContext.length > 0 && (
+        <TransientContextChips
+          entries={pendingNotebookContext}
+          onRemove={(index) =>
+            setPendingNotebookContext((prev) => prev.filter((_, i) => i !== index))
+          }
+        />
+      )}
+      {conversationScopeEnabled && showSourceChips && pendingSources.length > 0 && (
+        <SelectedSourceChips
+          sources={pendingSources}
+          onRemove={(documentId) =>
+            setPendingSources((prev) => {
+              const next = prev.filter((doc) => doc.documentId !== documentId);
+              // Frontend/Platform Milestone 3.2.2 Part D — removing the
+              // last selected source while in Zoom-In auto-falls-back to
+              // Prioritize in this same update, so the backend invariant
+              // (zoom_in_mode requires >=1 document) is never violated,
+              // and there's nothing left to guard against removal for.
+              if (next.length === 0 && pendingMode === 'zoom-in') setPendingMode('prioritize');
+              return next;
+            })
+          }
+        />
+      )}
       <AttachmentPreviewRow attachments={attachments} onRemove={removeAttachment} />
       {attachments.length > 0 && (
         <CorpusToggle value={useCorpus} onValueChange={setUseCorpus} disabled={isBusy} />
@@ -616,6 +825,7 @@ export default function NewChatScreen() {
                 assistant={assistantTurn}
                 userAttachments={submittedAttachments.map(attachmentChipFromPending)}
                 onCitationPress={() => {}}
+                sourceMode={submittedMode}
               />
               {phase === 'error' && (
                 <View style={styles.retryBox}>
@@ -705,6 +915,17 @@ export default function NewChatScreen() {
           initialSelection={pendingSources}
           initialMode={pendingMode}
           zoomInEnabled={zoomInEnabled}
+          // Frontend Milestone 2.1 — a not-yet-created conversation can
+          // never already belong to a project (project association only
+          // ever happens afterward, via the sidebar's "Add to project" on
+          // an existing conversation — see ChatSourcesPicker's
+          // `projectContext` prop docs), so this is explicitly `[]`
+          // rather than omitted, matching the prop's own default but
+          // documenting that it's a deliberate fact about this screen,
+          // not an oversight. `scope` is likewise omitted — a brand-new
+          // conversation has no persisted scope yet, and every tier
+          // defaults to on, exactly matching the picker's own defaults.
+          projectContext={[]}
           onClose={() => setSourcesPickerOpen(false)}
           onSaved={(selection, mode) => {
             setPendingSources(selection);

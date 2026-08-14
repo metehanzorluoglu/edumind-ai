@@ -13,13 +13,19 @@ export const DOCUMENT_TYPES = [
   'curriculum_document',
 ] as const;
 
-export const DOCUMENT_TYPE_LABELS: Record<(typeof DOCUMENT_TYPES)[number], string> = {
+export const DOCUMENT_TYPE_LABELS: Record<(typeof DOCUMENT_TYPES)[number] | 'unknown', string> = {
   journal_article: 'Journal article',
   practitioner_article: 'Practitioner article',
   policy_document: 'Policy document',
   report: 'Report',
   review_article: 'Review article',
   curriculum_document: 'Curriculum document',
+  // Frontend/Platform Milestone 3.2.1 Part C — the normal upload UI no
+  // longer collects this (see documents/index.tsx), so most newly
+  // uploaded documents will carry this value. Not in DOCUMENT_TYPES
+  // (below) on purpose: it's the server-side default for "not
+  // classified," never a choice offered in a filter/upload picker.
+  unknown: 'Unclassified',
 };
 
 export const JOURNAL_QUARTILES = ['Q1', 'Q2'] as const;

@@ -8,6 +8,7 @@ from app.ingestion.metadata_schema import DocumentMetadata
 from app.vectorstore.errors import VectorStoreError
 from app.vectorstore.schemas import (
     ChunkPayload,
+    DocumentChunkContent,
     DocumentRecord,
     VectorSearchResult,
     VectorStoreFilter,
@@ -385,6 +386,46 @@ class QdrantVectorStore:
             ingested_at=chunks[0].ingested_at,
             chunk_count=len(chunks),
         )
+
+    def get_document_chunks(
+        self, document_id: str, *, user_id: str
+    ) -> list[DocumentChunkContent]:
+        """Frontend Milestone 3 (Document Reader): every chunk belonging to
+        this document, owned by user_id, in reading order (chunk_index
+        ascending) — the reconstruction of the document's extracted text
+        (see app/api/routes_documents.py's GET .../content). This is the
+        one and only place chunk *text* is read back out of Qdrant for
+        display rather than retrieval; the frontend never queries Qdrant
+        directly (see that route's own docs). Returns [] for an unknown or
+        not-owned document_id — same "404, not 403" shape every other
+        per-document lookup here follows; the route maps that through
+        DocumentsRepository's own SQL-backed ownership check instead of
+        relying on this alone, so a truly nonexistent document never even
+        reaches Qdrant."""
+        try:
+            records, _next_offset = self._client.scroll(
+                collection_name=self._collection_name,
+                scroll_filter=self._document_id_filter(document_id, user_id=user_id),
+                limit=_SCROLL_SAFETY_CAP,
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception as exc:
+            raise VectorStoreError(f"Could not reach Qdrant to read document: {exc}") from exc
+
+        chunks: list[DocumentChunkContent] = []
+        for record in records:
+            payload = ChunkPayload.model_validate(record.payload)
+            chunks.append(
+                DocumentChunkContent(
+                    chunk_id=str(record.id),
+                    chunk_index=payload.chunk_index,
+                    page_number=payload.page_number,
+                    text=payload.text,
+                )
+            )
+        chunks.sort(key=lambda chunk: chunk.chunk_index)
+        return chunks
 
     def delete_document(self, document_id: str, *, user_id: str) -> int:
         """Deletes every chunk belonging to document_id AND owned by

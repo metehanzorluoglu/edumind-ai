@@ -1072,7 +1072,10 @@ export interface paths {
          * @description Deletes a document and every chunk belonging to it, identified by its
          *     stable document_id (never by filename — see delete_document_by_id), and
          *     only if it belongs to the authenticated caller. Shared with
-         *     `python -m cli.documents remove`.
+         *     `python -m cli.documents remove`. Also deletes the document's original
+         *     stored file, if any (Frontend Milestone 3.1) — never its Notebook
+         *     entries, which survive by design (see delete_document_by_id's
+         *     docstring).
          */
         delete: operations["delete_document_route_documents__document_id__delete"];
         options?: never;
@@ -1088,6 +1091,131 @@ export interface paths {
          *     gate rather than relying on a router simply not being included).
          */
         patch: operations["move_document_route_documents__document_id__patch"];
+        trace?: never;
+    };
+    "/documents/{document_id}/file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Document File
+         * @description Frontend Milestone 3.1 (Original Document Reader): streams the
+         *     original uploaded file (real PDF bytes for a PDF — never a
+         *     server-side screenshot, never OCR output) so the browser's PDF.js
+         *     reader can render actual pages.
+         *
+         *     Ownership-checked exactly like every other per-document endpoint —
+         *     `documents_repository.get` returns None for a document that doesn't
+         *     exist *or* belongs to a different user, both mapped to the same 404
+         *     (never a 403 that would confirm the ID belongs to someone else, never
+         *     a bare static-file mount that would make this URL guessable/public —
+         *     this route requires the same auth dependency as the rest of this
+         *     router). Also 404s (rather than 500ing) for a legacy document with no
+         *     stored original — see Document.storage_key's docstring — so the
+         *     frontend's fallback-to-extracted-text logic has a clean, unambiguous
+         *     signal to act on; DocumentSummary/DocumentUploadResponse already tell
+         *     the frontend `original_file_available` up front so this is normally
+         *     only ever called when it's true.
+         *
+         *     Content-Type is the server-determined MIME for the document's
+         *     file_format (never a client-supplied value); Content-Disposition is
+         *     `inline` (a PDF should render on the page, not force a download) with
+         *     the real source filename for a save-as. Range requests (needed by
+         *     PDF.js's incremental loading for large PDFs) are handled natively by
+         *     Starlette's FileResponse.
+         */
+        get: operations["get_document_file_documents__document_id__file_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/documents/{document_id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Document Content
+         * @description The reader's extracted-text/citation read. Ownership is checked
+         *     first against the SQL `documents` table (cheap, authoritative, no
+         *     Qdrant round trip for a document that isn't the caller's) — only once
+         *     that passes does this read the document's chunks back out of Qdrant
+         *     for display. This is always EXTRACTED TEXT, used for RAG/citations/
+         *     search and — as of Frontend Milestone 3.1 — for the legacy fallback
+         *     reader and for best-effort PDF-selection-to-chunk mapping (see
+         *     GET /documents/{id}/file for the original file itself, when
+         *     `original_file_available` is true; a document from before that
+         *     milestone has no original file, and this endpoint's chunks remain its
+         *     ONLY renderable content — see Document.storage_key's docstring). Never
+         *     queried directly by the frontend — Qdrant is not a frontend-reachable
+         *     service in this system.
+         */
+        get: operations["get_document_content_documents__document_id__content_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/documents/{document_id}/highlights": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Document Highlights */
+        get: operations["list_document_highlights_documents__document_id__highlights_get"];
+        put?: never;
+        /**
+         * Create Document Highlight
+         * @description The SEMANTIC anchor (`chunk_id`/`chunk_index`/`page_number`), when
+         *     provided, is validated against the document's REAL current chunks —
+         *     never trusted as an opaque client-supplied value, so a highlight can
+         *     never be created pointing at a chunk that doesn't actually belong to
+         *     this document (or a document the caller doesn't own). Frontend
+         *     Milestone 3.1: `chunk_id`/`chunk_index` may instead be omitted for a
+         *     highlight made directly on the original PDF's text layer whose
+         *     selection could not be best-effort matched to any existing chunk —
+         *     that highlight is still created (visual-only, `visual_anchor`
+         *     required in that case — enforced by the request schema itself), never
+         *     rejected or given a fabricated chunk match. `page_number` is always
+         *     sanity-checked against the document's own page_count either way.
+         */
+        post: operations["create_document_highlight_documents__document_id__highlights_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/documents/{document_id}/highlights/{highlight_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Document Highlight */
+        delete: operations["delete_document_highlight_documents__document_id__highlights__highlight_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Document Highlight */
+        patch: operations["update_document_highlight_documents__document_id__highlights__highlight_id__patch"];
         trace?: never;
     };
     "/folders": {
@@ -1154,6 +1282,125 @@ export interface paths {
         head?: never;
         /** Update Folder */
         patch: operations["update_folder_folders__folder_id__patch"];
+        trace?: never;
+    };
+    "/notebooks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Notebooks */
+        get: operations["list_notebooks_notebooks_get"];
+        put?: never;
+        /** Create Notebook */
+        post: operations["create_notebook_notebooks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/notebooks/{notebook_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Notebook
+         * @description Deletes the notebook and only its own entries — never the source
+         *     documents, highlights, or conversations any entry pointed at (M3.1
+         *     Notebook spec §1).
+         */
+        delete: operations["delete_notebook_notebooks__notebook_id__delete"];
+        options?: never;
+        head?: never;
+        /** Rename Notebook */
+        patch: operations["rename_notebook_notebooks__notebook_id__patch"];
+        trace?: never;
+    };
+    "/notebooks/{notebook_id}/entries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Notebook Entries */
+        get: operations["list_notebook_entries_notebooks__notebook_id__entries_get"];
+        put?: never;
+        /**
+         * Add Notebook Entry
+         * @description Accepts either an `entry_type: "highlight"` or `entry_type:
+         *     "manual"` body (see AddHighlightEntryRequest/AddManualEntryRequest) —
+         *     a plain dict param plus TypeAdapter validation, since FastAPI's
+         *     Pydantic-model-body binding does not support a bare (non-field)
+         *     discriminated union as the whole request body.
+         */
+        post: operations["add_notebook_entry_notebooks__notebook_id__entries_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/notebooks/{notebook_id}/entries/{entry_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove Notebook Entry
+         * @description Removes this entry from this notebook only — never deletes the
+         *     source DocumentHighlight, Document, or any other notebook's copy of
+         *     the same highlight (M3.1 Notebook spec §5's asymmetry runs the other
+         *     way too: removing an entry here has zero effect on the Reader).
+         */
+        delete: operations["remove_notebook_entry_notebooks__notebook_id__entries__entry_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Notebook Entry
+         * @description The note is the only mutable field on an entry — for a manual entry
+         *     this IS the entry's content; for a highlight-derived entry this edits
+         *     the independently-persisted snapshot copy, never the live highlight's
+         *     own note (see NotebookEntry's docstring).
+         */
+        patch: operations["update_notebook_entry_notebooks__notebook_id__entries__entry_id__patch"];
+        trace?: never;
+    };
+    "/documents/{document_id}/highlights/{highlight_id}/notebooks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Highlight Notebook Membership
+         * @description Backs the Reader's "Saved to N notebook(s)" indicator and the
+         *     add-to-notebook picker's "already saved here" checkmarks — never
+         *     exposes another user's notebooks even if they happened to save an
+         *     (impossible, since highlights are per-user) identical highlight_id.
+         */
+        get: operations["get_highlight_notebook_membership_documents__document_id__highlights__highlight_id__notebooks_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/attachments/{attachment_id}/promote": {
@@ -1334,11 +1581,8 @@ export interface components {
         Body_post_document_documents_post: {
             /** File */
             file: string;
-            /**
-             * Document Type
-             * @enum {string}
-             */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document";
+            /** Document Type */
+            document_type?: ("journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown") | null;
             /** Journal Quartile */
             journal_quartile?: ("Q1" | "Q2") | null;
             /** Title */
@@ -1372,7 +1616,7 @@ export interface components {
              * Document Type
              * @enum {string}
              */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document";
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
             /** Journal Quartile */
             journal_quartile?: ("Q1" | "Q2") | null;
             /** Title */
@@ -1422,7 +1666,7 @@ export interface components {
              * Document Type
              * @enum {string}
              */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document";
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
             /** Journal Quartile */
             journal_quartile?: ("Q1" | "Q2") | null;
             /** Page Start */
@@ -1462,6 +1706,8 @@ export interface components {
             updated_at: string;
             /** Messages */
             messages: components["schemas"]["MessageResponse"][];
+            /** Projects */
+            projects?: components["schemas"]["ConversationProjectResponse"][];
         };
         /** ConversationDocumentListResponse */
         ConversationDocumentListResponse: {
@@ -1480,7 +1726,7 @@ export interface components {
              * Document Type
              * @enum {string}
              */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document";
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
             /**
              * Added At
              * Format: date-time
@@ -1493,6 +1739,24 @@ export interface components {
             conversations: components["schemas"]["ConversationSummaryResponse"][];
             /** Total */
             total: number;
+        };
+        /**
+         * ConversationProjectResponse
+         * @description Frontend Milestone 2.1: the authoritative "which project(s) is this
+         *     conversation actually in" signal — see
+         *     ProjectsRepository.get_project_refs_for_conversation. A conversation
+         *     can belong to zero, one, or several projects (ProjectConversation is a
+         *     genuine many-to-many association, never assume exactly one), so this
+         *     is always a list, never a single nullable project. The frontend must
+         *     not infer project membership from anything else (conversation_scope's
+         *     `project_enabled` toggle, sidebar location, title, ...) — this list is
+         *     the one source of truth.
+         */
+        ConversationProjectResponse: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
         };
         /**
          * ConversationScopeResponse
@@ -1538,12 +1802,47 @@ export interface components {
             /** Last Message Preview */
             last_message_preview?: string | null;
         };
+        /**
+         * CreateDocumentHighlightRequest
+         * @description POST /documents/{id}/highlights. When `chunk_id`/`chunk_index` ARE
+         *     given, they must describe a chunk that genuinely belongs to this
+         *     document — validated against the document's own real content (see
+         *     routes_documents.py's create_document_highlight), never trusted as
+         *     opaque client-supplied values. Frontend Milestone 3.1: both are now
+         *     OPTIONAL (must be given together, or omitted together) — a highlight
+         *     made directly on the original PDF's text layer may have no
+         *     best-effort match against any existing chunk, and is still saved as a
+         *     visual-only highlight rather than rejected (see
+         *     HighlightVisualAnchor's docstring for the visual half of the anchor,
+         *     which is required whenever chunk_id is omitted — a highlight needs at
+         *     least one real anchor). `selected_text` is capped generously (not the
+         *     whole document) — a highlight is a passage, not a bulk copy-paste of
+         *     everything.
+         */
+        CreateDocumentHighlightRequest: {
+            /** Chunk Id */
+            chunk_id?: string | null;
+            /** Chunk Index */
+            chunk_index?: number | null;
+            /** Page Number */
+            page_number: number;
+            /** Selected Text */
+            selected_text: string;
+            /** Note Text */
+            note_text?: string | null;
+            visual_anchor?: components["schemas"]["HighlightVisualAnchor"] | null;
+        };
         /** CreateFolderRequest */
         CreateFolderRequest: {
             /** Name */
             name: string;
             /** Parent Id */
             parent_id?: string | null;
+        };
+        /** CreateNotebookRequest */
+        CreateNotebookRequest: {
+            /** Name */
+            name: string;
         };
         /** CreateProjectNoteRequest */
         CreateProjectNoteRequest: {
@@ -1575,6 +1874,57 @@ export interface components {
             /** Display Name */
             display_name?: string | null;
         };
+        /**
+         * DocumentContentChunk
+         * @description Frontend Milestone 3 (Document Reader): one chunk of a document's
+         *     extracted text, in reading order. `chunk_id` is the same deterministic
+         *     id citations already carry (MessageSourceResponse.chunk_id) — the
+         *     anchor a highlight or a "go to source" link keys off.
+         */
+        DocumentContentChunk: {
+            /** Chunk Id */
+            chunk_id: string;
+            /** Chunk Index */
+            chunk_index: number;
+            /** Page Number */
+            page_number: number;
+            /** Text */
+            text: string;
+        };
+        /**
+         * DocumentContentResponse
+         * @description GET /documents/{id}/content — Frontend Milestone 3 (Document
+         *     Reader). This is EXTRACTED TEXT, not the original file: no original
+         *     upload is retained anywhere in this system (see
+         *     app/core/document_ingestion.py's docstring / cli/documents.py's
+         *     reingest command, both explicit about this), so the reader renders the
+         *     same chunk text retrieval already uses — grouped by page_number on the
+         *     frontend — rather than a PDF/DOCX page image. `chunks` is ordered by
+         *     chunk_index (reading order); a page may span more than one chunk for
+         *     unusually long pages (see app/ingestion/chunker.py's per-page
+         *     chunk_size), so the frontend groups consecutive chunks sharing a
+         *     page_number into one page section rather than assuming one chunk per
+         *     page.
+         */
+        DocumentContentResponse: {
+            /** Document Id */
+            document_id: string;
+            /** Title */
+            title?: string | null;
+            /** Source Filename */
+            source_filename: string;
+            /** File Format */
+            file_format: string;
+            /** Page Count */
+            page_count: number;
+            /** Chunks */
+            chunks: components["schemas"]["DocumentContentChunk"][];
+            /**
+             * Original File Available
+             * @default false
+             */
+            original_file_available: boolean;
+        };
         /** DocumentDeleteResponse */
         DocumentDeleteResponse: {
             /** Deleted */
@@ -1583,6 +1933,48 @@ export interface components {
             document_id: string;
             /** Deleted Chunks */
             deleted_chunks: number;
+        };
+        /** DocumentHighlightListResponse */
+        DocumentHighlightListResponse: {
+            /** Highlights */
+            highlights: components["schemas"]["DocumentHighlightResponse"][];
+        };
+        /**
+         * DocumentHighlightResponse
+         * @description One saved highlight (optionally with a note) — see
+         *     app/db/models_documents.py's DocumentHighlight docstring for the dual
+         *     anchor design. `chunk_id`/`chunk_index` (the SEMANTIC anchor) are null
+         *     for a PDF highlight whose selection could not be mapped to any real
+         *     chunk — "semantic anchor unavailable," never a fabricated match.
+         *     `visual_anchor` (the VISUAL anchor) is null for a highlight made in the
+         *     extracted-text reader, which has no PDF geometry.
+         */
+        DocumentHighlightResponse: {
+            /** Id */
+            id: string;
+            /** Document Id */
+            document_id: string;
+            /** Chunk Id */
+            chunk_id?: string | null;
+            /** Chunk Index */
+            chunk_index?: number | null;
+            /** Page Number */
+            page_number: number;
+            /** Selected Text */
+            selected_text: string;
+            /** Note Text */
+            note_text?: string | null;
+            visual_anchor?: components["schemas"]["HighlightVisualAnchor"] | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
         };
         /**
          * DocumentJobResponse
@@ -1668,11 +2060,13 @@ export interface components {
             source_filename: string;
             /** Folder Id */
             folder_id?: string | null;
+            /** Folder Name */
+            folder_name?: string | null;
             /**
              * Document Type
              * @enum {string}
              */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document";
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
             /** Journal Quartile */
             journal_quartile?: ("Q1" | "Q2") | null;
             /** Title */
@@ -1694,6 +2088,11 @@ export interface components {
              * Format: date-time
              */
             ingested_at: string;
+            /**
+             * Original File Available
+             * @default false
+             */
+            original_file_available: boolean;
         };
         /**
          * DocumentUploadAcceptedResponse
@@ -1717,7 +2116,7 @@ export interface components {
              * Document Type
              * @enum {string}
              */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document";
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
             /** Journal Quartile */
             journal_quartile?: ("Q1" | "Q2") | null;
             /** Title */
@@ -1755,7 +2154,7 @@ export interface components {
              * Document Type
              * @enum {string}
              */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document";
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
             /** Journal Quartile */
             journal_quartile?: ("Q1" | "Q2") | null;
             /** Title */
@@ -1779,6 +2178,11 @@ export interface components {
              * Format: date-time
              */
             ingested_at: string;
+            /**
+             * Original File Available
+             * @default false
+             */
+            original_file_available: boolean;
         };
         /** DocumentUsedResponse */
         DocumentUsedResponse: {
@@ -1921,6 +2325,21 @@ export interface components {
             /** Version */
             version: string;
         };
+        /**
+         * HighlightVisualAnchor
+         * @description Frontend Milestone 3.1: the VISUAL half of a highlight's dual anchor
+         *     — one rectangle per visual line-fragment of the original PDF text
+         *     selection, in PDF user-space points (PDF.js's
+         *     viewport.convertToPdfPoint output), NOT CSS pixels — so the frontend
+         *     can redraw the exact same highlight correctly at any zoom level via
+         *     viewport.convertToViewportPoint. Each rect is `[x0, y0, x1, y1]`.
+         *     Opaque to the backend: stored as-is, never interpreted or validated
+         *     beyond shape, and only ever produced/consumed by the PDF reader.
+         */
+        HighlightVisualAnchor: {
+            /** Rects */
+            rects: number[][];
+        };
         /** LoginRequest */
         LoginRequest: {
             /** Email */
@@ -2048,7 +2467,7 @@ export interface components {
              * Document Type
              * @enum {string}
              */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document";
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
             /** Journal Quartile */
             journal_quartile?: ("Q1" | "Q2") | null;
             /** Doi */
@@ -2074,6 +2493,93 @@ export interface components {
         MoveDocumentRequest: {
             /** Folder Id */
             folder_id?: string | null;
+        };
+        /** NotebookEntryListResponse */
+        NotebookEntryListResponse: {
+            /** Entries */
+            entries: components["schemas"]["NotebookEntryResponse"][];
+            /** Total */
+            total: number;
+        };
+        /** NotebookEntryResponse */
+        NotebookEntryResponse: {
+            /** Id */
+            id: string;
+            /** Notebook Id */
+            notebook_id: string;
+            /**
+             * Entry Type
+             * @enum {string}
+             */
+            entry_type: "highlight" | "manual";
+            /** Highlight Id */
+            highlight_id?: string | null;
+            /** Document Id */
+            document_id?: string | null;
+            /** Document Title */
+            document_title?: string | null;
+            /** Page Number */
+            page_number?: number | null;
+            /** Excerpt */
+            excerpt?: string | null;
+            /** Note Text */
+            note_text?: string | null;
+            /** Chunk Id */
+            chunk_id?: string | null;
+            /** Chunk Index */
+            chunk_index?: number | null;
+            visual_anchor?: components["schemas"]["HighlightVisualAnchor"] | null;
+            /**
+             * Source Available
+             * @default false
+             */
+            source_available: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** NotebookListResponse */
+        NotebookListResponse: {
+            /** Notebooks */
+            notebooks: components["schemas"]["NotebookResponse"][];
+            /** Total */
+            total: number;
+        };
+        /**
+         * NotebookMembershipResponse
+         * @description GET /documents/{document_id}/highlights/{highlight_id}/notebooks —
+         *     backs the Reader's "Saved to N notebook(s)" indicator and the
+         *     add-to-notebook picker's "already saved here" checkmarks.
+         */
+        NotebookMembershipResponse: {
+            /** Notebooks */
+            notebooks: components["schemas"]["NotebookResponse"][];
+        };
+        /** NotebookResponse */
+        NotebookResponse: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Entry Count */
+            entry_count: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
         };
         /** ProjectAttachmentListResponse */
         ProjectAttachmentListResponse: {
@@ -2146,7 +2652,7 @@ export interface components {
              * Document Type
              * @enum {string}
              */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document";
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
             /**
              * Added At
              * Format: date-time
@@ -2320,7 +2826,7 @@ export interface components {
              * Document Type
              * @enum {string}
              */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document";
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
             /** Journal Quartile */
             journal_quartile?: ("Q1" | "Q2") | null;
             /** Title */
@@ -2355,7 +2861,7 @@ export interface components {
              * Document Type
              * @enum {string}
              */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document";
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
             /** Reused */
             reused: boolean;
         };
@@ -2476,6 +2982,11 @@ export interface components {
             /** Title */
             title: string;
         };
+        /** RenameNotebookRequest */
+        RenameNotebookRequest: {
+            /** Name */
+            name: string;
+        };
         /**
          * ReplaceConversationDocumentsRequest
          * @description PUT .../documents — makes `document_ids` the conversation's entire
@@ -2531,7 +3042,7 @@ export interface components {
         /** RetrievalFilters */
         RetrievalFilters: {
             /** Document Type */
-            document_type?: ("journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document") | null;
+            document_type?: ("journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown") | null;
             /** Journal Quartile */
             journal_quartile?: ("Q1" | "Q2") | null;
             /** Publication Year From */
@@ -2573,7 +3084,7 @@ export interface components {
              * Document Type
              * @enum {string}
              */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document";
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
             /** Journal Quartile */
             journal_quartile?: ("Q1" | "Q2") | null;
             /** Title */
@@ -2755,6 +3266,16 @@ export interface components {
             zoom_in_mode?: boolean | null;
         };
         /**
+         * UpdateDocumentHighlightRequest
+         * @description PATCH /documents/{id}/highlights/{highlight_id} — the note is the
+         *     only mutable field; the anchor and selected-text snapshot never
+         *     change after creation (that would silently move the highlight).
+         */
+        UpdateDocumentHighlightRequest: {
+            /** Note Text */
+            note_text?: string | null;
+        };
+        /**
          * UpdateFolderRequest
          * @description Partial update — only fields actually present in the request body
          *     are applied (see `model_fields_set`, same convention as
@@ -2768,6 +3289,11 @@ export interface components {
             name?: string | null;
             /** Parent Id */
             parent_id?: string | null;
+        };
+        /** UpdateNotebookEntryRequest */
+        UpdateNotebookEntryRequest: {
+            /** Note Text */
+            note_text?: string | null;
         };
         /**
          * UpdateProjectKnowledgeItemRequest
@@ -4798,6 +5324,7 @@ export interface operations {
             query?: {
                 limit?: number;
                 offset?: number;
+                q?: string | null;
             };
             header?: {
                 authorization?: string | null;
@@ -5000,6 +5527,212 @@ export interface operations {
             };
         };
     };
+    get_document_file_documents__document_id__file_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_document_content_documents__document_id__content_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentContentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_document_highlights_documents__document_id__highlights_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentHighlightListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_document_highlight_documents__document_id__highlights_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateDocumentHighlightRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentHighlightResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_document_highlight_documents__document_id__highlights__highlight_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                document_id: string;
+                highlight_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_document_highlight_documents__document_id__highlights__highlight_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                document_id: string;
+                highlight_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateDocumentHighlightRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentHighlightResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     create_folder_folders_post: {
         parameters: {
             query?: never;
@@ -5131,6 +5864,322 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FolderResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_notebooks_notebooks_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotebookListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_notebook_notebooks_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateNotebookRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotebookResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_notebook_notebooks__notebook_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                notebook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_notebook_notebooks__notebook_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                notebook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenameNotebookRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotebookResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_notebook_entries_notebooks__notebook_id__entries_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                notebook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotebookEntryListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_notebook_entry_notebooks__notebook_id__entries_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                notebook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotebookEntryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_notebook_entry_notebooks__notebook_id__entries__entry_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                notebook_id: string;
+                entry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_notebook_entry_notebooks__notebook_id__entries__entry_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                notebook_id: string;
+                entry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateNotebookEntryRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotebookEntryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_highlight_notebook_membership_documents__document_id__highlights__highlight_id__notebooks_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                document_id: string;
+                highlight_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotebookMembershipResponse"];
                 };
             };
             /** @description Validation Error */

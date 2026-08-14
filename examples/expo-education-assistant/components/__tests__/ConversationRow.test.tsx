@@ -314,3 +314,43 @@ describe('ConversationRow rename', () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Regression test for a real-browser-only bug found during Frontend
+ * Milestone 2's validation (react-test-renderer's fake DOM never surfaces
+ * it — see that milestone's report): `last_message_preview` can be `''`
+ * (not null) while a conversation's latest message is still empty/
+ * streaming (see rag-backend's `_preview`). `{lastMessagePreview && (...)}`
+ * treats that as falsy-but-not-nothing, so the `&&` returns the empty
+ * string itself, which React then renders as a literal text-node child of
+ * a <View>/<Pressable> — invisible, but logs "Unexpected text node: . A
+ * text node cannot be a child of a <View>." in a real browser. Fixed by
+ * wrapping the check in Boolean(...).
+ */
+describe('ConversationRow lastMessagePreview edge cases', () => {
+  it('renders only the title Text — no extra node — when lastMessagePreview is an empty string', async () => {
+    const renderer = await renderRow({
+      item: { id: 'c1', title: 'Guided reading question', lastMessagePreview: '' },
+    });
+
+    const texts = renderer.root.findAll((node) => String(node.type) === 'Text');
+    // Only the title Text renders when the preview is empty — no second
+    // Text for the (empty) preview, and no raw '' child anywhere.
+    expect(texts.filter((node) => node.children.includes('Guided reading question'))).toHaveLength(
+      1
+    );
+    expect(texts.some((node) => node.children.includes(''))).toBe(false);
+  });
+
+  it('still renders the preview Text when lastMessagePreview is a real string', async () => {
+    const renderer = await renderRow({
+      item: {
+        id: 'c1',
+        title: 'Guided reading question',
+        lastMessagePreview: 'Here is the answer',
+      },
+    });
+
+    expect(queryByText(renderer.root, 'Here is the answer')).not.toBeNull();
+  });
+});

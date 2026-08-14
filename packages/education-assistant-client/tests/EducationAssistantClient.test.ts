@@ -366,6 +366,407 @@ describe('deleteDocument', () => {
   });
 });
 
+describe('Document Reader & Highlights (Frontend Milestone 3)', () => {
+  it('getDocumentContent() GETs /documents/{id}/content and returns the parsed body', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        document_id: 'doc-1',
+        title: 'A Study',
+        source_filename: 'paper.pdf',
+        file_format: 'pdf',
+        page_count: 1,
+        chunks: [{ chunk_id: 'c0', chunk_index: 0, page_number: 1, text: 'Page one text.' }],
+      })
+    );
+    const result = await makeClient().getDocumentContent('doc-1');
+
+    expect(result.chunks).toHaveLength(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/documents/doc-1/content');
+    expect(init.method).toBe('GET');
+  });
+
+  it('getDocumentContent() rejects with NotFoundError on a 404', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'No document found' }, 404));
+    await expect(makeClient().getDocumentContent('missing')).rejects.toBeInstanceOf(
+      NotFoundError
+    );
+  });
+
+  it('listDocumentHighlights() GETs /documents/{id}/highlights', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ highlights: [] }));
+    const result = await makeClient().listDocumentHighlights('doc-1');
+
+    expect(result.highlights).toEqual([]);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/documents/doc-1/highlights');
+    expect(init.method).toBe('GET');
+  });
+
+  it('createDocumentHighlight() POSTs snake_case body fields to /documents/{id}/highlights', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'h1',
+        document_id: 'doc-1',
+        chunk_id: 'c0',
+        chunk_index: 0,
+        page_number: 1,
+        selected_text: 'Students completed a 12-week program.',
+        note_text: null,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      })
+    );
+    const result = await makeClient().createDocumentHighlight('doc-1', {
+      chunkId: 'c0',
+      chunkIndex: 0,
+      pageNumber: 1,
+      selectedText: 'Students completed a 12-week program.',
+      noteText: 'Worth revisiting.',
+    });
+
+    expect(result.id).toBe('h1');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/documents/doc-1/highlights');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      chunk_id: 'c0',
+      chunk_index: 0,
+      page_number: 1,
+      selected_text: 'Students completed a 12-week program.',
+      note_text: 'Worth revisiting.',
+      visual_anchor: null,
+    });
+  });
+
+  it('createDocumentHighlight() defaults an omitted noteText to null, never undefined', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'h1',
+        document_id: 'doc-1',
+        chunk_id: 'c0',
+        chunk_index: 0,
+        page_number: 1,
+        selected_text: 'text',
+        note_text: null,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      })
+    );
+    await makeClient().createDocumentHighlight('doc-1', {
+      chunkId: 'c0',
+      chunkIndex: 0,
+      pageNumber: 1,
+      selectedText: 'text',
+    });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(init.body as string).note_text).toBeNull();
+  });
+
+  it('createDocumentHighlight() rejects with a 422-mapped error for a forged/mismatched anchor', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ detail: 'chunk_id/chunk_index/page_number do not match a real chunk' }, 422)
+    );
+    await expect(
+      makeClient().createDocumentHighlight('doc-1', {
+        chunkId: 'bogus',
+        chunkIndex: 0,
+        pageNumber: 1,
+        selectedText: 'text',
+      })
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('updateDocumentHighlight() PATCHes { note_text } to /documents/{id}/highlights/{highlightId}', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'h1',
+        document_id: 'doc-1',
+        chunk_id: 'c0',
+        chunk_index: 0,
+        page_number: 1,
+        selected_text: 'text',
+        note_text: 'Updated.',
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      })
+    );
+    const result = await makeClient().updateDocumentHighlight('doc-1', 'h1', {
+      noteText: 'Updated.',
+    });
+
+    expect(result.note_text).toBe('Updated.');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/documents/doc-1/highlights/h1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body as string)).toEqual({ note_text: 'Updated.' });
+  });
+
+  it('updateDocumentHighlight() rejects with NotFoundError for another user\'s highlight', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Highlight not found' }, 404));
+    await expect(
+      makeClient().updateDocumentHighlight('doc-1', 'not-mine', { noteText: 'x' })
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('deleteDocumentHighlight() DELETEs /documents/{id}/highlights/{highlightId}', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await makeClient().deleteDocumentHighlight('doc-1', 'h1');
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/documents/doc-1/highlights/h1');
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('deleteDocumentHighlight() rejects with NotFoundError on a 404', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Highlight not found' }, 404));
+    await expect(
+      makeClient().deleteDocumentHighlight('doc-1', 'missing')
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('createDocumentHighlight() sends null chunk_id/chunk_index and a real visual_anchor for a PDF-only highlight', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'h2',
+        document_id: 'doc-1',
+        chunk_id: null,
+        chunk_index: null,
+        page_number: 3,
+        selected_text: 'visual-only text',
+        note_text: null,
+        visual_anchor: { rects: [[10, 20, 100, 40]] },
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      })
+    );
+    const result = await makeClient().createDocumentHighlight('doc-1', {
+      pageNumber: 3,
+      selectedText: 'visual-only text',
+      visualAnchor: { rects: [[10, 20, 100, 40]] },
+    });
+
+    expect(result.chunk_id).toBeNull();
+    expect(result.visual_anchor).toEqual({ rects: [[10, 20, 100, 40]] });
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(init.body as string)).toEqual({
+      chunk_id: null,
+      chunk_index: null,
+      page_number: 3,
+      selected_text: 'visual-only text',
+      note_text: null,
+      visual_anchor: { rects: [[10, 20, 100, 40]] },
+    });
+  });
+
+  it('getHighlightNotebookMembership() GETs /documents/{id}/highlights/{highlightId}/notebooks', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        notebooks: [
+          { id: 'nb-1', name: 'Reading List', entry_count: 2, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
+        ],
+      })
+    );
+    const result = await makeClient().getHighlightNotebookMembership('doc-1', 'h1');
+
+    expect(result.notebooks).toHaveLength(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/documents/doc-1/highlights/h1/notebooks');
+    expect(init.method).toBe('GET');
+  });
+});
+
+describe('getDocumentFileRequestInit (Frontend Milestone 3.1)', () => {
+  it('resolves the authenticated file URL + Authorization header, never an unauthenticated URL', async () => {
+    const result = await makeClient().getDocumentFileRequestInit('doc-1');
+
+    expect(result.url).toBe('http://localhost:8000/documents/doc-1/file');
+    expect(result.httpHeaders).toEqual({ Authorization: 'Bearer test-token' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('returns empty httpHeaders (no Authorization key) when unauthenticated', async () => {
+    const result = await makeClient({ getAccessToken: async () => null }).getDocumentFileRequestInit(
+      'doc-1'
+    );
+    expect(result.httpHeaders).toEqual({});
+  });
+
+  it('encodes a document id containing special characters into the URL path', async () => {
+    const result = await makeClient().getDocumentFileRequestInit('a/b c');
+    expect(result.url).toBe('http://localhost:8000/documents/a%2Fb%20c/file');
+  });
+});
+
+describe('Notebook (Frontend Milestone 3.1 — Research Notes Workspace)', () => {
+  it('listNotebooks() GETs /notebooks with limit/offset', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ notebooks: [], total: 0 }));
+    await makeClient().listNotebooks({ limit: 5, offset: 10 });
+
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/notebooks?limit=5&offset=10');
+  });
+
+  it('createNotebook() POSTs { name } to /notebooks', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'nb-1',
+        name: 'Reading List',
+        entry_count: 0,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      })
+    );
+    const result = await makeClient().createNotebook({ name: 'Reading List' });
+
+    expect(result.id).toBe('nb-1');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/notebooks');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({ name: 'Reading List' });
+  });
+
+  it('renameNotebook() PATCHes { name }', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'nb-1',
+        name: 'Renamed',
+        entry_count: 0,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      })
+    );
+    await makeClient().renameNotebook('nb-1', { name: 'Renamed' });
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/notebooks/nb-1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body as string)).toEqual({ name: 'Renamed' });
+  });
+
+  it('deleteNotebook() DELETEs /notebooks/{id} and rejects with NotFoundError on a 404', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await makeClient().deleteNotebook('nb-1');
+    expect(fetchMock.mock.calls[0]![1].method).toBe('DELETE');
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Notebook not found' }, 404));
+    await expect(makeClient().deleteNotebook('missing')).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('listNotebookEntries() GETs /notebooks/{id}/entries', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ entries: [], total: 0 }));
+    await makeClient().listNotebookEntries('nb-1', { limit: 20, offset: 0 });
+
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/notebooks/nb-1/entries?limit=20&offset=0');
+  });
+
+  it('addNotebookEntry() with entryType "highlight" POSTs entry_type/document_id/highlight_id, never a client-supplied excerpt', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'e1',
+        notebook_id: 'nb-1',
+        entry_type: 'highlight',
+        highlight_id: 'h1',
+        document_id: 'doc-1',
+        document_title: 'A Study',
+        page_number: 2,
+        excerpt: 'Students completed a 12-week program.',
+        note_text: null,
+        chunk_id: 'c0',
+        chunk_index: 0,
+        visual_anchor: null,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      })
+    );
+    const result = await makeClient().addNotebookEntry('nb-1', {
+      entryType: 'highlight',
+      documentId: 'doc-1',
+      highlightId: 'h1',
+    });
+
+    expect(result.excerpt).toBe('Students completed a 12-week program.');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/notebooks/nb-1/entries');
+    expect(JSON.parse(init.body as string)).toEqual({
+      entry_type: 'highlight',
+      document_id: 'doc-1',
+      highlight_id: 'h1',
+      note_text: null,
+    });
+  });
+
+  it('addNotebookEntry() with entryType "manual" POSTs entry_type/note_text only', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'e2',
+        notebook_id: 'nb-1',
+        entry_type: 'manual',
+        highlight_id: null,
+        document_id: null,
+        document_title: null,
+        page_number: null,
+        excerpt: null,
+        note_text: 'A standalone thought.',
+        chunk_id: null,
+        chunk_index: null,
+        visual_anchor: null,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      })
+    );
+    const result = await makeClient().addNotebookEntry('nb-1', {
+      entryType: 'manual',
+      noteText: 'A standalone thought.',
+    });
+
+    expect(result.entry_type).toBe('manual');
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(init.body as string)).toEqual({
+      entry_type: 'manual',
+      note_text: 'A standalone thought.',
+    });
+  });
+
+  it('updateNotebookEntry() PATCHes { note_text }', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'e1',
+        notebook_id: 'nb-1',
+        entry_type: 'manual',
+        highlight_id: null,
+        document_id: null,
+        document_title: null,
+        page_number: null,
+        excerpt: null,
+        note_text: 'Edited.',
+        chunk_id: null,
+        chunk_index: null,
+        visual_anchor: null,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      })
+    );
+    await makeClient().updateNotebookEntry('nb-1', 'e1', { noteText: 'Edited.' });
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/notebooks/nb-1/entries/e1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body as string)).toEqual({ note_text: 'Edited.' });
+  });
+
+  it('removeNotebookEntry() DELETEs /notebooks/{id}/entries/{entryId}', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await makeClient().removeNotebookEntry('nb-1', 'e1');
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/notebooks/nb-1/entries/e1');
+    expect(init.method).toBe('DELETE');
+  });
+});
+
 describe('error mapping through requestJson', () => {
   it('maps a 401 JSON error body to AuthenticationError with the backend detail', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Invalid API key' }, 401));
@@ -1062,6 +1463,39 @@ describe('conversations', () => {
     expect(result.title).toBe('Hello');
     const [url] = fetchMock.mock.calls[0]!;
     expect(url).toBe('http://localhost:8000/conversations/c1');
+  });
+
+  it('getConversation() surfaces the authoritative project-membership list (Frontend Milestone 2.1)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'c1',
+        title: 'Hello',
+        title_is_custom: true,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+        messages: [],
+        projects: [{ id: 'p1', name: 'AI Literacy Study' }],
+      })
+    );
+    const result = await makeClient().getConversation('c1');
+
+    expect(result.projects).toEqual([{ id: 'p1', name: 'AI Literacy Study' }]);
+  });
+
+  it('getConversation() defaults to no project membership when the field is absent (pre-Milestone-2.1 shape)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'c1',
+        title: 'Hello',
+        title_is_custom: true,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+        messages: [],
+      })
+    );
+    const result = await makeClient().getConversation('c1');
+
+    expect(result.projects ?? []).toEqual([]);
   });
 
   it('renameConversation() PATCHes /conversations/{id} with the new title', async () => {

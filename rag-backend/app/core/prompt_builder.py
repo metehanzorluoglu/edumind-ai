@@ -209,6 +209,9 @@ _DOCUMENT_TYPE_LABELS: dict[DocumentType, str] = {
     "report": "report",
     "review_article": "review article",
     "curriculum_document": "curriculum document",
+    # Frontend/Platform Milestone 3.2.1 Part C — see DocumentType's
+    # docstring for why this value exists.
+    "unknown": "document",
 }
 
 PromptVariant = Literal["current", "compact"]

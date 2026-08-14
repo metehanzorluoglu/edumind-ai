@@ -17,6 +17,7 @@ import {
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { AttachmentButton } from '@/components/AttachmentButton';
 import { AttachmentPreviewRow } from '@/components/AttachmentPreviewRow';
@@ -28,6 +29,7 @@ import {
   type SourceMode,
 } from '@/components/ChatSourcesPicker';
 import { ConversationTurnCard } from '@/components/ConversationTurnCard';
+import { SelectedSourceChips } from '@/components/SelectedSourceChips';
 import { CorpusToggle } from '@/components/CorpusToggle';
 import { EduM8Symbol } from '@/components/EduM8Logo';
 import { ImageGenerateButton } from '@/components/ImageGenerateButton';
@@ -48,6 +50,8 @@ import { generateClientMessageId } from '@/lib/clientMessageId';
 import { describeApiError } from '@/lib/errorDisplay';
 
 const NEAR_BOTTOM_THRESHOLD_PX = 96;
+/** Frontend Milestone 2 §8 — see chat/new.tsx's identical constant. */
+const SOURCE_CHIPS_BREAKPOINT_PX = 760;
 
 interface Highlighted {
   messageId: string;
@@ -135,6 +139,28 @@ function ChatConversationScreen({ conversationId }: { conversationId: string }) 
   const [sourcesCount, setSourcesCount] = useState<number | null>(null);
   const [sourceMode, setSourceMode] = useState<SourceMode>('prioritize');
   const [sourcesPickerOpen, setSourcesPickerOpen] = useState(false);
+  const { width: windowWidth } = useWindowDimensions();
+  const showSourceChips = Platform.OS === 'web' && windowWidth >= SOURCE_CHIPS_BREAKPOINT_PX;
+  // Frontend Milestone 2.1 — the conversation's AUTHORITATIVE project
+  // membership rides along the SAME getConversation() fetch
+  // useConversationMessages already makes on mount (see `conversation`
+  // above) — no extra request. `null` (not yet loaded, or the fetch
+  // failed) is passed straight through to ChatSourcesPicker, which treats
+  // unknown the same as "no project" rather than ever inventing
+  // membership (see that component's `projectContext` prop docs).
+  const projectContext = conversation ? (conversation.projects ?? []) : null;
+  // The conversation's real chat/project/general tier toggles — read for
+  // real rather than assumed, so Prioritize's copy stays truthful even in
+  // the (currently API-only-reachable) case one of them is off. See
+  // ChatSourcesPicker's `scope` prop docs.
+  const conversationTierScope =
+    conversationScope.scopeState.status === 'success'
+      ? {
+          chatEnabled: conversationScope.scopeState.scope.chat_enabled,
+          projectEnabled: conversationScope.scopeState.scope.project_enabled,
+          generalEnabled: conversationScope.scopeState.scope.general_enabled,
+        }
+      : undefined;
 
   const refreshSources = useCallback(() => {
     conversationDocuments.refresh(conversationId);
@@ -371,10 +397,19 @@ function ChatConversationScreen({ conversationId }: { conversationId: string }) 
           conversationId={conversationId}
           onUseImageAsAttachment={addAttachment}
           onRegenerateImage={handleRegenerateImage}
+          sourceMode={sourceMode}
         />
       </View>
     ),
-    [conversationId, highlighted, scrollToSource, addAttachment, handleRegenerateImage, styles]
+    [
+      conversationId,
+      highlighted,
+      scrollToSource,
+      addAttachment,
+      handleRegenerateImage,
+      styles,
+      sourceMode,
+    ]
   );
 
   if (!hydrated || loadState.status === 'loading') {
@@ -432,6 +467,34 @@ function ChatConversationScreen({ conversationId }: { conversationId: string }) 
           </>
         }
       >
+        {conversationScopeEnabled && showSourceChips && sourcesInitialSelection.length > 0 && (
+          <SelectedSourceChips
+            sources={sourcesInitialSelection}
+            onRemove={(documentId) => {
+              // Frontend/Platform Milestone 3.2.2 Part D — removing the
+              // LAST selected source while in Zoom-In must never leave the
+              // backend holding zoom_in_mode=true with zero documents
+              // (remove_conversation_document has no awareness of the
+              // zoom-in invariant; it unconditionally deletes the
+              // association). Mirrors ChatSourcesPicker.handleSave's own
+              // "documents persisted first, then mode PATCH" ordering:
+              // the removal completes, THEN — only if it emptied the
+              // selection while still in Zoom-In — the mode is flipped
+              // back to Prioritize both locally (instant UI) and
+              // server-side. A 2+-source removal never touches mode.
+              void (async () => {
+                await conversationDocuments.removeDocument(conversationId, documentId);
+                const willBeEmpty =
+                  sourcesInitialSelection.filter((doc) => doc.documentId !== documentId).length ===
+                  0;
+                if (willBeEmpty && sourceMode === 'zoom-in') {
+                  setSourceMode('prioritize');
+                  await conversationScope.update(conversationId, { zoomInMode: false });
+                }
+              })();
+            }}
+          />
+        )}
         <AttachmentPreviewRow attachments={attachments} onRemove={removeAttachment} />
         {attachments.length > 0 && (
           <CorpusToggle value={useCorpus} onValueChange={setUseCorpus} disabled={isBusy} />
@@ -559,6 +622,8 @@ function ChatConversationScreen({ conversationId }: { conversationId: string }) 
           initialSelection={sourcesInitialSelection}
           initialMode={sourceMode}
           zoomInEnabled={zoomInEnabled}
+          projectContext={projectContext}
+          scope={conversationTierScope}
           onClose={() => setSourcesPickerOpen(false)}
           onSaved={(selection, mode) => {
             setSourcesCount(selection.length);

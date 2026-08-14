@@ -160,11 +160,32 @@ export function ProjectRow({
     }
     measureWindowRect(triggerRef, ({ x, y, width, height }) => {
       const actions: SidebarContextMenuAction[] = [
-        { key: 'rename', label: 'Rename', onPress: () => setEditMode('name') },
+        {
+          key: 'rename',
+          label: 'Rename',
+          // Frontend/Platform Milestone 3.2.2 Part F — deferred one
+          // macrotask, same reasoning as ConversationRow's identical
+          // rename action (see that component's own comment): pressing
+          // this item unmounts the menu Modal, and react-native-web's
+          // Modal focus-trap teardown then restores focus to the element
+          // it captured (this row's ⋮ button). If the rename input mounts
+          // (autoFocus) before that teardown runs, the teardown steals
+          // focus straight back, firing the input's onBlur → commitRename
+          // running with the unchanged name → "Rename" visibly does
+          // nothing and nothing is ever PATCHed. This was the actual
+          // root cause of the PO-reported "Rename is visible but broken"
+          // bug — ProjectRow never received the fix ConversationRow
+          // already had for the exact same shared-menu interaction.
+          // Deferring lets the teardown finish before the input mounts
+          // and takes focus.
+          onPress: () => setTimeout(() => setEditMode('name'), 0),
+        },
         {
           key: 'edit-description',
           label: 'Edit description',
-          onPress: () => setEditMode('description'),
+          // Same fix, same reason — Edit description has the identical
+          // autoFocus-vs-Modal-teardown race.
+          onPress: () => setTimeout(() => setEditMode('description'), 0),
         },
         { key: 'delete', label: 'Delete project', destructive: true, onPress: handleDeletePress },
       ];

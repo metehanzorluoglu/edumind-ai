@@ -10,6 +10,20 @@ DocumentType = Literal[
     "report",
     "review_article",
     "curriculum_document",
+    # Frontend/Platform Milestone 3.2.1 Part C: the normal upload UI no
+    # longer asks the user to classify a document before uploading (the
+    # milestone's own "do not fabricate" instruction rules out silently
+    # defaulting to one of the concrete categories above, e.g. "report" —
+    # that would assert something never confirmed). This is the genuine,
+    # honest value for "not classified" — POST /documents falls back to
+    # it when the client omits document_type entirely (see
+    # routes_documents.py). Every existing RAG filter / citation label /
+    # corpus-stats grouping already treats document_type as an opaque
+    # string key, so adding this is additive only — no other code path
+    # needed to change to accept it (see _DOCUMENT_TYPE_LABELS in
+    # prompt_builder.py for the one place that DOES need a matching
+    # entry, since it's a dict keyed by this Literal).
+    "unknown",
 ]
 
 JournalQuartile = Literal["Q1", "Q2"] | None

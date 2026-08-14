@@ -297,6 +297,15 @@ class Settings(BaseSettings):
     # stripped (see app/services/attachment_storage.py). Off by default.
     chat_attachment_allow_heic: bool = False
 
+    # --- Original document file storage (Frontend Milestone 3.1: Original
+    # Document Reader) — see app/services/document_file_storage.py.
+    # Deliberately a separate directory from chat_attachments_dir above:
+    # different lifecycle (deleted only when the owning document itself is
+    # deleted, never per-message), different retention expectations, and
+    # kept distinct so an operator's backup/retention policy can treat "RAG
+    # corpus originals" and "chat attachments" differently if desired.
+    document_storage_dir: str = "./data/document-files"
+
     # --- Rate limiting (milestone V4) — protects the one endpoint that
     # calls an LLM (POST /conversations/{id}/messages, text or vision)
     # from being flooded by a single caller. In-memory only, per-process

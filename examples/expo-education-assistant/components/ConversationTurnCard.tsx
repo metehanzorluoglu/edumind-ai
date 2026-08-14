@@ -7,10 +7,11 @@ import { AttachmentLightbox } from '@/components/AttachmentLightbox';
 import { GeneratedImageGallery } from '@/components/GeneratedImageGallery';
 import type { ImageGenerationFormInitialValues } from '@/components/ImageGenerationModal';
 import { MarkdownAnswer } from '@/components/MarkdownAnswer';
-import { SourceCard, UnavailableSourceChip } from '@/components/SourceCard';
+import { AttachmentSourceCard, SourceCard, UnavailableSourceChip } from '@/components/SourceCard';
 import { ThinkingPlaceholder } from '@/components/ThinkingPlaceholder';
 import type { AttachmentChipInfo, PendingAttachment } from '@/lib/chatAttachments';
 import { usePreferences, useTheme } from '@/lib/Preferences';
+import type { SourceMode } from '@/components/ChatSourcesPicker';
 
 /** How long the card keeps the thinking placeholder mounted after the turn
  * leaves the thinking state, so its ~180ms exit fade finishes before the
@@ -34,6 +35,17 @@ export interface ConversationTurnCardProps {
   conversationId?: string;
   onUseImageAsAttachment?: (pending: PendingAttachment) => void;
   onRegenerateImage?: (initialValues: ImageGenerationFormInitialValues) => void;
+  /**
+   * Frontend Milestone 2 §26 — the CURRENT chat-scope mode (not
+   * necessarily what was active when this specific answer was generated;
+   * no backend field records that per-message, and this never invents
+   * one — see the milestone report's "Answer-Level Indication" section).
+   * Used only to make the existing insufficient-evidence explanation
+   * concretely actionable when the conversation is *currently* in
+   * Zoom-In, since that is the one case with an obvious, correct next
+   * step. Omitted entirely elsewhere — no per-message badge is added.
+   */
+  sourceMode?: SourceMode;
 }
 
 /**
@@ -52,6 +64,7 @@ export function ConversationTurnCard({
   conversationId,
   onUseImageAsAttachment,
   onRegenerateImage,
+  sourceMode,
 }: ConversationTurnCardProps) {
   const theme = useTheme();
   const answer = assistant?.content ?? '';
@@ -77,6 +90,18 @@ export function ConversationTurnCard({
     segments.flatMap((segment) => (segment.type === 'citation' ? [segment.match.sourceId] : []))
   );
   const citedSources = mapped.filter((source) => citedSourceIds.has(source.sourceId));
+  // Frontend/Platform Milestone 3.2.2 Part C — an attachment-kind citation
+  // (see app/core/citation.build_attachment_citations) has no chunk to
+  // join against `sources`/`mapped` above, so it's read straight off
+  // `citations` instead, filtered to only the ones actually cited in the
+  // text (same "only what was used, never every offered source" rule
+  // `citedSources` follows). Always numbered after any citedSources by
+  // construction (the backend assigns attachment labels starting past the
+  // last corpus citation), so appending them after citedSources below
+  // keeps the section in true ascending [S#] order without a merge-sort.
+  const citedAttachmentCitations = citations.filter(
+    (citation) => citation.source_kind === 'attachment' && citedSourceIds.has(citation.source_id)
+  );
 
   // The Settings screen's "Show citations" preference — 'shown' is the
   // default, so a screen rendered without a PreferencesProvider (tests,
@@ -279,6 +304,9 @@ export function ConversationTurnCard({
                 above is the backend&apos;s fixed explanation, not a generated answer, and this does
                 not mean nothing relevant exists anywhere, only that retrieval returned nothing
                 usable for this exact query.
+                {sourceMode === 'zoom-in' &&
+                  ' Zoom-In is currently restricting answers to your selected sources — try adding ' +
+                    'another source, or switch to Prioritize to search your full library.'}
               </Text>
             )}
 
@@ -305,25 +333,41 @@ export function ConversationTurnCard({
               </View>
             )}
 
-            {citationsVisible && citedSources.length > 0 && (
-              <View style={styles.section}>
-                <Text
-                  style={[
-                    styles.sectionTitle,
-                    { color: theme.text, fontFamily: theme.fonts.bodyBold },
-                  ]}
-                >
-                  Sources
-                </Text>
-                {citedSources.map((m) => (
-                  <SourceCard
-                    key={m.sourceId}
-                    source={m}
-                    highlighted={highlightedSourceId === m.sourceId}
-                  />
-                ))}
-              </View>
-            )}
+            {citationsVisible &&
+              (citedSources.length > 0 || citedAttachmentCitations.length > 0) && (
+                <View style={styles.section}>
+                  <Text
+                    style={[
+                      styles.sectionTitle,
+                      { color: theme.text, fontFamily: theme.fonts.bodyBold },
+                    ]}
+                  >
+                    Sources
+                  </Text>
+                  {citedSources.map((m) => (
+                    <SourceCard
+                      key={m.sourceId}
+                      source={m}
+                      highlighted={highlightedSourceId === m.sourceId}
+                    />
+                  ))}
+                  {citedAttachmentCitations.map((citation) => {
+                    const viewableIndex = viewableAttachments.findIndex(
+                      (a) => a.key === citation.attachment_id
+                    );
+                    return (
+                      <AttachmentSourceCard
+                        key={citation.source_id}
+                        citation={citation}
+                        highlighted={highlightedSourceId === citation.source_id}
+                        onPress={
+                          viewableIndex >= 0 ? () => setLightboxIndex(viewableIndex) : undefined
+                        }
+                      />
+                    );
+                  })}
+                </View>
+              )}
 
             {citationsVisible &&
               segments.some((s) => s.type === 'citation' && s.match.citation === null) && (

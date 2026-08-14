@@ -75,6 +75,21 @@ export type {
   UseConversationScopeResult,
 } from './hooks/useConversationScope';
 
+export { useDocumentContent } from './hooks/useDocumentContent';
+export type { DocumentContentState, UseDocumentContentResult } from './hooks/useDocumentContent';
+
+export { useDocumentHighlights } from './hooks/useDocumentHighlights';
+export type {
+  DocumentHighlightsState,
+  UseDocumentHighlightsResult,
+} from './hooks/useDocumentHighlights';
+
+export { useNotebooks } from './hooks/useNotebooks';
+export type { NotebooksState, UseNotebooksResult } from './hooks/useNotebooks';
+
+export { useNotebookEntries } from './hooks/useNotebookEntries';
+export type { NotebookEntriesState, UseNotebookEntriesResult } from './hooks/useNotebookEntries';
+
 export { useProjects } from './hooks/useProjects';
 export type {
   AddRemoveConversationState,
@@ -108,7 +123,14 @@ export type {
   SearchResponse,
 } from './types/search';
 export type {
+  CreateHighlightRequest,
+  DocumentContentChunk,
+  DocumentContentResponse,
   DocumentDeleteResponse,
+  DocumentFileRequestInit,
+  DocumentHighlight,
+  DocumentHighlightListResponse,
+  DocumentHighlightVisualAnchor,
   DocumentJobResponse,
   DocumentListResponse,
   DocumentMetadataPreviewResponse,
@@ -119,8 +141,25 @@ export type {
   ExtractionSource,
   ListDocumentsParams,
   MoveDocumentRequest,
+  UpdateHighlightRequest,
   UploadableFile,
 } from './types/documents';
+export {
+  MAX_NOTEBOOK_AI_ENTRIES,
+  type AddHighlightEntryRequest,
+  type AddManualEntryRequest,
+  type AddNotebookEntryRequest,
+  type CreateNotebookRequest,
+  type ListNotebookEntriesParams,
+  type ListNotebooksParams,
+  type Notebook,
+  type NotebookEntry,
+  type NotebookEntryListResponse,
+  type NotebookListResponse,
+  type NotebookMembershipResponse,
+  type RenameNotebookRequest,
+  type UpdateNotebookEntryRequest,
+} from './types/notebooks';
 export type {
   CreateFolderRequest,
   DeleteFolderParams,
@@ -168,6 +207,7 @@ export type {
   ConversationMessage,
   ConversationMessageAttachment,
   ConversationMessageSource,
+  ConversationProjectRef,
   ConversationScope,
   ConversationSummary,
   DisplaySource,

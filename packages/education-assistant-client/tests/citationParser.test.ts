@@ -59,6 +59,36 @@ describe('mapCitationMarkers', () => {
   it('returns an empty list for an answer with no citation markers', () => {
     expect(mapCitationMarkers('No citations here.', [makeCitation('S1')])).toEqual([]);
   });
+
+  // Frontend/Platform Milestone 3.2.2 Part C — the actual fix for the
+  // false "[S1 — unavailable]" bug: an attachment-kind citation resolves
+  // a marker exactly like a document-kind one (this function only ever
+  // looks up by source_id — it has no idea, and no need to know, which
+  // kind produced the match).
+  it('resolves a marker against an attachment-kind citation, not just document-kind', () => {
+    const attachmentCitation: Citation = {
+      source_id: 'S1',
+      source_kind: 'attachment',
+      document_id: null,
+      chunk_id: null,
+      attachment_id: 'att-1',
+      display_name: 'notes.pdf',
+      title: null,
+      authors: [],
+      publication_year: null,
+      source_venue: null,
+      document_type: null,
+      journal_quartile: null,
+      page_start: null,
+      page_end: null,
+      doi: null,
+      source_url: null,
+      score: null,
+    };
+    const matches = mapCitationMarkers('As shown in the attachment [S1].', [attachmentCitation]);
+    expect(matches).toHaveLength(1);
+    expect(matches[0]!.citation).toBe(attachmentCitation);
+  });
 });
 
 describe('uniqueCitedSourceIds', () => {

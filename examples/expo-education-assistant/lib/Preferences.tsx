@@ -48,6 +48,11 @@ export interface Preferences {
    * corrupted or hand-edited stored value can never render an unusable
    * (zero-width or overflowing) drawer. */
   sidebarWidth: number;
+  /** Frontend Milestone 1 (Finder-style Document Library): the user's last
+   * chosen Documents view — persisted locally only (no backend setting, per
+   * the milestone's own requirement) so reopening Documents preserves it.
+   * Defaults to 'grid', matching the pre-redesign card-like document list. */
+  documentsViewMode: 'grid' | 'list';
 }
 
 /** Drag-resize bounds for the drawer — narrow enough to still show full
@@ -65,6 +70,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   autoScrollDuringStreaming: true,
   sidebarCollapsed: false,
   sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
+  documentsViewMode: 'grid',
 };
 
 // Intentionally NOT renamed to "edum8.*" despite the EduM8 rebrand — this
@@ -118,6 +124,10 @@ function parseStoredPreferences(raw: string | null): Preferences {
         parsed.sidebarWidth <= SIDEBAR_WIDTH_MAX
           ? parsed.sidebarWidth
           : DEFAULT_PREFERENCES.sidebarWidth,
+      documentsViewMode:
+        parsed.documentsViewMode === 'grid' || parsed.documentsViewMode === 'list'
+          ? parsed.documentsViewMode
+          : DEFAULT_PREFERENCES.documentsViewMode,
     };
   } catch {
     return { ...DEFAULT_PREFERENCES };

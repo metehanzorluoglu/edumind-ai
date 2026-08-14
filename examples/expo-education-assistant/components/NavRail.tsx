@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { ChatIcon, DocumentsIcon, PanelIcon, SearchIcon, SettingsIcon } from '@/components/icons';
+import { ChatIcon, DocumentsIcon, NotesIcon, PanelIcon, SettingsIcon } from '@/components/icons';
 import { EduM8Symbol } from '@/components/EduM8Logo';
 import { useAuth } from '@/lib/AuthProvider';
 import { DARK_PALETTE, useTheme } from '@/lib/Preferences';
@@ -8,12 +8,19 @@ import { safeText } from '@/lib/format';
 
 const dark = DARK_PALETTE;
 
-export type NavSection = 'chat' | 'search' | 'documents' | 'settings';
+// Frontend/Platform Milestone 3.2.1 Part E — 'search' stays a valid
+// NavSection (app/(tabs)/_layout.tsx still resolves `/search` to it, so
+// the route/top-bar chrome behave correctly for anyone with an old
+// bookmark or a direct link) but is deliberately absent from SECTIONS
+// below: Documents' new in-library search (Part D) replaces it as the
+// primary, navigable entry point. See this milestone's report ("Part F")
+// for why the route itself is kept rather than deleted.
+export type NavSection = 'chat' | 'search' | 'documents' | 'notes' | 'settings';
 
 const SECTIONS: { key: NavSection; label: string; Icon: typeof ChatIcon }[] = [
   { key: 'chat', label: 'Chat', Icon: ChatIcon },
-  { key: 'search', label: 'Search', Icon: SearchIcon },
   { key: 'documents', label: 'Documents', Icon: DocumentsIcon },
+  { key: 'notes', label: 'Research Notes', Icon: NotesIcon },
   { key: 'settings', label: 'Settings', Icon: SettingsIcon },
 ];
 
@@ -22,6 +29,12 @@ export interface NavRailProps {
   onNavigate: (section: NavSection) => void;
   drawerCollapsed: boolean;
   onToggleDrawer: () => void;
+  /** Frontend/Platform Milestone 3.2.2 Part B — the brand mark always
+   * navigates to New Chat, full stop. Deliberately a separate prop from
+   * onNavigate('chat') (Part A's drawer-toggle behavior): "one control =
+   * one understandable action" — the logo must never also open/close the
+   * drawer as a side effect. */
+  onLogoPress: () => void;
 }
 
 /**
@@ -36,7 +49,13 @@ export interface NavRailProps {
  * — every button still carries a real accessibilityLabel so it's never
  * icon-only for a screen reader, just visually.
  */
-export function NavRail({ active, onNavigate, drawerCollapsed, onToggleDrawer }: NavRailProps) {
+export function NavRail({
+  active,
+  onNavigate,
+  drawerCollapsed,
+  onToggleDrawer,
+  onLogoPress,
+}: NavRailProps) {
   const theme = useTheme();
   const { user } = useAuth();
   const initial =
@@ -50,9 +69,15 @@ export function NavRail({ active, onNavigate, drawerCollapsed, onToggleDrawer }:
       style={[styles.rail, { backgroundColor: dark.background, borderRightColor: dark.divider }]}
       testID="nav-rail"
     >
-      <View style={styles.brandMark}>
+      <Pressable
+        onPress={onLogoPress}
+        accessibilityRole="button"
+        accessibilityLabel="EduM8 — New chat"
+        style={styles.brandMark}
+        hitSlop={6}
+      >
         <EduM8Symbol size={22} />
-      </View>
+      </Pressable>
 
       <View style={styles.nav}>
         {SECTIONS.map(({ key, label, Icon }) => (
