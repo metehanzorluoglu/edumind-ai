@@ -35,6 +35,7 @@ from app.db.document_highlights_repository import DocumentHighlightsRepository
 from app.db.documents_repository import DocumentRecord, DocumentsRepository
 from app.db.scopes_repository import ScopesRepository
 from app.db.session import get_session_factory
+from app.db.writing_projects_repository import WritingProjectsRepository
 from app.deps import get_document_file_storage, get_embedding_provider, get_vector_store
 from app.ingestion.chunker import chunk_pages
 from app.ingestion.errors import (
@@ -127,6 +128,7 @@ def cmd_remove(args: argparse.Namespace) -> int:
             documents_repository=repository,
             scopes_repository=ScopesRepository(db),
             document_highlights_repository=DocumentHighlightsRepository(db),
+            writing_projects_repository=WritingProjectsRepository(db),
             document_file_storage=get_document_file_storage(),
         )
     if result is None:
@@ -191,6 +193,7 @@ def cmd_reingest(args: argparse.Namespace) -> int:
             documents_repository=repository,
             scopes_repository=ScopesRepository(db),
             document_highlights_repository=DocumentHighlightsRepository(db),
+            writing_projects_repository=WritingProjectsRepository(db),
             document_file_storage=get_document_file_storage(),
         )
 

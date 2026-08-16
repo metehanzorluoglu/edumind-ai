@@ -39,6 +39,29 @@ export function formatAuthorsCompact(authors: readonly string[] | null | undefin
   return `${lastNameOf(authors[0]!)} et al.`;
 }
 
+/**
+ * Milestone 4 (Reference Library & Bibliographic Metadata Foundation): a
+ * research source's canonical short identity — "Forrester et al. (2004)"
+ * — for a NotebookEntry's source label (M3.1 Notebook spec's "SOURCE
+ * EVIDENCE" block) and anywhere else a source needs to read like a real
+ * citation rather than a bare filename. Falls back to `documentTitle`
+ * (the pre-Milestone-4 label) when the source has no known authors —
+ * never fabricates a byline. `documentTitle` itself falls back to
+ * "Untitled document" via safeText, matching every other source-title
+ * fallback in this app.
+ */
+export function formatSourceIdentity(
+  authors: readonly string[] | null | undefined,
+  publicationYear: number | null | undefined,
+  documentTitle: string | null | undefined
+): string {
+  if (authors && authors.length > 0) {
+    const compact = formatAuthorsCompact(authors);
+    return publicationYear ? `${compact} (${publicationYear})` : compact;
+  }
+  return safeText(documentTitle, 'Untitled document');
+}
+
 export interface ParsedJournalCitation {
   journalTitle: string;
   year: number;

@@ -1,4 +1,12 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
 import { AppState } from 'react-native';
 import { useClient } from './ClientProvider';
 
@@ -56,6 +64,19 @@ export interface FeatureSnapshot {
    * off keeps its badge and keeps retrieving strictly; only the entry
    * point to turn it ON is hidden. */
   zoomIn: boolean;
+  /** Mirrors rag-backend's latex_compilation_enabled (see app/config.py +
+   * app/api/routes_status.py, Milestone 5.1: Secure LaTeX Compilation
+   * Service). When false, the Writing editor's Compile button and PDF
+   * Preview panel/tab are hidden entirely, and
+   * POST/GET .../compile[/...] 404 regardless of what this flag says
+   * client-side — same "backend enforces, frontend only hides" split as
+   * every other flag here. Defaults to false (not true, unlike most flags
+   * above) — this ships off until a human operator deliberately reviews
+   * Milestone 5.1's security report and flips it (see app/config.py's
+   * `latex_compilation_enabled` docstring), so a fresh deploy never
+   * exposes an unreviewed untrusted-code-execution surface even
+   * transiently before the first /status resolves. */
+  latexCompilation: boolean;
   /**
    * Gates the Developer settings entry point + screen (backend URL, model
    * names, latency, per-service readiness). A deliberate deviation from the
@@ -84,7 +105,7 @@ const FeatureFlagsContext = createContext<FeatureFlagsContextValue | null>(null)
 // /status value always overrides this once it resolves — this is purely a pre-fetch default
 // so the very first paint of an image-gen-aware screen already matches the backend's intent
 // instead of flashing the wrong button in and immediately hiding it.
-/* eslint-disable @typescript-eslint/no-explicit-any */
+
 function readEnvBool(name: string): boolean | undefined {
   const raw = (process.env as Record<string, string | undefined>)[name];
   if (raw === undefined) return undefined;
@@ -125,6 +146,16 @@ function bootstrapZoomInFlag(): boolean {
   return env ?? true;
 }
 
+function bootstrapLatexCompilationFlag(): boolean {
+  const env = readEnvBool('EXPO_PUBLIC_LATEX_COMPILATION_ENABLED');
+  // Opposite default from every flag above (folderLibrary/conversationScope/
+  // zoomIn all default true) — matches the backend's own
+  // latex_compilation_enabled default of false, for the same reason: an
+  // untrusted-code-execution surface should never appear, even for one
+  // frame before /status resolves, without an explicit opt-in.
+  return env ?? false;
+}
+
 function bootstrapDeveloperSettingsFlag(): boolean {
   const env = readEnvBool('EXPO_PUBLIC_DEVELOPER_SETTINGS_ENABLED');
   // Default to FALSE — the opposite of imageGenerator, on purpose: anything
@@ -151,6 +182,7 @@ export function buildBootstrapSnapshot(): FeatureSnapshot {
     folderLibrary: bootstrapFolderLibraryFlag(),
     conversationScope: bootstrapConversationScopeFlag(),
     zoomIn: bootstrapZoomInFlag(),
+    latexCompilation: bootstrapLatexCompilationFlag(),
     developerSettings: bootstrapDeveloperSettingsFlag(),
     loaded: false,
   };
@@ -174,6 +206,7 @@ export function FeatureFlagsProvider({ children }: { children: ReactNode }) {
         folderLibrary: status.folder_library_enabled,
         conversationScope: status.conversation_scope_enabled,
         zoomIn: status.zoom_in_enabled,
+        latexCompilation: status.latex_compilation_enabled,
         developerSettings: prev.developerSettings,
         loaded: true,
       }));
@@ -200,7 +233,7 @@ export function FeatureFlagsProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<FeatureFlagsContextValue>(
     () => ({ ...snapshot, refresh }),
-    [snapshot, refresh],
+    [snapshot, refresh]
   );
 
   return <FeatureFlagsContext.Provider value={value}>{children}</FeatureFlagsContext.Provider>;

@@ -172,6 +172,15 @@ wheels = [
 ]
 
 [[package]]
+name = "bibtexparser"
+version = "1.4.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyparsing" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/44/1c/577d3ce406e88f370e80a6ebf76ae52a2866521e0b585e8ec612759894f1/bibtexparser-1.4.4.tar.gz", hash = "sha256:093b6c824f7a71d3a748867c4057b71f77c55b8dbc07efc993b781771520d8fb", size = 55594, upload-time = "2026-01-29T18:58:01.366Z" }
+
+[[package]]
 name = "certifi"
 version = "2026.7.22"
 source = { registry = "https://pypi.org/simple" }
@@ -251,6 +260,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/6d/cd/a361394c94b2129d604bb846f624a8e88255a3ee33129c434a00d715e64f/cffi-2.1.1-cp315-cp315t-win32.whl", hash = "sha256:06c72bb76605a4b0cd0aad6930b69d4baf7dd5d806cfc409b824191099700e66", size = 182707, upload-time = "2026-08-03T21:21:11.226Z" },
     { url = "https://files.pythonhosted.org/packages/9b/b5/ba2b299993c26577d529b6ae29841f9e15b9fcf004d65f423f4fcf94ade9/cffi-2.1.1-cp315-cp315t-win_amd64.whl", hash = "sha256:d9c275eaacd24aa73f94ffd6de08fc3f932424d8b6c376f4bed7cde376fe7bc3", size = 193772, upload-time = "2026-08-03T21:21:12.39Z" },
     { url = "https://files.pythonhosted.org/packages/aa/29/35e016098c814cd93de9cd320c66b5bfba14dc6ecedd3cb518fa7c408c69/cffi-2.1.1-cp315-cp315t-win_arm64.whl", hash = "sha256:d18e5ac0f2f03f4f518d3e23db0f0cad7faa1da8620e9c09461d443bbf6e6692", size = 186360, upload-time = "2026-08-03T21:21:13.636Z" },
+]
+
+[[package]]
+name = "citeproc-py"
+version = "0.10.7"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "lxml" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/db/12/f91a548419892726bf675c936e48b2ed65aafff09a1f20d4ce1cfc47b218/citeproc_py-0.10.7.tar.gz", hash = "sha256:e2e56f7c4a63a659679de1055d36c6b961e10a7d65945d082f208462229d356f", size = 276235, upload-time = "2026-08-10T22:35:13.109Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/32/96/385eb384eec40ea60cdd4f0b3db288e7f2f53cc96f3a55883605e7fe6b3d/citeproc_py-0.10.7-py3-none-any.whl", hash = "sha256:c5192d59fdfde00a33945b9a85a11fa23200be3fac99dfa6856f06c415f7d40b", size = 386751, upload-time = "2026-08-10T22:35:11.914Z" },
 ]
 
 [[package]]
@@ -1063,6 +1084,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pyparsing"
+version = "3.3.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f3/91/9c6ee907786a473bf81c5f53cf703ba0957b23ab84c264080fb5a450416f/pyparsing-3.3.2.tar.gz", hash = "sha256:c777f4d763f140633dcb6d8a3eda953bf7a214dc4eff598413c070bcdc117cbc", size = 6851574, upload-time = "2026-01-21T03:57:59.36Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/10/bd/c038d7cc38edc1aa5bf91ab8068b63d4308c66c4c8bb3cbba7dfbc049f9c/pyparsing-3.3.2-py3-none-any.whl", hash = "sha256:850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d", size = 122781, upload-time = "2026-01-21T03:57:55.912Z" },
+]
+
+[[package]]
 name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1199,6 +1229,7 @@ dependencies = [
     { name = "alembic" },
     { name = "argon2-cffi" },
     { name = "beautifulsoup4" },
+    { name = "citeproc-py" },
     { name = "cryptography" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -1216,6 +1247,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "bibtexparser" },
     { name = "httpx2" },
     { name = "mypy" },
     { name = "pytest" },
@@ -1230,6 +1262,8 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.13" },
     { name = "argon2-cffi", specifier = ">=23.1" },
     { name = "beautifulsoup4", specifier = ">=4.12" },
+    { name = "bibtexparser", marker = "extra == 'dev'", specifier = ">=1.4.4" },
+    { name = "citeproc-py", specifier = ">=0.10.7" },
     { name = "cryptography", specifier = ">=43.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },

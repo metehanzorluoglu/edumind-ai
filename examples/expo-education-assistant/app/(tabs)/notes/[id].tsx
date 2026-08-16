@@ -18,12 +18,13 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { IconButton } from '@/components/ui/IconButton';
 import { Notice } from '@/components/ui/Notice';
 import { TextField } from '@/components/ui/TextField';
+import { AddToWritingProjectModal } from '@/components/writing/AddToWritingProjectModal';
 import { useClient } from '@/lib/ClientProvider';
-import { safeText } from '@/lib/format';
+import { formatSourceIdentity, safeText } from '@/lib/format';
 import { useTheme, type Theme } from '@/lib/Preferences';
 import {
   MAX_TRANSIENT_AI_CONTEXT_ENTRIES,
-  type TransientAIContextEntry,
+  transientEntryFromNotebookEntry as toTransientEntry,
 } from '@/lib/transientAIContext';
 
 type SortKey = 'newest' | 'oldest' | 'source';
@@ -34,18 +35,6 @@ const SORT_LABELS: Record<SortKey, string> = {
   oldest: 'Oldest',
   source: 'Source',
 };
-
-function toTransientEntry(entry: NotebookEntry): TransientAIContextEntry {
-  const isManual = entry.entry_type === 'manual';
-  return {
-    sourceType: 'notebook-entry',
-    documentId: isManual ? null : (entry.document_id ?? null),
-    documentTitle: isManual ? null : (entry.document_title ?? null),
-    pageNumber: isManual ? null : (entry.page_number ?? null),
-    excerpt: isManual ? (entry.note_text ?? '') : (entry.excerpt ?? ''),
-    userNote: isManual ? null : entry.note_text,
-  };
-}
 
 /**
  * Frontend Milestone 3.2 — the Notebook detail screen, redesigned into a
@@ -94,6 +83,11 @@ export default function NotebookDetailScreen() {
   const [savingRename, setSavingRename] = useState(false);
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const [deletingNotebook, setDeletingNotebook] = useState(false);
+  // Milestone 5 (Academic Writing & LaTeX Foundation) Part 34 — "Use in
+  // writing" from an entry's menu; null means the modal is closed.
+  const [writingProjectPickerDocumentId, setWritingProjectPickerDocumentId] = useState<
+    string | null
+  >(null);
 
   // Frontend/Platform Milestone 3.2.1 §B1 — anchors for the desktop
   // popover variant of each "..." menu (ActionSheet falls back to a
@@ -324,7 +318,7 @@ export default function NotebookDetailScreen() {
     let list = entries;
     if (needle) {
       list = list.filter((e) => {
-        const haystack = [e.excerpt, e.note_text, e.document_title]
+        const haystack = [e.excerpt, e.note_text, e.document_title, ...(e.document_authors ?? [])]
           .filter(Boolean)
           .join(' ')
           .toLowerCase();
@@ -388,6 +382,22 @@ export default function NotebookDetailScreen() {
             setEntryMenuFor(null);
           },
         },
+        // Milestone 5 (Academic Writing & LaTeX Foundation) Part 34 —
+        // "Use in writing": only for entries that actually have a source
+        // document (a manual note has nothing to associate as a
+        // bibliography reference).
+        ...(entryMenuFor.entry_type !== 'manual' && entryMenuFor.document_id
+          ? [
+              {
+                key: 'use-in-writing',
+                label: 'Use in writing',
+                onPress: () => {
+                  setWritingProjectPickerDocumentId(entryMenuFor.document_id ?? null);
+                  setEntryMenuFor(null);
+                },
+              },
+            ]
+          : []),
         {
           key: 'remove',
           label: entryMenuFor.entry_type === 'manual' ? 'Delete note' : 'Remove from notebook',
@@ -622,7 +632,11 @@ export default function NotebookDetailScreen() {
                       )}
                       {!isManual && (
                         <Text style={styles.sourceLabel} numberOfLines={1}>
-                          {safeText(entry.document_title, 'Untitled document')}
+                          {formatSourceIdentity(
+                            entry.document_authors,
+                            entry.document_publication_year,
+                            entry.document_title
+                          )}
                           {entry.page_number ? ` · p. ${entry.page_number}` : ''}
                         </Text>
                       )}
@@ -765,6 +779,11 @@ export default function NotebookDetailScreen() {
           setEntryMenuAnchor(null);
         }}
         anchorRef={entryMenuAnchor ?? undefined}
+      />
+      <AddToWritingProjectModal
+        visible={writingProjectPickerDocumentId !== null}
+        documentIds={writingProjectPickerDocumentId ? [writingProjectPickerDocumentId] : []}
+        onClose={() => setWritingProjectPickerDocumentId(null)}
       />
     </View>
   );

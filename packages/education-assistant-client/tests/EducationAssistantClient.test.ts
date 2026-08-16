@@ -388,9 +388,7 @@ describe('Document Reader & Highlights (Frontend Milestone 3)', () => {
 
   it('getDocumentContent() rejects with NotFoundError on a 404', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'No document found' }, 404));
-    await expect(makeClient().getDocumentContent('missing')).rejects.toBeInstanceOf(
-      NotFoundError
-    );
+    await expect(makeClient().getDocumentContent('missing')).rejects.toBeInstanceOf(NotFoundError);
   });
 
   it('listDocumentHighlights() GETs /documents/{id}/highlights', async () => {
@@ -503,7 +501,7 @@ describe('Document Reader & Highlights (Frontend Milestone 3)', () => {
     expect(JSON.parse(init.body as string)).toEqual({ note_text: 'Updated.' });
   });
 
-  it('updateDocumentHighlight() rejects with NotFoundError for another user\'s highlight', async () => {
+  it("updateDocumentHighlight() rejects with NotFoundError for another user's highlight", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Highlight not found' }, 404));
     await expect(
       makeClient().updateDocumentHighlight('doc-1', 'not-mine', { noteText: 'x' })
@@ -521,9 +519,9 @@ describe('Document Reader & Highlights (Frontend Milestone 3)', () => {
 
   it('deleteDocumentHighlight() rejects with NotFoundError on a 404', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Highlight not found' }, 404));
-    await expect(
-      makeClient().deleteDocumentHighlight('doc-1', 'missing')
-    ).rejects.toBeInstanceOf(NotFoundError);
+    await expect(makeClient().deleteDocumentHighlight('doc-1', 'missing')).rejects.toBeInstanceOf(
+      NotFoundError
+    );
   });
 
   it('createDocumentHighlight() sends null chunk_id/chunk_index and a real visual_anchor for a PDF-only highlight', async () => {
@@ -564,7 +562,13 @@ describe('Document Reader & Highlights (Frontend Milestone 3)', () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
         notebooks: [
-          { id: 'nb-1', name: 'Reading List', entry_count: 2, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
+          {
+            id: 'nb-1',
+            name: 'Reading List',
+            entry_count: 2,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+          },
         ],
       })
     );
@@ -587,9 +591,9 @@ describe('getDocumentFileRequestInit (Frontend Milestone 3.1)', () => {
   });
 
   it('returns empty httpHeaders (no Authorization key) when unauthenticated', async () => {
-    const result = await makeClient({ getAccessToken: async () => null }).getDocumentFileRequestInit(
-      'doc-1'
-    );
+    const result = await makeClient({
+      getAccessToken: async () => null,
+    }).getDocumentFileRequestInit('doc-1');
     expect(result.httpHeaders).toEqual({});
   });
 
@@ -1553,10 +1557,7 @@ describe('conversations', () => {
 
     it('addConversationDocuments() POSTs document_ids and returns the full selection', async () => {
       fetchMock.mockResolvedValueOnce(
-        jsonResponse(
-          { documents: [conversationDocument({ document_id: 'd1' })], total: 1 },
-          201
-        )
+        jsonResponse({ documents: [conversationDocument({ document_id: 'd1' })], total: 1 }, 201)
       );
       const result = await makeClient().addConversationDocuments('c1', ['d1']);
 
@@ -1609,9 +1610,9 @@ describe('conversations', () => {
       fetchMock.mockResolvedValueOnce(
         jsonResponse({ detail: "One or more documents not found: ['missing']" }, 404)
       );
-      await expect(
-        makeClient().addConversationDocuments('c1', ['missing'])
-      ).rejects.toBeInstanceOf(NotFoundError);
+      await expect(makeClient().addConversationDocuments('c1', ['missing'])).rejects.toBeInstanceOf(
+        NotFoundError
+      );
     });
   });
 
@@ -2774,6 +2775,285 @@ describe('moveDocument (Milestone 1: Document Library / Folder Management)', () 
   });
 });
 
+describe('updateDocumentMetadata (Milestone 4: Reference Library & Bibliographic Metadata Foundation)', () => {
+  function summaryResponse(overrides: Record<string, unknown> = {}) {
+    return jsonResponse({
+      document_id: 'd1',
+      source_filename: 'notes.pdf',
+      document_type: 'report',
+      chunk_count: 3,
+      ingested_at: '2026-01-01T00:00:00Z',
+      ...overrides,
+    });
+  }
+
+  it('PATCHes /documents/{id}/metadata with only the fields provided', async () => {
+    fetchMock.mockResolvedValueOnce(summaryResponse({ doi: '10.1000/abc999' }));
+    const result = await makeClient().updateDocumentMetadata('d1', { doi: '10.1000/abc999' });
+
+    expect(result.doi).toBe('10.1000/abc999');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/documents/d1/metadata');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body)).toEqual({ doi: '10.1000/abc999' });
+  });
+
+  it('never sends a field that was not present on the request object', async () => {
+    fetchMock.mockResolvedValueOnce(summaryResponse());
+    await makeClient().updateDocumentMetadata('d1', { title: 'Corrected Title' });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    const body = JSON.parse(init.body);
+    expect(body).toEqual({ title: 'Corrected Title' });
+    expect('authors' in body).toBe(false);
+    expect('doi' in body).toBe(false);
+  });
+
+  it('sends an explicit null to clear an optional field', async () => {
+    fetchMock.mockResolvedValueOnce(summaryResponse({ source_venue: null }));
+    await makeClient().updateDocumentMetadata('d1', { sourceVenue: null });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(init.body)).toEqual({ source_venue: null });
+  });
+
+  it('maps every camelCase field to its snake_case backend name', async () => {
+    fetchMock.mockResolvedValueOnce(summaryResponse());
+    await makeClient().updateDocumentMetadata('d1', {
+      title: 'A Title',
+      authors: ['Ada Lovelace'],
+      publicationYear: 2020,
+      sourceVenue: 'A Venue',
+      doi: '10.1000/abc',
+      sourceUrl: 'https://example.com',
+      documentType: 'book',
+      journalQuartile: 'Q1',
+      volume: '3',
+      issue: '2',
+      pageStart: 10,
+      pageEnd: 20,
+      publisher: 'Example Press',
+      abstract: 'An abstract.',
+      keywords: ['a', 'b'],
+      language: 'en',
+    });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(init.body)).toEqual({
+      title: 'A Title',
+      authors: ['Ada Lovelace'],
+      publication_year: 2020,
+      source_venue: 'A Venue',
+      doi: '10.1000/abc',
+      source_url: 'https://example.com',
+      document_type: 'book',
+      journal_quartile: 'Q1',
+      volume: '3',
+      issue: '2',
+      page_start: 10,
+      page_end: 20,
+      publisher: 'Example Press',
+      abstract: 'An abstract.',
+      keywords: ['a', 'b'],
+      language: 'en',
+    });
+  });
+
+  it('rejects with NotFoundError on a 404 (document not found)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Document not found' }, 404));
+    await expect(
+      makeClient().updateDocumentMetadata('missing', { doi: '10.1000/abc' })
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('rejects with ValidationError on a 422 (e.g. a blanked title)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'title cannot be blanked' }, 422));
+    await expect(makeClient().updateDocumentMetadata('d1', { title: '' })).rejects.toBeInstanceOf(
+      ValidationError
+    );
+  });
+});
+
+describe('enrichDocumentMetadata (Milestone 4.1: Authoritative Metadata Enrichment & Duplicate Awareness)', () => {
+  function documentSummary(overrides: Record<string, unknown> = {}) {
+    return {
+      document_id: 'd1',
+      source_filename: 'notes.pdf',
+      document_type: 'journal_article',
+      chunk_count: 3,
+      ingested_at: '2026-01-01T00:00:00Z',
+      has_usable_doi: true,
+      ...overrides,
+    };
+  }
+
+  it('POSTs /documents/{id}/enrich with no body', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ok: true,
+        status: 'succeeded',
+        fields_updated: ['title'],
+        manual_fields_preserved: 1,
+        qdrant_sync_failed: false,
+        document: documentSummary({ title: 'Authoritative Title' }),
+      })
+    );
+
+    const result = await makeClient().enrichDocumentMetadata('d1');
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/documents/d1/enrich');
+    expect(init.method).toBe('POST');
+    expect(init.body).toBeUndefined();
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe('succeeded');
+    expect(result.fields_updated).toEqual(['title']);
+    expect(result.manual_fields_preserved).toBe(1);
+    expect(result.document.title).toBe('Authoritative Title');
+  });
+
+  it('resolves (not rejects) for an ordinary "no usable DOI" outcome', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ok: false,
+        status: 'no_doi',
+        fields_updated: [],
+        manual_fields_preserved: 0,
+        qdrant_sync_failed: false,
+        document: documentSummary({ has_usable_doi: false }),
+      })
+    );
+
+    const result = await makeClient().enrichDocumentMetadata('d1');
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe('no_doi');
+  });
+
+  it('resolves for a provider failure (e.g. Crossref timeout) without throwing', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ok: false,
+        status: 'timeout',
+        fields_updated: [],
+        manual_fields_preserved: 0,
+        qdrant_sync_failed: false,
+        document: documentSummary(),
+      })
+    );
+
+    const result = await makeClient().enrichDocumentMetadata('d1');
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe('timeout');
+  });
+
+  it('rejects with NotFoundError when the document does not exist', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Document not found' }, 404));
+    await expect(makeClient().enrichDocumentMetadata('missing')).rejects.toBeInstanceOf(
+      NotFoundError
+    );
+  });
+});
+
+describe('Citation & BibTeX (Milestone 4.2: Citation & BibTeX Foundation)', () => {
+  describe('getDocumentCitation', () => {
+    it('GETs /documents/{id}/citation with the style as a query param', async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ style: 'apa7', formatted: 'Doe, J. (2020). A Study.' })
+      );
+
+      const result = await makeClient().getDocumentCitation('d1', 'apa7');
+
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(url).toBe('http://localhost:8000/documents/d1/citation?style=apa7');
+      expect(init.method).toBe('GET');
+      expect(result.style).toBe('apa7');
+      expect(result.formatted).toBe('Doe, J. (2020). A Study.');
+    });
+
+    it('passes the ieee style through unchanged', async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ style: 'ieee', formatted: '[1]J. Doe, "A Study."' })
+      );
+
+      await makeClient().getDocumentCitation('d1', 'ieee');
+
+      const [url] = fetchMock.mock.calls[0]!;
+      expect(url).toBe('http://localhost:8000/documents/d1/citation?style=ieee');
+    });
+
+    it('rejects with NotFoundError when the document does not exist', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Document not found' }, 404));
+      await expect(makeClient().getDocumentCitation('missing', 'apa7')).rejects.toBeInstanceOf(
+        NotFoundError
+      );
+    });
+  });
+
+  describe('getDocumentBibtex', () => {
+    it('GETs /documents/{id}/bibtex and returns the entry plus its citation key', async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ citation_key: 'Doe2020Study', bibtex: '@article{Doe2020Study,}\n' })
+      );
+
+      const result = await makeClient().getDocumentBibtex('d1');
+
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(url).toBe('http://localhost:8000/documents/d1/bibtex');
+      expect(init.method).toBe('GET');
+      expect(result.citation_key).toBe('Doe2020Study');
+      expect(result.bibtex).toContain('@article{Doe2020Study,}');
+    });
+
+    it('rejects with NotFoundError when the document does not exist', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Document not found' }, 404));
+      await expect(makeClient().getDocumentBibtex('missing')).rejects.toBeInstanceOf(NotFoundError);
+    });
+  });
+
+  describe('exportBibtex', () => {
+    it('POSTs /documents/bibtex-export with document_ids (snake_case wire body)', async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({
+          bibtex: '@article{Doe2020,}\n@article{Lin2021,}\n',
+          count: 2,
+          skipped_document_ids: [],
+        })
+      );
+
+      const result = await makeClient().exportBibtex({ documentIds: ['d1', 'd2'] });
+
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(url).toBe('http://localhost:8000/documents/bibtex-export');
+      expect(init.method).toBe('POST');
+      expect(JSON.parse(init.body as string)).toEqual({ document_ids: ['d1', 'd2'] });
+      expect(result.count).toBe(2);
+      expect(result.skipped_document_ids).toEqual([]);
+    });
+
+    it("surfaces skipped_document_ids for ids that do not exist or are not the caller's own", async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({
+          bibtex: '@article{Doe2020,}\n',
+          count: 1,
+          skipped_document_ids: ['missing-id'],
+        })
+      );
+
+      const result = await makeClient().exportBibtex({ documentIds: ['d1', 'missing-id'] });
+
+      expect(result.count).toBe(1);
+      expect(result.skipped_document_ids).toEqual(['missing-id']);
+    });
+
+    it('rejects with ValidationError for an empty document_ids list', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'at least one id required' }, 422));
+      await expect(makeClient().exportBibtex({ documentIds: [] })).rejects.toBeInstanceOf(
+        ValidationError
+      );
+    });
+  });
+});
+
 describe('uploadDocument() folderId (Milestone 1: Document Library / Folder Management)', () => {
   it('appends folder_id to the multipart form when provided', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ job_id: 'job1' }, 202));
@@ -2839,5 +3119,427 @@ describe('uploadDocument() folderId (Milestone 1: Document Library / Folder Mana
     const [, uploadInit] = fetchMock.mock.calls[0]!;
     const formData = uploadInit.body as FormData;
     expect(formData.has('folder_id')).toBe(false);
+  });
+});
+
+describe('Writing Projects (Milestone 5: Academic Writing & LaTeX Foundation)', () => {
+  function writingProject(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: 'w1',
+      title: 'My Paper',
+      description: null,
+      main_tex_content: '\\documentclass{article}',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      ...overrides,
+    };
+  }
+
+  it('createWritingProject() POSTs /writing-projects with title and description', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(writingProject(), 201));
+    const result = await makeClient().createWritingProject({
+      title: 'My Paper',
+      description: 'A draft',
+    });
+
+    expect(result.id).toBe('w1');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ title: 'My Paper', description: 'A draft' });
+  });
+
+  it('createWritingProject() sends description: null when omitted', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(writingProject()));
+    await makeClient().createWritingProject({ title: 'My Paper' });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(init.body)).toEqual({ title: 'My Paper', description: null });
+  });
+
+  it('listWritingProjects() GETs /writing-projects', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ projects: [], total: 0 }));
+    await makeClient().listWritingProjects();
+
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects');
+  });
+
+  it('getWritingProject() GETs /writing-projects/{id}', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(writingProject()));
+    const result = await makeClient().getWritingProject('w1');
+
+    expect(result.title).toBe('My Paper');
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1');
+  });
+
+  it('updateWritingProject() only sends fields actually present on the request', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(writingProject({ main_tex_content: '\\new' })));
+    await makeClient().updateWritingProject('w1', { mainTexContent: '\\new' });
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body)).toEqual({ main_tex_content: '\\new' });
+  });
+
+  it('updateWritingProject() sends an explicit null to clear the description', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(writingProject()));
+    await makeClient().updateWritingProject('w1', { description: null });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(init.body)).toEqual({ description: null });
+  });
+
+  it('updateWritingProject() omits a field not present on the request at all', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(writingProject()));
+    await makeClient().updateWritingProject('w1', { title: 'Renamed' });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(init.body)).toEqual({ title: 'Renamed' });
+  });
+
+  it('deleteWritingProject() DELETEs /writing-projects/{id}', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await makeClient().deleteWritingProject('w1');
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1');
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('listWritingProjectReferences() GETs /writing-projects/{id}/references', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ references: [], total: 0, missing_citation_keys: [] })
+    );
+    const result = await makeClient().listWritingProjectReferences('w1');
+
+    expect(result.total).toBe(0);
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1/references');
+  });
+
+  it('addWritingProjectReferences() POSTs document_ids and returns per-id outcomes', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ results: [{ document_id: 'd1', outcome: 'added' }] })
+    );
+    const result = await makeClient().addWritingProjectReferences('w1', ['d1']);
+
+    expect(result.results[0]!.outcome).toBe('added');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1/references');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ document_ids: ['d1'] });
+  });
+
+  it('removeWritingProjectReference() DELETEs /writing-projects/{id}/references/{documentId}', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await makeClient().removeWritingProjectReference('w1', 'd1');
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1/references/d1');
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('getWritingProjectBibliography() GETs /writing-projects/{id}/bibliography', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ bibtex: '@article{Doe2020,\n}\n', reference_count: 1 })
+    );
+    const result = await makeClient().getWritingProjectBibliography('w1');
+
+    expect(result.reference_count).toBe(1);
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1/bibliography');
+  });
+
+  it('fetchWritingProjectExportBlob() GETs the export URL with a Bearer token and returns the body as a blob-like object', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response('zip-bytes', { status: 200, headers: { 'content-type': 'application/zip' } })
+    );
+
+    const result = await makeClient().fetchWritingProjectExportBlob('w1');
+
+    expect(result.type).toBe('application/zip');
+    expect(await result.text()).toBe('zip-bytes');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1/export');
+    expect(init.headers.Authorization).toBe('Bearer test-token');
+  });
+
+  it('fetchWritingProjectExportBlob() rejects with NotFoundError on a 404', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Writing project not found' }, 404));
+
+    await expect(makeClient().fetchWritingProjectExportBlob('w1')).rejects.toBeInstanceOf(
+      NotFoundError
+    );
+  });
+
+  it('compileWritingProject() POSTs /writing-projects/{id}/compile with no body and returns the structured result', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        status: 'success',
+        diagnostics: [],
+        log_excerpt: '',
+        duration_ms: 123.4,
+        page_count: 1,
+        compile_id: 'c1',
+        pdf_size_bytes: 4096,
+        source_hash: 'abc123',
+      })
+    );
+
+    const result = await makeClient().compileWritingProject('w1');
+
+    expect(result.status).toBe('success');
+    expect(result.compile_id).toBe('c1');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1/compile');
+    expect(init.method).toBe('POST');
+    // Never a client-supplied source body — compiles the project's
+    // current saved state server-side (Part 13/33).
+    expect(init.body).toBeUndefined();
+  });
+
+  it('compileWritingProject() surfaces a "busy" status as an ordinary value, not a thrown error', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        status: 'busy',
+        diagnostics: [{ severity: 'error', message: 'The compiler is busy.' }],
+        log_excerpt: '',
+        duration_ms: 0,
+        source_hash: 'abc123',
+      })
+    );
+
+    const result = await makeClient().compileWritingProject('w1');
+    expect(result.status).toBe('busy');
+    expect(result.diagnostics).toHaveLength(1);
+  });
+
+  it('compileWritingProject() rejects with NotFoundError on a 404 (ownership/nonexistent)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Writing project not found' }, 404));
+
+    await expect(makeClient().compileWritingProject('w1')).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('fetchCompiledPdfBlob() GETs the compile-artifact URL with a Bearer token and returns the body as a blob', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response('pdf-bytes', { status: 200, headers: { 'content-type': 'application/pdf' } })
+    );
+
+    const result = await makeClient().fetchCompiledPdfBlob('w1', 'c1');
+
+    expect(result.type).toBe('application/pdf');
+    expect(await result.text()).toBe('pdf-bytes');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1/compile/c1/pdf');
+    expect(init.headers.Authorization).toBe('Bearer test-token');
+  });
+
+  it('fetchCompiledPdfBlob() rejects with NotFoundError on a 404 (expired or unknown compile_id)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Compiled PDF not found or expired' }, 404));
+
+    await expect(makeClient().fetchCompiledPdfBlob('w1', 'gone')).rejects.toBeInstanceOf(
+      NotFoundError
+    );
+  });
+
+  it('archiveWritingProject() POSTs /writing-projects/{id}/archive', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(writingProject({ archived_at: '2026-01-02T00:00:00Z' })));
+    const result = await makeClient().archiveWritingProject('w1');
+    expect(result.archived_at).toBe('2026-01-02T00:00:00Z');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1/archive');
+    expect(init.method).toBe('POST');
+  });
+
+  it('restoreWritingProject() POSTs /writing-projects/{id}/restore', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(writingProject({ archived_at: null })));
+    const result = await makeClient().restoreWritingProject('w1');
+    expect(result.archived_at).toBeNull();
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1/restore');
+  });
+
+  it('duplicateWritingProject() POSTs /writing-projects/{id}/duplicate with an optional title', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(writingProject({ id: 'w2', title: 'Copy' })));
+    const result = await makeClient().duplicateWritingProject('w1', 'Copy');
+    expect(result.id).toBe('w2');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1/duplicate');
+    expect(JSON.parse(init.body)).toEqual({ title: 'Copy' });
+  });
+
+  it('duplicateWritingProject() omits title as null when not provided', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(writingProject({ id: 'w2' })));
+    await makeClient().duplicateWritingProject('w1');
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(init.body)).toEqual({ title: null });
+  });
+
+  it('listWritingProjectFiles() GETs the tree with no query string when unfiltered', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        files: [{ id: 'f1', parent_id: null, kind: 'text', name: 'main.tex', path: 'main.tex', size_bytes: 10, is_root: true }],
+        generated: [{ name: 'references.bib', path: 'references.bib', read_only: true, reference_count: 0 }],
+        root_file_id: 'f1',
+        total_size_bytes: 10,
+        file_count: 1,
+        max_files: 150,
+        max_total_bytes: 100000000,
+      })
+    );
+    const result = await makeClient().listWritingProjectFiles('w1');
+    expect(result.file_count).toBe(1);
+    expect(result.generated[0]!.name).toBe('references.bib');
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1/files');
+  });
+
+  it('createWritingProjectFolder() POSTs name/parent_id', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ file: { id: 'folder-1', parent_id: null, kind: 'folder', name: 'sections', path: 'sections', size_bytes: 0, is_root: false } })
+    );
+    const result = await makeClient().createWritingProjectFolder('w1', { name: 'sections' });
+    expect(result.file.kind).toBe('folder');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1/files/folders');
+    expect(JSON.parse(init.body)).toEqual({ parent_id: null, name: 'sections' });
+  });
+
+  it('createWritingProjectTextFile() POSTs name/parent_id/content_text', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        file: { id: 'file-1', parent_id: 'folder-1', kind: 'text', name: 'intro.tex', path: 'sections/intro.tex', size_bytes: 5, is_root: false },
+      })
+    );
+    const result = await makeClient().createWritingProjectTextFile('w1', {
+      parentId: 'folder-1',
+      name: 'intro.tex',
+      contentText: 'Hello',
+    });
+    expect(result.file.path).toBe('sections/intro.tex');
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(init.body)).toEqual({
+      parent_id: 'folder-1',
+      name: 'intro.tex',
+      content_text: 'Hello',
+    });
+  });
+
+  it('uploadWritingProjectFile() POSTs multipart form data with the file and optional parent_id/name', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        file: { id: 'file-2', parent_id: null, kind: 'binary', name: 'figure.png', path: 'figure.png', mime_type: 'image/png', size_bytes: 3, is_root: false },
+      })
+    );
+    const file = new File(['abc'], 'figure.png', { type: 'image/png' });
+    const result = await makeClient().uploadWritingProjectFile('w1', file, { parentId: 'folder-1' });
+
+    expect(result.file.mime_type).toBe('image/png');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1/files/upload');
+    expect(init.headers['Content-Type']).toBeUndefined();
+    const formData = init.body as FormData;
+    expect(formData.get('file')).toBeInstanceOf(File);
+    expect(formData.get('parent_id')).toBe('folder-1');
+  });
+
+  it('getWritingProjectFileContent() GETs a text file inline', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        file: { id: 'f1', parent_id: null, kind: 'text', name: 'main.tex', path: 'main.tex', size_bytes: 5, is_root: true },
+        content_text: 'Hello',
+      })
+    );
+    const result = await makeClient().getWritingProjectFileContent('w1', 'f1');
+    expect(result.content_text).toBe('Hello');
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1/files/f1');
+  });
+
+  it('fetchWritingProjectFileBinaryBlob() GETs raw bytes with a Bearer token', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response('png-bytes', { status: 200, headers: { 'content-type': 'image/png' } })
+    );
+    const result = await makeClient().fetchWritingProjectFileBinaryBlob('w1', 'f2');
+    expect(result.type).toBe('image/png');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1/files/f2/content');
+    expect(init.headers.Authorization).toBe('Bearer test-token');
+  });
+
+  it('fetchWritingProjectFileBinaryBlob() rejects with NotFoundError on a 404', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'File not found' }, 404));
+    await expect(makeClient().fetchWritingProjectFileBinaryBlob('w1', 'gone')).rejects.toBeInstanceOf(
+      NotFoundError
+    );
+  });
+
+  it('updateWritingProjectFileContent() PATCHes content_text', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ file: { id: 'f1', parent_id: null, kind: 'text', name: 'main.tex', path: 'main.tex', size_bytes: 3, is_root: true } })
+    );
+    await makeClient().updateWritingProjectFileContent('w1', 'f1', { contentText: 'new' });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1/files/f1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body)).toEqual({ content_text: 'new' });
+  });
+
+  it('renameWritingProjectFile() POSTs the new name', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ file: { id: 'f1', parent_id: null, kind: 'text', name: 'final.tex', path: 'final.tex', size_bytes: 0, is_root: false } })
+    );
+    const result = await makeClient().renameWritingProjectFile('w1', 'f1', { name: 'final.tex' });
+    expect(result.file.name).toBe('final.tex');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1/files/f1/rename');
+    expect(JSON.parse(init.body)).toEqual({ name: 'final.tex' });
+  });
+
+  it('moveWritingProjectFile() POSTs the new parent id (null moves to root)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ file: { id: 'f1', parent_id: null, kind: 'text', name: 'x.tex', path: 'x.tex', size_bytes: 0, is_root: false } })
+    );
+    await makeClient().moveWritingProjectFile('w1', 'f1', { newParentId: null });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1/files/f1/move');
+    expect(JSON.parse(init.body)).toEqual({ new_parent_id: null });
+  });
+
+  it('deleteWritingProjectFile() DELETEs the file', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await makeClient().deleteWritingProjectFile('w1', 'f1');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1/files/f1');
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('deleteWritingProjectFile() rejects with a BackendError on a 409 (root file protection)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Cannot delete the project\'s current root file' }, 409));
+    await expect(makeClient().deleteWritingProjectFile('w1', 'root-id')).rejects.toThrow();
+  });
+
+  it('setWritingProjectRootFile() PUTs the new root file id', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ file: { id: 'f2', parent_id: null, kind: 'text', name: 'paper.tex', path: 'paper.tex', size_bytes: 0, is_root: true } })
+    );
+    const result = await makeClient().setWritingProjectRootFile('w1', 'f2');
+    expect(result.file.is_root).toBe(true);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/w1/root-file');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body)).toEqual({ file_id: 'f2' });
+  });
+
+  it('listWritingProjects() forwards q/sort/archived as a query string', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ projects: [], total: 0 }));
+    await makeClient().listWritingProjects({ q: 'climate change', sort: 'name', archived: true });
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(
+      'http://localhost:8000/writing-projects?q=climate+change&sort=name&archived=true'
+    );
   });
 });

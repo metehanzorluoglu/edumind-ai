@@ -350,10 +350,18 @@ def test_delete_with_move_contents_to_root(harness) -> None:
 # --- document upload / move ---------------------------------------------
 
 
-def _upload(client: TestClient, *, folder_id: str | None = None, filename: str = "notes.txt"):
+def _upload(
+    client: TestClient,
+    *,
+    folder_id: str | None = None,
+    filename: str = "notes.txt",
+    doi: str | None = None,
+):
     data = {"document_type": "report"}
     if folder_id is not None:
         data["folder_id"] = folder_id
+    if doi is not None:
+        data["doi"] = doi
     return client.post(
         "/documents",
         data=data,
@@ -376,6 +384,39 @@ def test_upload_into_active_folder(harness) -> None:
 
     contents = client.get("/folders/contents", params={"folder_id": folder["id"]}).json()
     assert contents["documents_total"] == 1
+
+
+def test_folder_contents_includes_full_bibliographic_and_enrichment_fields(harness) -> None:
+    """Regression test for a bug found during Milestone 4.1's real-browser
+    validation: GET /folders/contents used to build DocumentSummary via its
+    own second, never-updated copy of _document_summary() that silently
+    dropped volume/issue/page_start/page_end/publisher/abstract/keywords/
+    language/metadata_sources (Milestone 4) and last_enriched_at/
+    enrichment_provider/enrichment_status/has_usable_doi (Milestone 4.1)
+    from every document reached through the folder-library listing —
+    while GET /documents (the non-folder listing) always had them."""
+    client, *_ = harness
+    resp = _upload(client, doi="10.1000/abc123")
+    assert resp.status_code == 202, resp.text
+    document_id = client.get(f"/documents/jobs/{resp.json()['job_id']}").json()["document"][
+        "document_id"
+    ]
+    client.patch(
+        f"/documents/{document_id}/metadata",
+        json={"volume": "12", "issue": "3", "publisher": "A Publisher"},
+    )
+
+    contents = client.get("/folders/contents").json()
+    assert contents["documents_total"] == 1
+    document = contents["documents"][0]
+    assert document["doi"] == "10.1000/abc123"
+    assert document["volume"] == "12"
+    assert document["issue"] == "3"
+    assert document["publisher"] == "A Publisher"
+    assert document["metadata_sources"]["volume"] == "user"
+    assert document["has_usable_doi"] is True
+    assert "last_enriched_at" in document
+    assert "enrichment_status" in document
 
 
 def test_upload_without_folder_lands_at_root(harness) -> None:

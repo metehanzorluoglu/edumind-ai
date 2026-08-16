@@ -40,6 +40,10 @@ class NotebookEntryRecord:
     highlight_id: uuid.UUID | None
     document_id: str | None
     document_title_snapshot: str | None
+    # Milestone 4: same snapshot-at-add-time rule as document_title_snapshot
+    # above — see NotebookEntry's own docstring in models_documents.py.
+    document_authors_snapshot: list[str] | None
+    document_publication_year_snapshot: int | None
     page_number: int | None
     excerpt_snapshot: str | None
     note_text: str | None
@@ -70,6 +74,12 @@ def _to_entry_record(row: NotebookEntry) -> NotebookEntryRecord:
         highlight_id=row.highlight_id,
         document_id=row.document_id,
         document_title_snapshot=row.document_title_snapshot,
+        document_authors_snapshot=(
+            list(row.document_authors_snapshot)
+            if row.document_authors_snapshot is not None
+            else None
+        ),
+        document_publication_year_snapshot=row.document_publication_year_snapshot,
         page_number=row.page_number,
         excerpt_snapshot=row.excerpt_snapshot,
         note_text=row.note_text,
@@ -198,6 +208,8 @@ class NotebooksRepository:
         highlight_id: uuid.UUID,
         document_id: str,
         document_title: str | None,
+        document_authors: list[str] | None = None,
+        document_publication_year: int | None = None,
         page_number: int | None,
         excerpt: str,
         note_text: str | None,
@@ -233,6 +245,8 @@ class NotebooksRepository:
             highlight_id=highlight_id,
             document_id=document_id,
             document_title_snapshot=document_title,
+            document_authors_snapshot=document_authors,
+            document_publication_year_snapshot=document_publication_year,
             page_number=page_number,
             excerpt_snapshot=excerpt,
             note_text=note_text,
@@ -263,6 +277,8 @@ class NotebooksRepository:
             highlight_id=None,
             document_id=None,
             document_title_snapshot=None,
+            document_authors_snapshot=None,
+            document_publication_year_snapshot=None,
             page_number=None,
             excerpt_snapshot=None,
             note_text=note_text,

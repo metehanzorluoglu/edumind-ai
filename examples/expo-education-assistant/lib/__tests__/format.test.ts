@@ -1,6 +1,7 @@
 import {
   formatAuthors,
   formatAuthorsCompact,
+  formatSourceIdentity,
   parseJournalCitation,
   safeText,
 } from '@/lib/format';
@@ -55,6 +56,31 @@ describe('formatAuthorsCompact', () => {
   it('shows an honest unavailable message, never "Unknown author(s)", when empty', () => {
     expect(formatAuthorsCompact([])).toBe('Author information unavailable');
     expect(formatAuthorsCompact(undefined)).toBe('Author information unavailable');
+  });
+});
+
+describe('formatSourceIdentity (Milestone 4: Notebook entry source label)', () => {
+  it('shows "Author et al. (Year)" when authors and a year are both known', () => {
+    expect(
+      formatSourceIdentity(['Jeff Forrester', 'Jane Doe'], 2004, 'A Paper About Something')
+    ).toBe('Forrester et al. (2004)');
+  });
+
+  it('omits the year when only authors are known', () => {
+    expect(formatSourceIdentity(['Jeff Forrester'], null, 'A Paper')).toBe('Forrester');
+  });
+
+  it('falls back to the document title when there are no known authors', () => {
+    expect(formatSourceIdentity([], 2004, 'A Paper About Something')).toBe(
+      'A Paper About Something'
+    );
+    expect(formatSourceIdentity(null, 2004, 'A Paper About Something')).toBe(
+      'A Paper About Something'
+    );
+  });
+
+  it('falls back to "Untitled document" when neither authors nor a title are known', () => {
+    expect(formatSourceIdentity(null, null, null)).toBe('Untitled document');
   });
 });
 

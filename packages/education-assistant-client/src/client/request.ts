@@ -28,6 +28,16 @@ export interface JsonRequestOptions {
    * cross an origin boundary.
    */
   credentials?: RequestCredentials;
+  /**
+   * Overrides the client's own constructed `context.timeoutMs` for this
+   * one call — Milestone 5.1: compileWritingProject() is the first
+   * ordinary (non-streaming) JSON call whose legitimate duration
+   * (isolated LaTeX compilation, up to the compiler service's own
+   * job_timeout_seconds) can genuinely exceed this SDK's normal
+   * DEFAULT_TIMEOUT_MS. Every other existing call site omits this and
+   * keeps using context.timeoutMs unchanged.
+   */
+  timeoutMs?: number;
 }
 
 export interface JsonRequestResult<T> {
@@ -159,7 +169,8 @@ export async function requestJson<T>(
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const { signal, dispose, didTimeOut } = combineSignals(options.signal, context.timeoutMs);
+  const effectiveTimeoutMs = options.timeoutMs ?? context.timeoutMs;
+  const { signal, dispose, didTimeOut } = combineSignals(options.signal, effectiveTimeoutMs);
 
   let response: Response;
   try {
@@ -179,7 +190,9 @@ export async function requestJson<T>(
   } catch (cause) {
     if (isAbortError(cause)) {
       if (didTimeOut()) {
-        throw new TimeoutError(`Request to ${options.path} timed out after ${context.timeoutMs}ms`);
+        throw new TimeoutError(
+          `Request to ${options.path} timed out after ${effectiveTimeoutMs}ms`
+        );
       }
       throw new RequestCancelledError(`Request to ${options.path} was cancelled`);
     }

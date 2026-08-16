@@ -28,6 +28,7 @@ const ROUTE_BY_SECTION: Record<NavSection, string> = {
   search: '/search',
   documents: '/documents',
   notes: '/notes',
+  writing: '/writing',
   settings: '/settings',
 };
 
@@ -69,6 +70,7 @@ export default function TabsLayout() {
     segments[0] === 'search' ||
     segments[0] === 'documents' ||
     segments[0] === 'notes' ||
+    segments[0] === 'writing' ||
     segments[0] === 'settings'
       ? (segments[0] as NavSection)
       : null;

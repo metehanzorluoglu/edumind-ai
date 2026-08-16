@@ -53,6 +53,12 @@ class NotebookEntryResponse(BaseModel):
     highlight_id: str | None = None
     document_id: str | None = None
     document_title: str | None = None
+    # Milestone 4: same snapshot-at-add-time rule as document_title above —
+    # see NotebookEntry's backend model docstring. Null for every entry
+    # created before this milestone, and for a manual entry (which never
+    # had a source document).
+    document_authors: list[str] | None = None
+    document_publication_year: int | None = None
     page_number: int | None = None
     excerpt: str | None = None
     note_text: str | None = None

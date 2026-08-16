@@ -3,6 +3,19 @@ import { Clipboard, Linking, Platform } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { AttachmentSourceCard, SourceCard } from '../SourceCard';
 
+// Milestone 4.2 (Citation & BibTeX Foundation) — SourceCard now reads
+// useClient() for its "Copy citation" action (Section 27). Same
+// jest.mock pattern AddToProjectPicker.test.tsx already uses for any
+// component that needs a client but isn't testing network behavior
+// itself.
+const mockGetDocumentCitation = jest.fn().mockResolvedValue({
+  style: 'apa7',
+  formatted: 'Lovelace, A. (2021). A Study. Journal of Education Research.',
+});
+jest.mock('@/lib/ClientProvider', () => ({
+  useClient: () => ({ client: { getDocumentCitation: mockGetDocumentCitation } }),
+}));
+
 const SHORT_TEXT = 'Guided reading improves outcomes for early readers.';
 // Comfortably past the component's own truncation-estimate threshold, so
 // tests don't sit on the boundary of an internal implementation constant.
@@ -380,6 +393,43 @@ describe('SourceCard', () => {
 
     expect(Clipboard.setString).toHaveBeenCalledWith(SHORT_TEXT);
     expect(findByText(renderer.root, 'Copied!')).toBeTruthy();
+  });
+
+  describe('Reference citation (Milestone 4.2 §27)', () => {
+    it('shows a "Copy citation" action distinct from "Copy excerpt" when the citation maps to a document', async () => {
+      const renderer = (activeRenderer = await renderSourceCard(
+        buildSource({ citation: { document_id: 'doc-1' } })
+      ));
+
+      expect(findByText(renderer.root, 'Copy excerpt')).toBeTruthy();
+      expect(findByText(renderer.root, 'Copy citation')).toBeTruthy();
+    });
+
+    it('fetches the current formatted citation and copies it, never the excerpt text', async () => {
+      mockGetDocumentCitation.mockClear();
+      const renderer = (activeRenderer = await renderSourceCard(
+        buildSource({ citation: { document_id: 'doc-1' }, chunk: { text: SHORT_TEXT } })
+      ));
+
+      await act(async () => {
+        findPressableByText(renderer.root, 'Copy citation').props.onPress();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(mockGetDocumentCitation).toHaveBeenCalledWith('doc-1', 'apa7');
+      expect(findByText(renderer.root, 'Copied!')).toBeTruthy();
+    });
+
+    it('is not offered for a citation with no document_id (Section 27: provenance UI stays intact)', async () => {
+      const renderer = (activeRenderer = await renderSourceCard(
+        buildSource({ citation: { document_id: null } })
+      ));
+
+      expect(queryByText(renderer.root, 'Copy citation')).toBeNull();
+      // The excerpt/provenance action is entirely unaffected.
+      expect(findByText(renderer.root, 'Copy excerpt')).toBeTruthy();
+    });
   });
 
   describe('Project scope badge (Frontend Milestone 2.1 §19)', () => {

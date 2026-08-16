@@ -796,6 +796,7 @@ def clean_filename_as_title(filename: str) -> str | None:
 
 _CONFIDENCE_BY_SOURCE = {
     ExtractionSource.USER: "high",
+    ExtractionSource.AUTHORITATIVE: "high",
     ExtractionSource.EMBEDDED_METADATA: "high",
     ExtractionSource.STRUCTURED_TEXT: "medium",
     ExtractionSource.FILENAME: "low",

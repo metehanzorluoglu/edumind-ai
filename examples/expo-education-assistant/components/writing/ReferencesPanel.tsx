@@ -1,0 +1,271 @@
+import type { WritingProjectReference } from 'education-assistant-client';
+import { useMemo, useState } from 'react';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Badge } from '@/components/ui/Badge';
+import { Button } from '@/components/ui/Button';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { Notice } from '@/components/ui/Notice';
+import { formatSourceIdentity } from '@/lib/format';
+import { useTheme, type Theme } from '@/lib/Preferences';
+
+export interface ReferencesPanelProps {
+  references: WritingProjectReference[];
+  missingCitationKeys: string[];
+  loading: boolean;
+  loadError: string | null;
+  onAddReferences: () => void;
+  /** Inserts `\cite{key}` at the editor's cursor — Part 9. */
+  onInsertCitation: (citationKey: string) => void;
+  /** Inserts `\cite{KeyOne,KeyTwo,...}` in the exact order the caller
+   * selected them — Part 10. */
+  onInsertMultipleCitations: (citationKeys: string[]) => void;
+  onRemoveReference: (documentId: string) => Promise<void>;
+  onViewBibliography: () => void;
+}
+
+/**
+ * Milestone 5 (Academic Writing & LaTeX Foundation) Parts 4/5/9/10/12/27 —
+ * the References panel: current project references with a compact
+ * identity, single/multi "Insert citation", "Remove" (association only —
+ * Part 5), a missing-citation-key warning (Part 26), and "View BibTeX"
+ * (Part 13).
+ */
+export function ReferencesPanel({
+  references,
+  missingCitationKeys,
+  loading,
+  loadError,
+  onAddReferences,
+  onInsertCitation,
+  onInsertMultipleCitations,
+  onRemoveReference,
+  onViewBibliography,
+}: ReferencesPanelProps) {
+  const theme = useTheme();
+  const styles = useMemo(() => buildStyles(theme), [theme]);
+  const [selectMode, setSelectMode] = useState(false);
+  // Order of selection (not list order) — Part 10's "deterministic
+  // selection order" requirement.
+  const [selectedOrder, setSelectedOrder] = useState<string[]>([]);
+  const [removingIds, setRemovingIds] = useState<Set<string>>(new Set());
+  const [removeError, setRemoveError] = useState<string | null>(null);
+
+  function exitSelectMode(): void {
+    setSelectMode(false);
+    setSelectedOrder([]);
+  }
+
+  function toggleSelected(documentId: string): void {
+    setSelectedOrder((prev) =>
+      prev.includes(documentId) ? prev.filter((id) => id !== documentId) : [...prev, documentId]
+    );
+  }
+
+  async function handleRemove(documentId: string): Promise<void> {
+    setRemoveError(null);
+    setRemovingIds((prev) => new Set(prev).add(documentId));
+    try {
+      await onRemoveReference(documentId);
+    } catch (error) {
+      setRemoveError(error instanceof Error ? error.message : 'Could not remove this reference.');
+    } finally {
+      setRemovingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(documentId);
+        return next;
+      });
+    }
+  }
+
+  function handleInsertSelected(): void {
+    const keys = selectedOrder
+      .map((id) => references.find((r) => r.document_id === id)?.citation_key)
+      .filter((key): key is string => Boolean(key));
+    if (keys.length === 0) return;
+    onInsertMultipleCitations(keys);
+    exitSelectMode();
+  }
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.toolbar}>
+        <Text style={styles.count}>
+          {references.length} {references.length === 1 ? 'reference' : 'references'}
+        </Text>
+        <View style={styles.toolbarActions}>
+          <Button label="+ Add" variant="secondary" size="sm" onPress={onAddReferences} />
+          <Button
+            label={selectMode ? 'Cancel' : 'Select'}
+            variant="ghost"
+            size="sm"
+            disabled={references.length === 0}
+            onPress={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
+          />
+        </View>
+      </View>
+
+      {references.length > 0 && (
+        <Button
+          label="View BibTeX"
+          variant="ghost"
+          size="sm"
+          onPress={onViewBibliography}
+          style={styles.bibtexButton}
+        />
+      )}
+
+      {missingCitationKeys.length > 0 && (
+        <Notice
+          tone="warning"
+          title="Unresolved citations"
+          body={missingCitationKeys
+            .map((key) => `Citation key '${key}' is not in this project's references.`)
+            .join('\n')}
+        />
+      )}
+      {removeError && <Notice tone="danger" body={removeError} />}
+
+      {selectMode && (
+        <View style={styles.selectionBar}>
+          <Text style={styles.selectionText}>{selectedOrder.length} selected</Text>
+          <Button
+            label="Insert citations"
+            variant="primary"
+            size="sm"
+            disabled={selectedOrder.length === 0}
+            onPress={handleInsertSelected}
+          />
+        </View>
+      )}
+
+      <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
+        {loading && <ActivityIndicator color={theme.accent} style={styles.spinner} />}
+        {!loading && loadError && <Notice tone="danger" body={loadError} />}
+        {!loading && !loadError && references.length === 0 && (
+          <EmptyState
+            title="No references yet."
+            description="Add documents from your library to build this manuscript's bibliography."
+            actionLabel="+ Add references"
+            onAction={onAddReferences}
+          />
+        )}
+        {!loading &&
+          !loadError &&
+          references.map((ref) => {
+            const selected = selectedOrder.includes(ref.document_id);
+            const identity = formatSourceIdentity(ref.authors, ref.publication_year, ref.title);
+            return (
+              <Pressable
+                key={ref.document_id}
+                onPress={selectMode ? () => toggleSelected(ref.document_id) : undefined}
+                accessibilityRole={selectMode ? 'checkbox' : undefined}
+                accessibilityState={selectMode ? { checked: selected } : undefined}
+                accessibilityLabel={selectMode ? `Select ${identity}` : undefined}
+                style={[styles.row, selectMode && selected && styles.rowSelected]}
+              >
+                {selectMode && (
+                  <View style={[styles.checkbox, selected && styles.checkboxActive]} />
+                )}
+                <View style={styles.rowBody}>
+                  <View style={styles.rowHeader}>
+                    <Text style={styles.rowIdentity} numberOfLines={1}>
+                      {identity}
+                    </Text>
+                    <Badge
+                      label={ref.cited ? 'Cited' : 'Not cited'}
+                      tone={ref.cited ? 'citation' : 'neutral'}
+                    />
+                  </View>
+                  <Text style={styles.rowTitle} numberOfLines={1}>
+                    {ref.title ?? ref.source_filename}
+                  </Text>
+                  {!selectMode && (
+                    <View style={styles.actionsRow}>
+                      <Pressable
+                        onPress={() => ref.citation_key && onInsertCitation(ref.citation_key)}
+                        disabled={!ref.citation_key}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Insert citation for ${identity}`}
+                        hitSlop={6}
+                      >
+                        <Text
+                          style={ref.citation_key ? styles.actionText : styles.actionTextDisabled}
+                        >
+                          Insert citation
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => void handleRemove(ref.document_id)}
+                        disabled={removingIds.has(ref.document_id)}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Remove ${identity} from this project`}
+                        hitSlop={6}
+                      >
+                        <Text style={styles.removeText}>
+                          {removingIds.has(ref.document_id) ? 'Removing…' : 'Remove'}
+                        </Text>
+                      </Pressable>
+                    </View>
+                  )}
+                </View>
+              </Pressable>
+            );
+          })}
+      </ScrollView>
+    </View>
+  );
+}
+
+function buildStyles(theme: Theme) {
+  return StyleSheet.create({
+    container: { flex: 1, gap: 10 },
+    toolbar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+    count: { fontSize: 12, fontFamily: theme.fonts.bodySemibold, color: theme.faint },
+    toolbarActions: { flexDirection: 'row', gap: 6 },
+    bibtexButton: { alignSelf: 'flex-start' },
+    selectionBar: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 10,
+      backgroundColor: theme.accentSoft,
+      borderRadius: theme.radius.md,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+    },
+    selectionText: { fontSize: 12, fontFamily: theme.fonts.bodySemibold, color: theme.accent },
+    list: { flex: 1 },
+    listContent: { gap: 2, paddingBottom: 12 },
+    spinner: { marginTop: 20 },
+    row: {
+      flexDirection: 'row',
+      gap: 8,
+      paddingVertical: 10,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: theme.border,
+    },
+    rowSelected: { backgroundColor: theme.accentSoft, borderRadius: theme.radius.sm },
+    checkbox: {
+      width: 16,
+      height: 16,
+      marginTop: 3,
+      borderRadius: 4,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.border,
+    },
+    checkboxActive: { backgroundColor: theme.accent, borderColor: theme.accent },
+    rowBody: { flex: 1, gap: 3 },
+    rowHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 6,
+    },
+    rowIdentity: { flex: 1, fontSize: 13, fontFamily: theme.fonts.bodySemibold, color: theme.text },
+    rowTitle: { fontSize: 12, fontFamily: theme.fonts.body, color: theme.subtext },
+    actionsRow: { flexDirection: 'row', gap: 14, marginTop: 2 },
+    actionText: { fontSize: 12, fontFamily: theme.fonts.bodySemibold, color: theme.accent },
+    actionTextDisabled: { fontSize: 12, fontFamily: theme.fonts.body, color: theme.faint },
+    removeText: { fontSize: 12, fontFamily: theme.fonts.bodySemibold, color: theme.danger },
+  });
+}

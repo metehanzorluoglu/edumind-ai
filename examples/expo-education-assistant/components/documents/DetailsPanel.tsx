@@ -3,7 +3,7 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { DOCUMENT_TYPE_LABELS } from '@/lib/enums';
 import { fileExtension } from '@/lib/documentUpload';
 import { formatLibraryDate, libraryItemName, type LibraryItem } from '@/lib/libraryItems';
-import { safeText } from '@/lib/format';
+import { formatAuthors, safeText } from '@/lib/format';
 import { useTheme, type Theme } from '@/lib/Preferences';
 import { FileIcon, FolderIcon, CloseIcon } from '@/components/icons';
 import { IconButton } from '@/components/ui/IconButton';
@@ -33,6 +33,27 @@ export interface DetailsPanelProps {
    * entry point into the reader alongside double-activate and the actions
    * menu's own "Open". */
   onOpenDocument?: () => void;
+  /** Milestone 4 (Reference Library & Bibliographic Metadata Foundation)
+   * Section 9 — a second, always-visible entry point into "Edit metadata"
+   * alongside the row/card menu's own copy, shown only for a single
+   * selected document. */
+  onEditMetadata?: () => void;
+  /** Milestone 4.2 (Citation & BibTeX Foundation) Section 10/24 — a
+   * second, always-visible entry point into the Citation popover
+   * alongside the row/card menu's own copy, shown only for a single
+   * selected document. */
+  onCitation?: () => void;
+  /** Milestone 4.2 Section 20 — shown only in the multi-selection state,
+   * when at least one selected item is a document (same gating as
+   * onUseSelectedInChat above). Exports every selected document as one
+   * `.bib` file. */
+  onExportBibtexSelected?: () => void;
+  exportingBibtex?: boolean;
+  /** Milestone 5 (Academic Writing & LaTeX Foundation) Part 34 — shown
+   * only in the multi-selection state, when at least one selected item
+   * is a document (same gating as onUseSelectedInChat above). Opens the
+   * AddToWritingProjectModal for the selected document(s). */
+  onAddSelectedToWritingProject?: () => void;
 }
 
 interface Row {
@@ -58,6 +79,11 @@ export function DetailsPanel({
   onUseSelectedInChat,
   selectedDocumentCount = 0,
   onOpenDocument,
+  onEditMetadata,
+  onCitation,
+  onExportBibtexSelected,
+  exportingBibtex = false,
+  onAddSelectedToWritingProject,
 }: DetailsPanelProps) {
   const theme = useTheme();
   const styles = useMemo(() => buildStyles(theme), [theme]);
@@ -74,6 +100,25 @@ export function DetailsPanel({
               variant="secondary"
               size="sm"
               onPress={onUseSelectedInChat}
+              style={styles.useInChatButton}
+            />
+          )}
+          {onExportBibtexSelected && selectedDocumentCount > 0 && (
+            <Button
+              label={`Export ${selectedDocumentCount} as BibTeX`}
+              variant="ghost"
+              size="sm"
+              onPress={onExportBibtexSelected}
+              loading={exportingBibtex}
+              style={styles.useInChatButton}
+            />
+          )}
+          {onAddSelectedToWritingProject && selectedDocumentCount > 0 && (
+            <Button
+              label={`Add ${selectedDocumentCount} to writing project`}
+              variant="ghost"
+              size="sm"
+              onPress={onAddSelectedToWritingProject}
               style={styles.useInChatButton}
             />
           )}
@@ -119,14 +164,36 @@ export function DetailsPanel({
             </View>
           ))}
         </View>
-        {item.kind === 'document' && onOpenDocument && (
-          <Button
-            label="Open"
-            variant="primary"
-            size="sm"
-            onPress={onOpenDocument}
-            style={styles.useInChatButton}
-          />
+        {item.kind === 'document' && (onOpenDocument || onEditMetadata || onCitation) && (
+          <View style={styles.actionRow}>
+            {onOpenDocument && (
+              <Button
+                label="Open"
+                variant="primary"
+                size="sm"
+                onPress={onOpenDocument}
+                style={styles.actionButton}
+              />
+            )}
+            {onEditMetadata && (
+              <Button
+                label="Edit metadata"
+                variant="secondary"
+                size="sm"
+                onPress={onEditMetadata}
+                style={styles.actionButton}
+              />
+            )}
+            {onCitation && (
+              <Button
+                label="Citation"
+                variant="ghost"
+                size="sm"
+                onPress={onCitation}
+                style={styles.actionButton}
+              />
+            )}
+          </View>
         )}
       </ScrollView>
     </View>
@@ -169,14 +236,43 @@ function buildRows(item: LibraryItem, locationLabel: string): Row[] {
     ];
   }
   const ext = fileExtension(item.data.source_filename).replace(/^\./, '').toUpperCase();
+  const doc = item.data;
+  // Milestone 4 (Reference Library & Bibliographic Metadata Foundation)
+  // Section 6/9: bibliographic rows, each shown only when there's a real
+  // value — "unknown means unknown" (Section 4): a pre-M4 or
+  // not-yet-reviewed document simply shows none of these, exactly the
+  // pre-M4 panel, rather than a wall of "Not available" rows.
+  const bibliographicRows: Row[] = [
+    doc.authors && doc.authors.length > 0
+      ? { label: 'Authors', value: formatAuthors(doc.authors) }
+      : null,
+    doc.publication_year ? { label: 'Year', value: String(doc.publication_year) } : null,
+    doc.source_venue ? { label: 'Venue', value: doc.source_venue } : null,
+    doc.volume || doc.issue
+      ? { label: 'Volume/Issue', value: [doc.volume, doc.issue].filter(Boolean).join(' / ') }
+      : null,
+    doc.page_start || doc.page_end
+      ? {
+          label: 'Pages',
+          value:
+            doc.page_start && doc.page_end
+              ? `${doc.page_start}–${doc.page_end}`
+              : String(doc.page_start ?? doc.page_end),
+        }
+      : null,
+    doc.publisher ? { label: 'Publisher', value: doc.publisher } : null,
+    doc.doi ? { label: 'DOI', value: doc.doi } : null,
+  ].filter((row): row is Row => row !== null);
+
   return [
-    { label: 'Name', value: safeText(item.data.title, item.data.source_filename) },
-    { label: 'File', value: item.data.source_filename },
-    { label: 'Type', value: ext || DOCUMENT_TYPE_LABELS[item.data.document_type] },
-    { label: 'Category', value: DOCUMENT_TYPE_LABELS[item.data.document_type] },
+    { label: 'Name', value: safeText(doc.title, doc.source_filename) },
+    ...bibliographicRows,
+    { label: 'File', value: doc.source_filename },
+    { label: 'Type', value: ext || DOCUMENT_TYPE_LABELS[doc.document_type] },
+    { label: 'Category', value: DOCUMENT_TYPE_LABELS[doc.document_type] },
     { label: 'Location', value: locationLabel },
-    { label: 'Chunks', value: String(item.data.chunk_count) },
-    { label: 'Uploaded', value: formatLibraryDate(item.data.ingested_at) },
+    { label: 'Chunks', value: String(doc.chunk_count) },
+    { label: 'Uploaded', value: formatLibraryDate(doc.ingested_at) },
   ];
 }
 
@@ -200,6 +296,8 @@ function buildStyles(theme: Theme) {
       maxWidth: 180,
     },
     useInChatButton: { marginTop: 4 },
+    actionRow: { width: '100%', gap: 8, marginTop: 4 },
+    actionButton: { width: '100%' },
     body: { alignItems: 'center', paddingTop: 8, gap: 10 },
     iconBadge: {
       width: 56,

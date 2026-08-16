@@ -19,12 +19,13 @@ import { TextField } from '@/components/ui/TextField';
 import { CheckIcon, CloseIcon, FileIcon, FolderIcon } from '@/components/icons';
 import { SortMenu } from '@/components/documents/SortMenu';
 import {
+  librarySortLabel,
   sortLibraryContents,
   type LibrarySortDirection,
   type LibrarySortKey,
 } from '@/lib/libraryItems';
 import { useClient } from '@/lib/ClientProvider';
-import { safeText } from '@/lib/format';
+import { formatSourceIdentity, safeText } from '@/lib/format';
 import { useTheme, type Theme } from '@/lib/Preferences';
 
 const NARROW_BREAKPOINT_PX = 480;
@@ -435,9 +436,13 @@ export function ChatSourcesPicker({
     ? sorted.folders.filter((f) => safeText(f.name, '').toLowerCase().includes(query))
     : sorted.folders;
   const visibleDocuments = query
-    ? sorted.documents.filter((d) =>
-        safeText(d.title, d.source_filename).toLowerCase().includes(query)
-      )
+    ? sorted.documents.filter((d) => {
+        const haystack = [d.title, d.source_filename, ...(d.authors ?? [])]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        return haystack.includes(query);
+      })
     : sorted.documents;
   const libraryIsEmpty =
     contents.status === 'success' &&
@@ -536,7 +541,7 @@ export function ChatSourcesPicker({
             <Text style={styles.libraryLabel}>Library</Text>
             <View style={styles.libraryHeaderActions}>
               <Button
-                label={`Sort by ${sortKey === 'name' ? 'Name' : sortKey === 'modified' ? 'Date modified' : sortKey === 'size' ? 'Size' : 'Type'}`}
+                label={`Sort by ${librarySortLabel(sortKey)}`}
                 variant="ghost"
                 size="sm"
                 onPress={() => setSortMenuOpen(true)}
@@ -601,7 +606,16 @@ export function ChatSourcesPicker({
                   </Pressable>
                 ))}
                 {visibleDocuments.map((doc) => {
-                  const displayName = safeText(doc.title, doc.source_filename);
+                  // Milestone 4 Section 11: when there's no title to show,
+                  // prefer "Author et al. (Year)" over a truncated
+                  // filename — falls straight back to the filename when
+                  // authors are unknown too, so this is strictly an
+                  // improvement over the old title-then-filename fallback,
+                  // never a regression. Never touches selection/Prioritize/
+                  // Zoom-In/retrieval — display only.
+                  const displayName = doc.title
+                    ? doc.title
+                    : formatSourceIdentity(doc.authors, doc.publication_year, doc.source_filename);
                   const isChecked = selected.has(doc.document_id);
                   return (
                     <Pressable

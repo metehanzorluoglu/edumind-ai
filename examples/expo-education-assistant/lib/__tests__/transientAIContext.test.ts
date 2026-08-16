@@ -58,4 +58,50 @@ describe('buildTransientContextPrefix', () => {
     ]);
     expect(result).not.toContain('My note:');
   });
+
+  describe('manuscript-selection (Milestone 5.2 Part 3)', () => {
+    function manuscriptEntry(overrides: Partial<TransientAIContextEntry> = {}): TransientAIContextEntry {
+      return {
+        sourceType: 'manuscript-selection',
+        documentId: null,
+        documentTitle: null,
+        pageNumber: null,
+        excerpt: "Teachers' motivational beliefs influenced how they enacted agency.",
+        ...overrides,
+      };
+    }
+
+    it('a single manuscript-selection entry is worded as "my manuscript", never as a library source', () => {
+      const result = buildTransientContextPrefix([manuscriptEntry()]);
+      expect(result).toBe(
+        'Regarding this passage from my manuscript:\n\n' +
+          '"Teachers\' motivational beliefs influenced how they enacted agency."\n\n'
+      );
+      // Never the generic "the selected source" fallback, which would
+      // misleadingly imply this came from the library.
+      expect(result).not.toContain('the selected source');
+    });
+
+    it('a manuscript-selection entry never shows a page suffix (it has none)', () => {
+      const result = buildTransientContextPrefix([manuscriptEntry({ pageNumber: 5 })]);
+      // pageNumber is always null for this sourceType in practice, but
+      // even if a caller mistakenly set one, the manuscript phrasing
+      // branch never reads it.
+      expect(result).toBe(
+        'Regarding this passage from my manuscript:\n\n' +
+          '"Teachers\' motivational beliefs influenced how they enacted agency."\n\n'
+      );
+    });
+
+    it('mixed manuscript-selection + library entries render distinct "My manuscript" vs source blocks', () => {
+      const result = buildTransientContextPrefix([
+        manuscriptEntry({ excerpt: 'My draft claim.' }),
+        entry({ documentTitle: 'Forrester et al.', pageNumber: 7, excerpt: 'Supporting finding.' }),
+      ]);
+      expect(result).toContain('Evidence 1 — Source: My manuscript');
+      expect(result).toContain('Excerpt: "My draft claim."');
+      expect(result).toContain('Evidence 2 — Source: Forrester et al., page 7');
+      expect(result).toContain('Excerpt: "Supporting finding."');
+    });
+  });
 });

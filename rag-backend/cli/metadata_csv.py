@@ -7,11 +7,15 @@ explicit per-run --document-type/--journal-quartile fallback), never
 guessed from article text. See AGENTS.md milestone 8 §2.
 
 `language` and `notes` are accepted as bookkeeping columns for the person
-managing the corpus (e.g. "why is this document included"), but are NOT
-currently persisted anywhere in the backend — DocumentMetadata has no such
-fields. They round-trip into the ingestion report so they aren't silently
-dropped, but ingest_document() never receives them. This is a known,
-documented limitation, not an oversight.
+managing the corpus (e.g. "why is this document included"), but this CSV
+bulk-ingest path does not currently pass either one to ingest_document() —
+Milestone 4 added a real `language` column to DocumentMetadata/Document
+(populated from automatic extraction, or a manual edit after upload), but
+this CLI tool's `language` column still isn't wired to it, since the
+CSV-import pipeline is a separate, pre-M4 admin path this milestone did
+not touch. `notes` has no destination anywhere in the schema at all. Both
+still round-trip into the ingestion report so they aren't silently
+dropped. This is a known, documented limitation, not an oversight.
 """
 
 from __future__ import annotations
@@ -29,6 +33,12 @@ VALID_DOCUMENT_TYPES = frozenset(
         "report",
         "review_article",
         "curriculum_document",
+        # Milestone 4 — mirrors app.ingestion.metadata_schema.DocumentType.
+        "book",
+        "book_chapter",
+        "thesis_dissertation",
+        "conference_paper",
+        "other",
     }
 )
 VALID_QUARTILES = frozenset({"Q1", "Q2"})

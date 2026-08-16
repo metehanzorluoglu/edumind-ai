@@ -71,6 +71,7 @@ def get_status(settings: SettingsDep, user: CurrentUserDep) -> StatusResponse:
         folder_library_enabled=settings.folder_library_enabled,
         conversation_scope_enabled=settings.conversation_scope_enabled,
         zoom_in_enabled=settings.zoom_in_enabled,
+        latex_compilation_enabled=settings.latex_compilation_enabled,
         text_model_available=readiness.models_available[settings.ollama_llm_model],
         embedding_model_available=readiness.models_available[settings.ollama_embed_model],
         ollama_latency_ms=readiness.ollama_latency_ms,

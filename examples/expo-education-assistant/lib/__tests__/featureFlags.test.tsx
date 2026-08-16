@@ -65,6 +65,7 @@ interface CapturedFlags {
   folderLibrary: boolean;
   conversationScope: boolean;
   zoomIn: boolean;
+  latexCompilation: boolean;
   developerSettings: boolean;
   loaded: boolean;
   refresh: () => Promise<void>;
@@ -450,6 +451,64 @@ describe('zoomIn flag', () => {
       await Promise.resolve();
     });
     expect(last!.zoomIn).toBe(false);
+  });
+});
+
+// latexCompilation is the one server-derived flag with an opposite
+// (false) default from every other flag above — see FeatureFlags.tsx's
+// docstring on why an untrusted-code-execution surface must never appear
+// even transiently before /status resolves.
+describe('latexCompilation flag', () => {
+  afterEach(() => {
+    delete process.env.EXPO_PUBLIC_LATEX_COMPILATION_ENABLED;
+  });
+
+  it('reads latexCompilation=true from a successful GET /status', async () => {
+    mockStatusResponses.push({
+      reject: false,
+      payload: { image_generation_enabled: true, latex_compilation_enabled: true },
+    });
+    const { flags } = await renderAndCapture();
+    expect(flags.latexCompilation).toBe(true);
+    expect(flags.loaded).toBe(true);
+  });
+
+  it('reads latexCompilation=false from a successful GET /status (the default/off mode)', async () => {
+    mockStatusResponses.push({
+      reject: false,
+      payload: { image_generation_enabled: true, latex_compilation_enabled: false },
+    });
+    const { flags } = await renderAndCapture();
+    expect(flags.latexCompilation).toBe(false);
+  });
+
+  it('falls back to the build-time default (false) before /status resolves', async () => {
+    mockStatus.mockImplementationOnce(() => new Promise(() => {}));
+    let last: CapturedFlags | null = null;
+    await act(async () => {
+      create(
+        <FeatureFlagsProvider>
+          <Probe onRender={(f) => (last = f)} />
+        </FeatureFlagsProvider>
+      );
+      await Promise.resolve();
+    });
+    expect(last!.latexCompilation).toBe(false);
+  });
+
+  it('an explicit EXPO_PUBLIC_LATEX_COMPILATION_ENABLED=true bootstrap default is honored pre-/status', async () => {
+    process.env.EXPO_PUBLIC_LATEX_COMPILATION_ENABLED = 'true';
+    mockStatus.mockImplementationOnce(() => new Promise(() => {}));
+    let last: CapturedFlags | null = null;
+    await act(async () => {
+      create(
+        <FeatureFlagsProvider>
+          <Probe onRender={(f) => (last = f)} />
+        </FeatureFlagsProvider>
+      );
+      await Promise.resolve();
+    });
+    expect(last!.latexCompilation).toBe(true);
   });
 });
 

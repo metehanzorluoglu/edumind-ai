@@ -209,6 +209,12 @@ _DOCUMENT_TYPE_LABELS: dict[DocumentType, str] = {
     "report": "report",
     "review_article": "review article",
     "curriculum_document": "curriculum document",
+    # Milestone 4 — see DocumentType's docstring for why these exist.
+    "book": "book",
+    "book_chapter": "book chapter",
+    "thesis_dissertation": "thesis/dissertation",
+    "conference_paper": "conference paper",
+    "other": "document",
     # Frontend/Platform Milestone 3.2.1 Part C — see DocumentType's
     # docstring for why this value exists.
     "unknown": "document",

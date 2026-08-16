@@ -10,6 +10,14 @@ export type DocumentType =
   | 'report'
   | 'review_article'
   | 'curriculum_document'
+  // Milestone 4 (Reference Library & Bibliographic Metadata Foundation) —
+  // mirrors the same addition to app/ingestion/metadata_schema.py's
+  // DocumentType.
+  | 'book'
+  | 'book_chapter'
+  | 'thesis_dissertation'
+  | 'conference_paper'
+  | 'other'
   // Frontend/Platform Milestone 3.2.1 Part C — mirrors the same addition
   // to app/ingestion/metadata_schema.py's DocumentType: the normal
   // upload UI no longer asks the caller to classify a document, and the

@@ -91,6 +91,83 @@ class Document(Base):
     original_mime_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
     original_file_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # --- Milestone 4 (Reference Library & Bibliographic Metadata
+    # Foundation): canonical bibliographic detail beyond the six fields
+    # above (title/authors/publication_year/source_venue/doi/source_url,
+    # which predate this milestone and keep their existing columns/names
+    # unchanged). All nullable, all NULL for every document ingested
+    # before this milestone and for any field no extraction pass or user
+    # ever supplied a value for — "unknown means unknown" (Milestone 4
+    # Section 3/4), never a fabricated default. `issue`/`publisher` in
+    # particular have no extraction heuristic anywhere in this codebase;
+    # they only ever get set via a manual metadata edit. `keywords`
+    # follows `authors`' own precedent (JSON, NOT NULL, default empty
+    # list) rather than being nullable — an empty list already honestly
+    # means "none extracted/entered," so there is no separate NULL state
+    # to distinguish.
+    volume: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    issue: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    page_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    page_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    publisher: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    abstract: Mapped[str | None] = mapped_column(Text, nullable=True)
+    keywords: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    language: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Per-field provenance map (field name -> one of ExtractionSource's
+    # string values — see app/ingestion/loaders/base.py), e.g.
+    # {"title": "embedded_metadata", "doi": "structured_text",
+    # "publication_year": "user"}. NOT NULL / default {} rather than
+    # nullable, matching `keywords` above — a document with no tracked
+    # provenance (every row ingested before this milestone) simply has an
+    # empty map, which is the honest "we don't know how these fields were
+    # populated" state, not a special-cased NULL. The single mechanism
+    # that guarantees "user correction wins over future automatic
+    # extraction" (Milestone 4 Section 5): the metadata-edit endpoint
+    # (routes_documents.py) always writes "user" here for every field it
+    # touches, and no automatic re-extraction path in this codebase ever
+    # overwrites a field — ingestion only ever runs once, at upload time,
+    # before any user edit could exist.
+    metadata_sources: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
+
+    # --- Milestone 4.1 (Authoritative Metadata Enrichment & Duplicate
+    # Awareness): the outcome of the most recent Crossref lookup attempt
+    # for this document — see app/core/bibliographic_enrichment_service.py.
+    # All three nullable and all NULL for every document ingested before
+    # this milestone, and for any document without a usable DOI (which can
+    # never be enriched at all) — "never enriched" is the honest default,
+    # never a fabricated status. `enrichment_status` is a short, fixed
+    # string (see EnrichmentStatus in that module) rather than a bool, so
+    # the UI can tell "never attempted" apart from "attempted, provider
+    # had nothing" apart from "attempted, provider unreachable" (Section
+    # 21). Deliberately three flat columns, not a JSON blob or a separate
+    # table: this milestone explicitly does not persist the raw provider
+    # response (Section 20 — "do not persist giant raw API responses
+    # unless there is a clear product reason"), so there is nothing here
+    # that needs more structure than "when, by what, and how did it go."
+    last_enriched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    enrichment_provider: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    enrichment_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    # --- Milestone 4.2 (Citation & BibTeX Foundation): the deterministic
+    # BibTeX/citation key (see app/core/citation_key.py), generated once
+    # and persisted here — never regenerated on every request, which is
+    # what makes it STABLE (Section 16/17: "do not silently regenerate a
+    # previously persisted citation key on every metadata edit if it is
+    # already exposed externally" — a key a user has already pasted into a
+    # manuscript must never change under them just because they later fix
+    # a typo in the title). Nullable and NULL for every document that has
+    # never had a citation/BibTeX request made against it yet — see
+    # DocumentsRepository.get_or_create_citation_key for the lazy,
+    # self-healing backfill that fills this in the first time it's
+    # actually needed, never as a bulk migration rewrite of every existing
+    # row. Deliberately NOT in METADATA_FIELDS (see DocumentsRepository):
+    # this is a system-generated identifier, not a user-editable
+    # bibliographic field, and must never be reachable through PATCH
+    # /documents/{id}/metadata.
+    citation_key: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
 
 class DocumentJob(Base):
     """Tracks one background ingestion run (embed -> index -> persist) so
@@ -278,6 +355,16 @@ class NotebookEntry(Base):
     document_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     document_title_snapshot: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # Milestone 4: same snapshot-at-add-time rule as document_title_snapshot
+    # above (see class docstring) — copied once from the source Document
+    # row when the entry is created (see NotebooksRepository.add_*) and
+    # never re-read afterward, so a later metadata edit or the source
+    # document's deletion can never change what a NotebookEntry displays.
+    # NULL for every entry created before this milestone, and for any
+    # entry whose source document had no authors/year at add-time — both
+    # indistinguishable "we don't know" states, same as the title snapshot.
+    document_authors_snapshot: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    document_publication_year_snapshot: Mapped[int | None] = mapped_column(Integer, nullable=True)
     page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     excerpt_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
     note_text: Mapped[str | None] = mapped_column(Text, nullable=True)

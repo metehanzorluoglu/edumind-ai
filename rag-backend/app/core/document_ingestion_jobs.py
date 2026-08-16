@@ -49,11 +49,13 @@ import uuid
 from pathlib import Path
 
 from app.config import get_settings
+from app.core.bibliographic_enrichment_service import enrich_document
 from app.core.embedding_provider import EmbeddingProvider
 from app.core.request_timing import RequestTimer
 from app.db.document_jobs_repository import DocumentJobsRepository
 from app.db.documents_repository import DocumentsRepository
 from app.db.session import get_session_factory
+from app.deps import get_bibliographic_provider
 from app.ingestion.chunker import Chunk
 from app.ingestion.metadata_schema import DocumentMetadata
 from app.services.document_file_storage import DocumentFileStorage
@@ -238,3 +240,47 @@ def _run(
     timer.log_summary(note="completed")
     if timer.enabled:
         jobs_repository.set_timings(job_id, timings_json=json.dumps(timer.as_dict()))
+
+    # Milestone 4.1 §10/§29 — best-effort, bounded, DOI-gated enrichment,
+    # run only AFTER the job is already marked completed and its timings
+    # persisted above: the document is fully usable (Reader/Notebook/
+    # Sources all read the SQL row that .create() already committed)
+    # before this even starts, and nothing about upload success or
+    # latency ever depends on Crossref being reachable (Section 39: never
+    # on the ingestion critical path the user is waiting on) — this
+    # intentionally runs outside `timer`'s own stage/summary bookkeeping
+    # for the same reason. The try/except is deliberately broad — an
+    # enrichment failure of ANY kind (network, a DocumentsRepository/DB
+    # error, an unexpected exception in the merge logic) must never turn
+    # an already-successful upload into a failed job; see this module's
+    # own docstring for why that's a hard requirement, not a nicety.
+    try:
+        result = enrich_document(
+            user_id=user_id,
+            document_id=metadata.document_id,
+            documents_repository=documents_repository,
+            provider=get_bibliographic_provider(),
+            settings=get_settings(),
+            vector_store=vector_store,
+        )
+        if result.ok:
+            logger.info(
+                "Ingestion job %s: post-ingest enrichment updated %d field(s) for document %s",
+                job_id,
+                len(result.fields_updated),
+                metadata.document_id,
+            )
+        elif result.status not in ("disabled", "no_doi"):
+            logger.info(
+                "Ingestion job %s: post-ingest enrichment for document %s did not succeed (%s)",
+                job_id,
+                metadata.document_id,
+                result.status,
+            )
+    except Exception:
+        logger.exception(
+            "Ingestion job %s: post-ingest enrichment raised for document %s (upload already"
+            " succeeded and is unaffected)",
+            job_id,
+            metadata.document_id,
+        )

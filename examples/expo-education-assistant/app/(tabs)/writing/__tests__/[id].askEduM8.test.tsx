@@ -1,0 +1,797 @@
+/**
+ * Milestone 5.2 (Research-Aware Writing Assistant) — Part 19 frontend
+ * coverage for "Ask EduM8" inside the Writing workspace: opening the
+ * panel, the default Project References scope + its research-context
+ * indicator (Part 12), sending a question through the real
+ * create-conversation -> PUT documents -> PATCH zoom_in_mode -> POST
+ * message sequence, evidence-first answer rendering (Part 5), empty/
+ * unsupported evidence (Part 13), Add reference / Insert citation (Parts
+ * 7/8), Open source navigation (Part 6), the manuscript-selection
+ * transient-context checkbox (Part 3), and the AI/manuscript safety
+ * boundary — the manuscript is NEVER touched except by the explicit
+ * Insert citation action (Part 14).
+ *
+ * Same harness convention as [id].test.tsx/[id].compile.test.tsx: a raw
+ * `global.fetch` mock routed by method+URL, real ClientProvider/
+ * AuthProvider/FeatureFlagsProvider, the real screen component. Kept in
+ * its own file (not appended to [id].test.tsx) for the same reason
+ * [id].compile.test.tsx is separate — a distinct, sizeable feature
+ * surface with its own route fixtures.
+ */
+import { Platform } from 'react-native';
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
+import { AuthProvider } from '@/lib/AuthProvider';
+import { ClientProvider } from '@/lib/ClientProvider';
+import { FeatureFlagsProvider } from '@/lib/FeatureFlags';
+import WritingProjectEditorScreen from '../[id]';
+
+jest.mock('expo-secure-store', () => ({
+  getItemAsync: jest.fn(),
+  setItemAsync: jest.fn(),
+  deleteItemAsync: jest.fn(),
+}));
+
+const mockPush = jest.fn();
+const mockParams: { id: string } = { id: 'w-1' };
+jest.mock('expo-router', () => ({
+  useRouter: () => ({ push: mockPush, replace: jest.fn() }),
+  useLocalSearchParams: () => mockParams,
+  usePathname: () => '/writing/w-1',
+  useGlobalSearchParams: () => ({}),
+}));
+
+const originalOS = Platform.OS;
+beforeAll(() => {
+  Platform.OS = 'web';
+});
+afterAll(() => {
+  Platform.OS = originalOS;
+});
+
+function textOf(node: ReactTestInstance): string {
+  return node.children
+    .map((c) => (typeof c === 'string' || typeof c === 'number' ? String(c) : ''))
+    .join('');
+}
+
+function findByTextIncluding(root: ReactTestInstance, substring: string): ReactTestInstance {
+  const matches = root.findAll(
+    (node) => String(node.type) === 'Text' && textOf(node).includes(substring)
+  );
+  if (matches.length === 0)
+    throw new Error(`No Text node found containing ${JSON.stringify(substring)}`);
+  return matches[0]!;
+}
+
+function queryByTextIncluding(
+  root: ReactTestInstance,
+  substring: string
+): ReactTestInstance | null {
+  const matches = root.findAll(
+    (node) => String(node.type) === 'Text' && textOf(node).includes(substring)
+  );
+  return matches[0] ?? null;
+}
+
+function findPressableByLabel(root: ReactTestInstance, label: string): ReactTestInstance {
+  return root.find(
+    (node) => typeof node.props.onPress === 'function' && node.props.accessibilityLabel === label
+  );
+}
+
+function findPressableWithText(root: ReactTestInstance, text: string): ReactTestInstance {
+  return root.find(
+    (node) =>
+      typeof node.props.onPress === 'function' &&
+      node.findAll((n) => String(n.type) === 'Text' && textOf(n).includes(text)).length > 0
+  );
+}
+
+interface FetchRoute {
+  method: string;
+  matches: (url: string) => boolean;
+  respond: () => Response;
+}
+
+function installFetchMock(routes: FetchRoute[]) {
+  global.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input.toString();
+    const method = (init?.method ?? 'GET').toUpperCase();
+    const route = routes.find((r) => r.method === method && r.matches(url));
+    if (!route) throw new Error(`Unhandled ${method} ${url} in this test`);
+    return route.respond();
+  }) as unknown as typeof fetch;
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status });
+}
+
+function sseEvent(payload: unknown): string {
+  return `data: ${JSON.stringify(payload)}\n\n`;
+}
+
+function sseResponse(events: unknown[]): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const event of events) controller.enqueue(encoder.encode(sseEvent(event)));
+      controller.close();
+    },
+  });
+  return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+}
+
+async function flushAsync(): Promise<void> {
+  for (let i = 0; i < 10; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
+const PROJECT = {
+  id: 'w-1',
+  title: 'Laser Cutting Paper',
+  description: null,
+  main_tex_content: '\\documentclass{article}\n\\begin{document}\n\\end{document}',
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+};
+
+const REFERENCE = {
+  document_type: 'journal_article',
+  title: 'A Study of Laser Cutting',
+  authors: ['Jane Doe'],
+  publication_year: 2020,
+  has_usable_doi: false,
+  citation_key: 'Doe2020Laser',
+  document_id: 'd-1',
+  source_filename: 'paper.pdf',
+  added_at: '2026-01-01T00:00:00Z',
+  cited: false,
+};
+
+const CHUNK = {
+  score: 0.92,
+  text: 'Teachers reported increased autonomy after the 12-week program.',
+  document_id: 'd-1',
+  chunk_id: 'c-1',
+  document_type: 'journal_article',
+  title: 'A Study of Laser Cutting',
+  authors: ['Jane Doe'],
+  publication_year: 2020,
+  source_venue: 'Journal of Examples',
+  source_filename: 'paper.pdf',
+  chunk_index: 0,
+  page_number: 4,
+  scope: 'chat',
+};
+
+const CITATION = {
+  source_id: 'S1',
+  source_kind: 'document',
+  document_id: 'd-1',
+  chunk_id: 'c-1',
+  title: 'A Study of Laser Cutting',
+  authors: ['Jane Doe'],
+  publication_year: 2020,
+  source_venue: 'Journal of Examples',
+  document_type: 'journal_article',
+  journal_quartile: null,
+  page_start: 4,
+  page_end: 4,
+  doi: null,
+  source_url: null,
+  score: 0.92,
+};
+
+function getProjectRoute(): FetchRoute {
+  return {
+    method: 'GET',
+    matches: (u) => u.endsWith('/writing-projects/w-1'),
+    respond: () => jsonResponse(PROJECT),
+  };
+}
+
+function patchProjectRoute(): FetchRoute {
+  return {
+    method: 'PATCH',
+    matches: (u) => u.endsWith('/writing-projects/w-1'),
+    respond: () => jsonResponse(PROJECT),
+  };
+}
+
+function referencesRoute(references: unknown[] = [REFERENCE]): FetchRoute {
+  return {
+    method: 'GET',
+    matches: (u) => u.endsWith('/writing-projects/w-1/references'),
+    respond: () =>
+      jsonResponse({ references, total: references.length, missing_citation_keys: [] }),
+  };
+}
+
+function createConversationRoute(id = 'conv-1'): FetchRoute {
+  return {
+    method: 'POST',
+    matches: (u) => u.endsWith('/conversations'),
+    respond: () =>
+      jsonResponse(
+        {
+          id,
+          title: 'New conversation',
+          title_is_custom: false,
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+          messages: [],
+        },
+        201
+      ),
+  };
+}
+
+function putDocumentsRoute(conversationId = 'conv-1'): FetchRoute {
+  return {
+    method: 'PUT',
+    matches: (u) => u.endsWith(`/conversations/${conversationId}/documents`),
+    respond: () => jsonResponse({ documents: [], total: 1 }),
+  };
+}
+
+function patchScopeRoute(conversationId = 'conv-1'): FetchRoute {
+  return {
+    method: 'PATCH',
+    matches: (u) => u.endsWith(`/conversations/${conversationId}/scope`),
+    respond: () =>
+      jsonResponse({
+        chat_enabled: true,
+        project_enabled: true,
+        general_enabled: true,
+        include_other_project_summaries: false,
+        zoom_in_mode: true,
+      }),
+  };
+}
+
+function messagesRoute(
+  conversationId = 'conv-1',
+  options: { answer?: string; insufficientEvidence?: boolean } = {}
+): FetchRoute {
+  const answer = options.answer ?? 'Teachers reported increased autonomy [S1].';
+  const insufficientEvidence = options.insufficientEvidence ?? false;
+  return {
+    method: 'POST',
+    matches: (u) => u.endsWith(`/conversations/${conversationId}/messages`),
+    respond: () =>
+      sseResponse(
+        insufficientEvidence
+          ? [{ type: 'done', citations: [], citation_warnings: [], insufficient_evidence: true }]
+          : [
+              { type: 'token', content: answer },
+              { type: 'sources', sources: [CHUNK] },
+              {
+                type: 'done',
+                citations: [CITATION],
+                citation_warnings: [],
+                insufficient_evidence: false,
+              },
+            ]
+      ),
+  };
+}
+
+function addReferenceRoute(): FetchRoute {
+  return {
+    method: 'POST',
+    matches: (u) => u.endsWith('/writing-projects/w-1/references'),
+    respond: () => jsonResponse({ added: 1 }),
+  };
+}
+
+function bibtexRoute(documentId = 'd-1', citationKey = 'Doe2020Laser'): FetchRoute {
+  return {
+    method: 'GET',
+    matches: (u) => u.endsWith(`/documents/${documentId}/bibtex`),
+    respond: () => jsonResponse({ citation_key: citationKey, bibtex: `@article{${citationKey},}` }),
+  };
+}
+
+// --- "Add to notebook" routes (Part 9/10) --------------------------------
+
+function createHighlightRoute(documentId = 'd-1'): FetchRoute {
+  return {
+    method: 'POST',
+    matches: (u) => u.endsWith(`/documents/${documentId}/highlights`),
+    respond: () =>
+      jsonResponse(
+        {
+          id: 'h-1',
+          document_id: documentId,
+          chunk_id: 'c-1',
+          chunk_index: 0,
+          page_number: 4,
+          selected_text: 'Teachers reported increased autonomy after the 12-week program.',
+          note_text: null,
+          visual_anchor: null,
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+        },
+        201
+      ),
+  };
+}
+
+function notebooksListRoute(): FetchRoute {
+  return {
+    method: 'GET',
+    matches: (u) => u.endsWith('/notebooks') || u.includes('/notebooks?'),
+    respond: () =>
+      jsonResponse({
+        notebooks: [
+          {
+            id: 'nb-1',
+            name: 'Chapter 2 sources',
+            entry_count: 0,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+          },
+        ],
+        total: 1,
+      }),
+  };
+}
+
+function highlightMembershipRoute(documentId = 'd-1', highlightId = 'h-1'): FetchRoute {
+  return {
+    method: 'GET',
+    matches: (u) => u.endsWith(`/documents/${documentId}/highlights/${highlightId}/notebooks`),
+    respond: () => jsonResponse({ notebooks: [] }),
+  };
+}
+
+// Milestone 5.3 — useWritingProjectFiles fetches the file tree + the
+// root file's content on mount, exactly like the pre-M5.3 editor's own
+// useWritingProject fetched main_tex_content directly. Every test here
+// gets this one-file default unless it lists its own override earlier.
+const ROOT_FILE_ID = 'root-file-id';
+
+function rootFileNode() {
+  return {
+    id: ROOT_FILE_ID,
+    parent_id: null,
+    kind: 'text',
+    name: 'main.tex',
+    path: 'main.tex',
+    mime_type: null,
+    size_bytes: PROJECT.main_tex_content.length,
+    is_root: true,
+  };
+}
+
+function filesTreeRoute(): FetchRoute {
+  return {
+    method: 'GET',
+    matches: (u) => u.endsWith('/writing-projects/w-1/files'),
+    respond: () =>
+      jsonResponse({
+        files: [rootFileNode()],
+        generated: [{ name: 'references.bib', path: 'references.bib', read_only: true, reference_count: 0 }],
+        root_file_id: ROOT_FILE_ID,
+        total_size_bytes: PROJECT.main_tex_content.length,
+        file_count: 1,
+        max_files: 150,
+        max_total_bytes: 100_000_000,
+      }),
+  };
+}
+
+function fileContentRoute(content: string = PROJECT.main_tex_content): FetchRoute {
+  return {
+    method: 'GET',
+    matches: (u) => u.endsWith(`/writing-projects/w-1/files/${ROOT_FILE_ID}`),
+    respond: () => jsonResponse({ file: rootFileNode(), content_text: content }),
+  };
+}
+
+/** Milestone 5.3 — the NEW per-file autosave endpoint (see
+ * [id].test.tsx's identical helper for why the legacy
+ * patchProjectRoute() above is no longer what editing itself PATCHes,
+ * though it's kept here since renameProject/other legacy-endpoint
+ * flows still use it). */
+function patchFileRoute(): FetchRoute {
+  return {
+    method: 'PATCH',
+    matches: (u) => u.endsWith(`/writing-projects/w-1/files/${ROOT_FILE_ID}`),
+    respond: () => jsonResponse({ file: rootFileNode() }),
+  };
+}
+
+let activeRenderers: ReactTestRenderer[] = [];
+
+async function renderScreen(routes: FetchRoute[]): Promise<ReactTestRenderer> {
+  installFetchMock([...routes, filesTreeRoute(), fileContentRoute(), patchFileRoute()]);
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      <AuthProvider>
+        <ClientProvider>
+          <FeatureFlagsProvider>
+            <WritingProjectEditorScreen />
+          </FeatureFlagsProvider>
+        </ClientProvider>
+      </AuthProvider>
+    );
+    await flushAsync();
+  });
+  activeRenderers.push(renderer);
+  return renderer;
+}
+
+function openAskPanel(renderer: ReactTestRenderer): void {
+  act(() => {
+    findPressableWithText(renderer.root, 'Ask EduM8').props.onPress();
+  });
+}
+
+async function askQuestion(renderer: ReactTestRenderer, question: string): Promise<void> {
+  const input = renderer.root.find(
+    (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'Ask a question'
+  );
+  act(() => {
+    input.props.onChangeText(question);
+  });
+  await act(async () => {
+    findPressableByLabel(renderer.root, 'Ask').props.onPress();
+    await flushAsync();
+  });
+}
+
+function bodyOf(call: [string, RequestInit] | undefined): Record<string, unknown> {
+  if (!call?.[1]?.body) return {};
+  return JSON.parse(call[1].body as string);
+}
+
+function findCall(method: string, urlSuffix: string): [string, RequestInit] | undefined {
+  return (global.fetch as jest.Mock).mock.calls.find(
+    ([url, init]: [string, RequestInit]) =>
+      (init?.method ?? 'GET') === method && String(url).endsWith(urlSuffix)
+  );
+}
+
+describe('Writing workspace — Ask EduM8 (Milestone 5.2)', () => {
+  beforeEach(() => {
+    mockPush.mockClear();
+    activeRenderers = [];
+  });
+
+  afterEach(async () => {
+    for (const renderer of activeRenderers) {
+      await act(async () => {
+        renderer.unmount();
+        await flushAsync();
+      });
+    }
+  });
+
+  it('the header button opens the panel showing "Research context" and the default Project references scope', async () => {
+    const renderer = await renderScreen([getProjectRoute(), referencesRoute([REFERENCE])]);
+    openAskPanel(renderer);
+
+    expect(findByTextIncluding(renderer.root, 'Research context')).toBeTruthy();
+    expect(findByTextIncluding(renderer.root, 'Project references · 1 source')).toBeTruthy();
+  });
+
+  it('an empty Project references scope disables Ask and never sends a request (Part 12/13)', async () => {
+    const renderer = await renderScreen([getProjectRoute(), referencesRoute([])]);
+    openAskPanel(renderer);
+
+    expect(findByTextIncluding(renderer.root, 'This project has no references yet')).toBeTruthy();
+    const input = renderer.root.find(
+      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'Ask a question'
+    );
+    act(() => {
+      input.props.onChangeText('What evidence supports this?');
+    });
+    const askButton = findPressableByLabel(renderer.root, 'Ask');
+    expect(askButton.props.disabled).toBe(true);
+
+    const messageCallsBefore = (global.fetch as jest.Mock).mock.calls.filter(([url]: [string]) =>
+      String(url).includes('/messages')
+    ).length;
+    expect(messageCallsBefore).toBe(0);
+  });
+
+  it('sending a question runs create -> PUT documents -> PATCH zoom_in_mode -> POST message, in that order, scoped to the project references', async () => {
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute([REFERENCE]),
+      createConversationRoute(),
+      putDocumentsRoute(),
+      patchScopeRoute(),
+      messagesRoute(),
+    ]);
+    openAskPanel(renderer);
+    await askQuestion(renderer, 'What evidence supports this claim?');
+
+    const createIdx = (global.fetch as jest.Mock).mock.calls.findIndex(
+      ([url, init]: [string, RequestInit]) =>
+        String(url).endsWith('/conversations') && (init?.method ?? 'GET') === 'POST'
+    );
+    const putIdx = (global.fetch as jest.Mock).mock.calls.findIndex(
+      ([url, init]: [string, RequestInit]) =>
+        String(url).endsWith('/conversations/conv-1/documents') && init?.method === 'PUT'
+    );
+    const patchIdx = (global.fetch as jest.Mock).mock.calls.findIndex(
+      ([url, init]: [string, RequestInit]) =>
+        String(url).endsWith('/conversations/conv-1/scope') && init?.method === 'PATCH'
+    );
+    const msgIdx = (global.fetch as jest.Mock).mock.calls.findIndex(
+      ([url, init]: [string, RequestInit]) =>
+        String(url).endsWith('/conversations/conv-1/messages') && init?.method === 'POST'
+    );
+    expect(createIdx).toBeGreaterThanOrEqual(0);
+    expect(putIdx).toBeGreaterThan(createIdx);
+    expect(patchIdx).toBeGreaterThan(putIdx);
+    expect(msgIdx).toBeGreaterThan(patchIdx);
+
+    expect(bodyOf(findCall('PUT', '/conversations/conv-1/documents'))).toEqual({
+      document_ids: ['d-1'],
+    });
+    expect(bodyOf(findCall('PATCH', '/conversations/conv-1/scope'))).toEqual({
+      zoom_in_mode: true,
+    });
+
+    // Evidence-first rendering (Part 5): answer + an Evidence card with
+    // author/year/page/excerpt, never a fabricated page.
+    expect(findByTextIncluding(renderer.root, 'Teachers reported increased autonomy')).toBeTruthy();
+    expect(findByTextIncluding(renderer.root, 'Doe')).toBeTruthy();
+    expect(findByTextIncluding(renderer.root, '2020')).toBeTruthy();
+  });
+
+  it('insufficient evidence is reported honestly, with no fabricated Evidence card (Part 13)', async () => {
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute([REFERENCE]),
+      createConversationRoute(),
+      putDocumentsRoute(),
+      patchScopeRoute(),
+      messagesRoute('conv-1', { insufficientEvidence: true }),
+    ]);
+    openAskPanel(renderer);
+    await askQuestion(renderer, 'Is there support for cold fusion in these sources?');
+
+    expect(findByTextIncluding(renderer.root, "couldn't find strong support")).toBeTruthy();
+    // No "Evidence" section (heading or card) rendered at all — an
+    // insufficient-evidence turn has zero cited sources, so the whole
+    // block is absent, never a fabricated empty one.
+    expect(queryByTextIncluding(renderer.root, 'Evidence')).toBeNull();
+    expect(queryByTextIncluding(renderer.root, 'Teachers reported')).toBeNull();
+  });
+
+  it('the AI response never mutates the manuscript on its own (Part 14)', async () => {
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute([REFERENCE]),
+      createConversationRoute(),
+      putDocumentsRoute(),
+      patchScopeRoute(),
+      messagesRoute(),
+    ]);
+    const editorBefore = renderer.root.find(
+      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
+    );
+    const contentBefore = editorBefore.props.value;
+
+    openAskPanel(renderer);
+    await askQuestion(renderer, 'What evidence supports this claim?');
+    // The evidence card actually rendered — proving this is a real
+    // "answer landed, nothing was inserted" check, not a vacuous one.
+    expect(findByTextIncluding(renderer.root, 'Teachers reported')).toBeTruthy();
+
+    // Back to the Editor tab (mobile: Ask EduM8 occupies the same slot —
+    // see [id].tsx's mobileTab union) to read the manuscript's real
+    // current value; content itself lives in the parent screen's own
+    // state and is unaffected by which tab is showing.
+    act(() => {
+      findPressableByLabel(renderer.root, 'Editor').props.onPress();
+    });
+    const editorAfter = renderer.root.find(
+      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
+    );
+    expect(editorAfter.props.value).toBe(contentBefore);
+  });
+
+  it('"Insert citation" resolves the real citation key and inserts it at the cursor (Part 8/19)', async () => {
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute([REFERENCE]),
+      createConversationRoute(),
+      putDocumentsRoute(),
+      patchScopeRoute(),
+      messagesRoute(),
+      bibtexRoute(),
+      // Insert citation leaves the buffer dirty — this test's own
+      // afterEach unmount triggers a flush() save (Part 7: "no lost
+      // content during navigation"), so a PATCH route is needed even
+      // though this test itself never explicitly waits for autosave
+      // (matches [id].test.tsx's identical "lists current references…"
+      // test for the exact same reason).
+      patchProjectRoute(),
+    ]);
+    const editorBefore = renderer.root.find(
+      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
+    );
+    const contentBefore = editorBefore.props.value;
+
+    openAskPanel(renderer);
+    await askQuestion(renderer, 'What evidence supports this claim?');
+
+    await act(async () => {
+      findPressableWithText(renderer.root, 'Insert citation').props.onPress();
+      await flushAsync();
+    });
+
+    act(() => {
+      findPressableByLabel(renderer.root, 'Editor').props.onPress();
+    });
+    const editorAfter = renderer.root.find(
+      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
+    );
+    expect(editorAfter.props.value).toContain('\\cite{Doe2020Laser}');
+    expect(editorAfter.props.value).not.toBe(contentBefore);
+  });
+
+  it('"Add reference" is offered (not "Insert citation") for evidence not yet a project reference, and never auto-adds it', async () => {
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute([]), // nothing referenced yet — but scope must be non-empty to ask,
+      createConversationRoute(),
+      putDocumentsRoute(),
+      patchScopeRoute(),
+      messagesRoute(),
+      addReferenceRoute(),
+      // ReferencePickerModal's own document-search, present from the
+      // start (its "load on open" effect fires as soon as the picker's
+      // `visible` flips true — installing this route later would race
+      // it against the stale mock still active at that moment).
+      {
+        method: 'GET',
+        matches: (u) => u.endsWith('/documents') || u.includes('/documents?'),
+        respond: () =>
+          jsonResponse({
+            documents: [
+              {
+                document_id: 'd-1',
+                title: 'A Study of Laser Cutting',
+                authors: ['Jane Doe'],
+                publication_year: 2020,
+                source_filename: 'paper.pdf',
+              },
+            ],
+            total: 1,
+          }),
+      },
+    ]);
+    openAskPanel(renderer);
+    // Switch to Selected Sources — Project References is empty here.
+    await act(async () => {
+      findPressableWithText(renderer.root, 'Selected sources').props.onPress();
+      await flushAsync();
+    });
+    act(() => {
+      findPressableByLabel(renderer.root, 'Select Doe (2020)').props.onPress();
+    });
+    await act(async () => {
+      findPressableWithText(renderer.root, 'Use this source').props.onPress();
+      await flushAsync();
+    });
+
+    await askQuestion(renderer, 'What evidence supports this claim?');
+
+    expect(findPressableWithText(renderer.root, 'Add reference')).toBeTruthy();
+    expect(() => findPressableWithText(renderer.root, 'Insert citation')).toThrow();
+
+    const addReferenceCallsBefore = (global.fetch as jest.Mock).mock.calls.filter(
+      ([url, init]: [string, RequestInit]) =>
+        String(url).endsWith('/writing-projects/w-1/references') && init?.method === 'POST'
+    ).length;
+    expect(addReferenceCallsBefore).toBe(0); // never auto-added
+
+    await act(async () => {
+      findPressableWithText(renderer.root, 'Add reference').props.onPress();
+      await flushAsync();
+    });
+    const addReferenceCallsAfter = (global.fetch as jest.Mock).mock.calls.filter(
+      ([url, init]: [string, RequestInit]) =>
+        String(url).endsWith('/writing-projects/w-1/references') && init?.method === 'POST'
+    ).length;
+    expect(addReferenceCallsAfter).toBe(1);
+  });
+
+  it('"Add to notebook" creates a real highlight anchored to the retrieved chunk, then opens the existing notebook picker (Part 9/10)', async () => {
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute([REFERENCE]),
+      createConversationRoute(),
+      putDocumentsRoute(),
+      patchScopeRoute(),
+      messagesRoute(),
+      createHighlightRoute(),
+      notebooksListRoute(),
+      highlightMembershipRoute(),
+    ]);
+    openAskPanel(renderer);
+    await askQuestion(renderer, 'What evidence supports this claim?');
+
+    await act(async () => {
+      findPressableWithText(renderer.root, 'Add to notebook').props.onPress();
+      await flushAsync();
+    });
+
+    // The highlight was created against the EXACT retrieved chunk — never
+    // an LLM-reconstructed excerpt (Part 9: "insert ACTUAL retrieved
+    // source text").
+    const highlightCall = (global.fetch as jest.Mock).mock.calls.find(
+      ([url, init]: [string, RequestInit]) =>
+        String(url).endsWith('/documents/d-1/highlights') && init?.method === 'POST'
+    );
+    expect(highlightCall).toBeTruthy();
+    expect(bodyOf(highlightCall)).toMatchObject({
+      chunk_id: 'c-1',
+      chunk_index: 0,
+      page_number: 4,
+      selected_text: 'Teachers reported increased autonomy after the 12-week program.',
+    });
+
+    // The EXISTING Research Notes picker opened — reused, not rebuilt
+    // (Part 10).
+    expect(findByTextIncluding(renderer.root, 'Chapter 2 sources')).toBeTruthy();
+  });
+
+  it('"Open source" navigates to the Reader with the correct document/page/chunk (Part 6)', async () => {
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute([REFERENCE]),
+      createConversationRoute(),
+      putDocumentsRoute(),
+      patchScopeRoute(),
+      messagesRoute(),
+    ]);
+    openAskPanel(renderer);
+    await askQuestion(renderer, 'What evidence supports this claim?');
+
+    act(() => {
+      findPressableWithText(renderer.root, 'Open source').props.onPress();
+    });
+
+    expect(mockPush).toHaveBeenCalledWith({
+      pathname: '/documents/[id]',
+      params: { id: 'd-1', page: '4', chunkId: 'c-1' },
+    });
+  });
+
+  it('a selected manuscript passage is included as transient context, worded as "my manuscript" (Part 3)', async () => {
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute([REFERENCE]),
+      createConversationRoute(),
+      putDocumentsRoute(),
+      patchScopeRoute(),
+      messagesRoute(),
+    ]);
+
+    const editor = renderer.root.find(
+      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
+    );
+    act(() => {
+      editor.props.onSelectionChange({ nativeEvent: { selection: { start: 0, end: 15 } } });
+    });
+
+    openAskPanel(renderer);
+    expect(findByTextIncluding(renderer.root, 'Include selected manuscript passage')).toBeTruthy();
+
+    await askQuestion(renderer, 'Does my draft claim hold up?');
+
+    const messageBody = bodyOf(findCall('POST', '/conversations/conv-1/messages'));
+    expect(String(messageBody.query)).toContain('Regarding this passage from my manuscript');
+    expect(String(messageBody.query)).not.toContain('the selected source');
+  });
+});

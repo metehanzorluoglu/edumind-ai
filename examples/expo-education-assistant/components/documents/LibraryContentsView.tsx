@@ -48,6 +48,16 @@ export interface LibraryContentsViewProps {
    * association is persisted by chat/new.tsx's own existing flow once a
    * conversation actually exists. */
   onUseInChat?: (doc: DocumentSummary) => void;
+  /** Milestone 4 (Reference Library & Bibliographic Metadata Foundation)
+   * Section 9 — the "Edit metadata" action, from a document's row/card
+   * menu. Never re-uploads/re-chunks/re-embeds; see EditMetadataModal. */
+  onEditMetadata: (doc: DocumentSummary) => void;
+  /** Milestone 4.2 (Citation & BibTeX Foundation) Section 24 — opens the
+   * compact Citation surface (style selector, formatted text, Copy
+   * citation, Copy BibTeX). One extra row in the actions menu rather than
+   * a nested submenu (Section 24: "avoid massive always-visible action
+   * lists... put citation actions in a Citation submenu/popover"). */
+  onCitation: (doc: DocumentSummary) => void;
 }
 
 /**
@@ -71,6 +81,8 @@ export function LibraryContentsView({
   onDeleteItem,
   deletingIds,
   onUseInChat,
+  onEditMetadata,
+  onCitation,
 }: LibraryContentsViewProps) {
   const theme = useTheme();
   const styles = useMemo(() => buildStyles(theme), [theme]);
@@ -131,6 +143,8 @@ export function LibraryContentsView({
       // file, which was misleading (approved correction, see the M1.1
       // report's "Preview Wording" section).
       { label: 'View details', onPress: () => act(() => onPreviewDocument(item.data)) },
+      { label: 'Edit metadata', onPress: () => act(() => onEditMetadata(item.data)) },
+      { label: 'Citation…', onPress: () => act(() => onCitation(item.data)) },
       ...(onUseInChat
         ? [{ label: 'Use in chat', onPress: () => act(() => onUseInChat(item.data)) }]
         : []),

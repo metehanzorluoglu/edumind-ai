@@ -2,8 +2,10 @@ import type { Citation, MappedSource } from 'education-assistant-client';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Clipboard, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { FileIcon } from '@/components/icons';
+import { useClient } from '@/lib/ClientProvider';
+import { copyToClipboard } from '@/lib/clipboard';
 import { formatAuthorsCompact, parseJournalCitation, safeText } from '@/lib/format';
-import { useTheme } from '@/lib/Preferences';
+import { useTheme, usePreferences } from '@/lib/Preferences';
 import { isSampleSource } from '@/lib/sampleDocument';
 
 const DOI_PATTERN = /^10\.\d{4,9}\/\S+$/;
@@ -83,14 +85,19 @@ export interface SourceCardProps {
 
 export function SourceCard({ source, highlighted = false }: SourceCardProps) {
   const theme = useTheme();
+  const { client } = useClient();
+  const { preferences } = usePreferences();
   const { citation, chunk } = source;
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [citationCopied, setCitationCopied] = useState(false);
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const citationCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     return () => {
       if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
+      if (citationCopyTimeoutRef.current) clearTimeout(citationCopyTimeoutRef.current);
     };
   }, []);
 
@@ -148,6 +155,32 @@ export function SourceCard({ source, highlighted = false }: SourceCardProps) {
     } catch {
       // Swallow: clipboard access can be unavailable/denied and must
       // never crash the app over an optional convenience action.
+    }
+  }
+
+  // Milestone 4.2 (Citation & BibTeX Foundation) Section 27 — a
+  // bibliographic reference citation, distinct from the provenance
+  // "Copy excerpt" action above: this copies a formatted APA/IEEE
+  // citation of the SOURCE DOCUMENT, never the retrieved passage text.
+  // Only offered when this citation actually maps to a library Document
+  // (document_id present) — an attachment-kind citation has no
+  // bibliographic identity to cite. Never replaces or alters the [S1]
+  // provenance marker/excerpt UI above.
+  async function handleCopyReferenceCitation(): Promise<void> {
+    if (!citation.document_id) return;
+    try {
+      const result = await client.getDocumentCitation(
+        citation.document_id,
+        preferences.citationStyle
+      );
+      const ok = await copyToClipboard(result.formatted);
+      if (!ok) return;
+      setCitationCopied(true);
+      if (citationCopyTimeoutRef.current) clearTimeout(citationCopyTimeoutRef.current);
+      citationCopyTimeoutRef.current = setTimeout(() => setCitationCopied(false), COPY_FEEDBACK_MS);
+    } catch {
+      // Swallow: an optional convenience action must never crash the
+      // conversation view over a failed lookup.
     }
   }
 
@@ -297,6 +330,24 @@ export function SourceCard({ source, highlighted = false }: SourceCardProps) {
             {copied ? 'Copied!' : 'Copy excerpt'}
           </Text>
         </Pressable>
+        {citation.document_id && (
+          <Pressable
+            onPress={handleCopyReferenceCitation}
+            style={styles.linkButton}
+            accessibilityRole="button"
+            accessibilityLabel="Copy reference citation"
+            hitSlop={8}
+          >
+            <Text
+              style={[
+                styles.linkText,
+                { color: theme.accent, fontFamily: theme.fonts.bodySemibold },
+              ]}
+            >
+              {citationCopied ? 'Copied!' : 'Copy citation'}
+            </Text>
+          </Pressable>
+        )}
       </View>
     </View>
   );
@@ -331,9 +382,7 @@ export function AttachmentSourceCard({
   const theme = useTheme();
   const body = (
     <>
-      <Text
-        style={[styles.sourceId, { color: theme.citation, fontFamily: theme.fonts.bodyBold }]}
-      >
+      <Text style={[styles.sourceId, { color: theme.citation, fontFamily: theme.fonts.bodyBold }]}>
         [{citation.source_id}]
       </Text>
       <FileIcon size={14} color={theme.subtext} />

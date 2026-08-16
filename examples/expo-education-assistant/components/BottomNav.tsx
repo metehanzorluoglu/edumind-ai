@@ -1,5 +1,5 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { ChatIcon, DocumentsIcon, NotesIcon, SettingsIcon } from '@/components/icons';
+import { ChatIcon, DocumentsIcon, NotesIcon, SettingsIcon, WritingIcon } from '@/components/icons';
 import type { NavSection } from '@/components/NavRail';
 import { useTheme } from '@/lib/Preferences';
 
@@ -11,6 +11,7 @@ const ITEMS: { key: NavSection; label: string; Icon: typeof ChatIcon }[] = [
   { key: 'chat', label: 'Chat', Icon: ChatIcon },
   { key: 'documents', label: 'Documents', Icon: DocumentsIcon },
   { key: 'notes', label: 'Notes', Icon: NotesIcon },
+  { key: 'writing', label: 'Writing', Icon: WritingIcon },
   { key: 'settings', label: 'Settings', Icon: SettingsIcon },
 ];
 

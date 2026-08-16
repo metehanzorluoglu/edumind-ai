@@ -7,6 +7,7 @@ import type { DocumentContentResponse } from '../../src/types/documents';
 function makeContent(overrides: Partial<DocumentContentResponse> = {}): DocumentContentResponse {
   return {
     document_id: 'd1',
+    document_type: 'unknown',
     title: 'A Study',
     source_filename: 'paper.pdf',
     file_format: 'pdf',
@@ -16,6 +17,7 @@ function makeContent(overrides: Partial<DocumentContentResponse> = {}): Document
       { chunk_id: 'c1', chunk_index: 1, page_number: 2, text: 'Page two text.' },
     ],
     original_file_available: false,
+    has_usable_doi: false,
     ...overrides,
   };
 }

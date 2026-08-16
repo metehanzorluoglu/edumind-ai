@@ -606,6 +606,94 @@ class Settings(BaseSettings):
     # `busy_drop`, never silently discarded without a metric.
     evidence_shadow_max_defer_seconds: float = Field(default=30.0, gt=0.0, le=300.0)
 
+    # --- Bibliographic metadata enrichment (Milestone 4.1) ---
+    # Master kill switch, checked first by app/core/bibliographic_
+    # enrichment.py's enrich_document — false means zero Crossref calls,
+    # for both the automatic post-ingest best-effort step and the
+    # user-triggered "Refresh metadata" action alike. False by default,
+    # same posture as evidence_analysis_enabled above: this milestone
+    # builds and validates the feature but does not turn it on in
+    # production until a human operator reviews this milestone's report
+    # and flips it deliberately (see deploy/oracle/.env.oracle) — a new
+    # external network dependency should never silently activate itself on
+    # deploy. Upload/ingestion/Reader/Notebook/RAG all work identically
+    # whether this is true or false; see the module docstring for the
+    # full non-destructive-failure contract.
+    bibliographic_enrichment_enabled: bool = False
+    # Crossref's REST API has no required authentication, but strongly
+    # requests (and rate-limits more generously for) a descriptive
+    # User-Agent naming the application and a contact mailto: — see
+    # https://api.crossref.org and the "polite pool" convention this
+    # header opts into. A generic placeholder by default (never a real
+    # person's address hardcoded into source) — an operator who enables
+    # this feature should set this to a real, monitored address.
+    bibliographic_provider_contact_email: str = "support@example.com"
+    bibliographic_provider_base_url: str = "https://api.crossref.org"
+    # Bounds one Crossref HTTP call — deliberately short: this call sits
+    # on the critical path of a user-triggered "Refresh metadata" action
+    # (Section 11) and, for the automatic post-ingest step, must never
+    # meaningfully extend how long a background ingestion job takes to
+    # reach "completed" (Section 39: never make the library sluggish).
+    bibliographic_provider_timeout_seconds: float = Field(default=5.0, ge=1.0, le=30.0)
+
+    # --- Secure LaTeX compilation (Milestone 5.1) ---
+    # Master kill switch, same "ships false, a deliberate separate
+    # operational decision" convention as evidence_analysis_enabled/
+    # bibliographic_enrichment_enabled above — checked FIRST by the
+    # compile route (app/api/routes_writing.py), which 404s while this
+    # is false (matching folder_library_enabled's identical convention),
+    # and surfaced to the frontend via GET /status so the Compile button
+    # itself stays hidden rather than present-but-erroring. MUST remain
+    # false until Milestone 5.1's full security validation (threat
+    # model, container hardening, malicious-fixture suite, host-
+    # resilience test — see that milestone's report) has been reviewed
+    # and a human operator deliberately flips it — a sandboxed but still
+    # novel untrusted-code-execution surface should never silently
+    # activate itself on deploy.
+    latex_compilation_enabled: bool = False
+    # Internal Docker-network-only URL — see docker-compose.oracle.yml's
+    # `latex-compiler` service (no host-published port; reachable only
+    # from the backend container by its compose service name, and ONLY
+    # on the dedicated internal `latex-compiler-net` — see that file's
+    # network block for the no-internet-egress isolation this pairs
+    # with). Mirrors evidence_service_url's identical convention.
+    latex_compiler_url: str = "http://latex-compiler:8200"
+    # The BACKEND's own client-side budget for one /compile call —
+    # deliberately a little above the compiler service's own
+    # `job_timeout_seconds` default (45s, see latex-compiler/app/
+    # config.py) so the service's own timeout response reaches this
+    # client before the client's own timeout would otherwise fire first
+    # (same reasoning as evidence_service_timeout_ms).
+    latex_compiler_timeout_seconds: float = Field(default=55.0, ge=1.0, le=120.0)
+    # Part 39 — per-user compile rate limit (reuses app/core/
+    # rate_limiter.py, same convention as chat_rate_limit_* above).
+    # Generous enough for iterative "edit, compile, look" cycles, tight
+    # enough that button-mashing cannot spawn unlimited jobs against a
+    # host with essentially no spare CPU (see the Milestone 5.1 report's
+    # "Host Resilience" section for the real numbers this was chosen
+    # against).
+    compile_rate_limit_max_requests: int = Field(default=6, ge=1, le=100)
+    compile_rate_limit_window_seconds: float = Field(default=60.0, ge=1.0, le=3600.0)
+    # Part 12/9 — mirrors latex-compiler/app/config.py's own limits;
+    # checked here too so an oversized project is rejected with a clear
+    # 413 before ever reaching the compiler service (defense in depth,
+    # not a substitute for that service's own independent check).
+    compile_max_main_tex_bytes: int = Field(default=200_000, ge=1_000)
+    # Part 17 — how long a successfully-compiled PDF stays retrievable
+    # via GET .../compile/{compile_id}/pdf before this process's
+    # in-memory cache evicts it (app/core/compile_artifact_cache.py).
+    compile_artifact_ttl_seconds: float = Field(default=600.0, ge=30.0, le=3600.0)
+
+    # --- Writing Project file workspace (Milestone 5.3) ---
+    # Deliberately under the same `/data`-mounted `backend-data` volume
+    # as document_storage_dir/chat_attachments_dir above (not a new
+    # top-level volume) — see this milestone's report's "Backup Coverage"
+    # section: deploy/oracle/scripts/oracle-backup.sh already tars the
+    # ENTIRE backend-data volume unconditionally, so a new directory
+    # under it is covered by the existing backup with zero script
+    # changes, and zero new failure surface for restore.
+    writing_project_files_dir: str = "./data/writing-project-files"
+
     @field_validator("retrieval_min_score", mode="before")
     @classmethod
     def _blank_env_value_means_disabled(cls, value: object) -> object:

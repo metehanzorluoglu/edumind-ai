@@ -602,3 +602,39 @@ export function NotesIcon({ size = 20, color, strokeWidth = 1.75 }: IconProps) {
     </Svg>
   );
 }
+
+/** Fountain-pen nib over a manuscript line — Milestone 5 (Academic
+ * Writing & LaTeX Foundation) Writing nav item. Distinct silhouette from
+ * both DocumentsIcon (a flat page) and NotesIcon (a bookmark) — this one
+ * reads as "actively composing," not "a stored file." */
+export function WritingIcon({ size = 20, color, strokeWidth = 1.75 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox={VIEWBOX} fill="none">
+      <Path
+        d="M15.5 3.5 20 8l-8.9 8.9-5 1.1 1.1-5 8.3-8.3Z"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+      <Line
+        x1={13.2}
+        y1={5.8}
+        x2={17.7}
+        y2={10.3}
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+      />
+      <Line
+        x1={4}
+        y1={20.5}
+        x2={11}
+        y2={20.5}
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+      />
+    </Svg>
+  );
+}

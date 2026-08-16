@@ -23,13 +23,15 @@ import { IconButton } from '@/components/ui/IconButton';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { AddToNotebookPicker } from '@/components/documents/AddToNotebookPicker';
+import { CitationPopover } from '@/components/documents/CitationPopover';
 import { HighlightsPanel } from '@/components/documents/HighlightsPanel';
 import { NoteEditorModal } from '@/components/documents/NoteEditorModal';
 import { PdfReader } from '@/components/documents/PdfReader';
+import { AddToWritingProjectModal } from '@/components/writing/AddToWritingProjectModal';
 import { ReaderContent, groupChunksIntoPages } from '@/components/documents/ReaderContent';
 import { SelectionToolbar } from '@/components/documents/SelectionToolbar';
 import { useClient } from '@/lib/ClientProvider';
-import { safeText } from '@/lib/format';
+import { formatAuthorsCompact, safeText } from '@/lib/format';
 import { useTheme, type Theme } from '@/lib/Preferences';
 import { useReaderSelection, type ReaderSelection } from '@/lib/useReaderSelection';
 
@@ -96,6 +98,15 @@ export default function DocumentReaderScreen() {
   const { selection: textSelection, clear: clearTextSelection } = useReaderSelection(containerRef);
 
   const [noteEditorTarget, setNoteEditorTarget] = useState<NoteEditorTarget | null>(null);
+  // Milestone 4.2 (Citation & BibTeX Foundation) Section 25 — an
+  // unobtrusive entry point into the same Citation popover Documents
+  // uses; the Reader header stays focused (Section 25: "do not place
+  // long citation text permanently above the PDF").
+  const [citationOpen, setCitationOpen] = useState(false);
+  // Milestone 5 (Academic Writing & LaTeX Foundation) Part 34 — an
+  // unobtrusive entry point into AddToWritingProjectModal, same "stays
+  // out of the way" placement as Citation above.
+  const [writingProjectPickerOpen, setWritingProjectPickerOpen] = useState(false);
   const [savingHighlight, setSavingHighlight] = useState(false);
   const [deletingHighlightIds, setDeletingHighlightIds] = useState<Set<string>>(new Set());
   const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
@@ -207,6 +218,24 @@ export default function DocumentReaderScreen() {
   const documentTitle =
     contentState.status === 'success'
       ? safeText(contentState.content.title, contentState.content.source_filename)
+      : null;
+  // Milestone 4 (Reference Library & Bibliographic Metadata Foundation)
+  // Section 10: bibliographic identity alongside the title, without
+  // redesigning the M3.1 Reader — a compact subtitle line under the
+  // title, shown only when there's something real to show (never a
+  // fabricated placeholder for a document with no known authors/year).
+  const documentByline =
+    contentState.status === 'success'
+      ? [
+          (contentState.content.authors ?? []).length > 0
+            ? formatAuthorsCompact(contentState.content.authors)
+            : null,
+          contentState.content.publication_year
+            ? String(contentState.content.publication_year)
+            : null,
+        ]
+          .filter(Boolean)
+          .join(' · ') || null
       : null;
   const originalAvailable =
     contentState.status === 'success' && contentState.content.original_file_available;
@@ -369,9 +398,16 @@ export default function DocumentReaderScreen() {
           <ChevronIcon size={16} color={theme.subtext} style={styles.backChevron} />
           <Text style={styles.backText}>Documents</Text>
         </Pressable>
-        <Text style={styles.toolbarTitle} numberOfLines={1}>
-          {documentTitle ?? ''}
-        </Text>
+        <View style={styles.toolbarTitleBlock}>
+          <Text style={styles.toolbarTitle} numberOfLines={1}>
+            {documentTitle ?? ''}
+          </Text>
+          {documentByline && (
+            <Text style={styles.toolbarByline} numberOfLines={1}>
+              {documentByline}
+            </Text>
+          )}
+        </View>
         <View style={styles.toolbarActions}>
           {originalAvailable && (
             <View style={styles.viewModeToggle}>
@@ -414,6 +450,18 @@ export default function DocumentReaderScreen() {
             </View>
           )}
           <Button label="Use in chat" variant="ghost" size="sm" onPress={handleUseInChat} />
+          <Button
+            label="Citation"
+            variant="ghost"
+            size="sm"
+            onPress={() => setCitationOpen(true)}
+          />
+          <Button
+            label="Add to writing project"
+            variant="ghost"
+            size="sm"
+            onPress={() => setWritingProjectPickerOpen(true)}
+          />
           {isMobile && (
             <Button
               label={`Highlights (${highlights.length})`}
@@ -572,6 +620,23 @@ export default function DocumentReaderScreen() {
         />
       )}
 
+      {citationOpen && contentState.status === 'success' && (
+        <CitationPopover
+          document={{
+            document_id: id,
+            title: contentState.content.title,
+            source_filename: contentState.content.source_filename,
+          }}
+          onClose={() => setCitationOpen(false)}
+        />
+      )}
+
+      <AddToWritingProjectModal
+        visible={writingProjectPickerOpen}
+        documentIds={[id]}
+        onClose={() => setWritingProjectPickerOpen(false)}
+      />
+
       {isMobile && mobilePanelOpen && (
         <Modal
           visible
@@ -700,11 +765,20 @@ function buildStyles(theme: Theme) {
     backButton: { flexDirection: 'row', alignItems: 'center', gap: 2 },
     backChevron: { transform: [{ rotate: '180deg' }] },
     backText: { fontSize: 13, color: theme.subtext, fontFamily: theme.fonts.body },
+    toolbarTitleBlock: { flex: 1, minWidth: 0 },
     toolbarTitle: {
-      flex: 1,
       fontSize: 14,
       fontFamily: theme.fonts.bodySemibold,
       color: theme.text,
+    },
+    // Milestone 4: bibliographic identity (authors/year) alongside the
+    // title — deliberately small/muted so it reads as supporting detail,
+    // never competing with the title or crowding the PDF canvas below it.
+    toolbarByline: {
+      fontSize: 11,
+      fontFamily: theme.fonts.body,
+      color: theme.subtext,
+      marginTop: 1,
     },
     toolbarActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
     viewModeToggle: {

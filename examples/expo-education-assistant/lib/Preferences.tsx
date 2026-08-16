@@ -30,6 +30,11 @@ export type ThemeMode = 'system' | 'light' | 'dark';
 export type TextSize = 'small' | 'default' | 'large';
 export type ResponseStyle = 'concise' | 'balanced' | 'detailed';
 export type CitationDisplay = 'shown' | 'hidden';
+/** Milestone 4.2 (Citation & BibTeX Foundation) Section 6 — the user's
+ * preferred bibliographic citation style. Local-only, same as
+ * documentsViewMode (no backend setting — this is a display preference,
+ * not something the server needs to know or enforce). */
+export type CitationStyle = 'apa7' | 'ieee';
 
 export interface Preferences {
   themeMode: ThemeMode;
@@ -53,6 +58,9 @@ export interface Preferences {
    * the milestone's own requirement) so reopening Documents preserves it.
    * Defaults to 'grid', matching the pre-redesign card-like document list. */
   documentsViewMode: 'grid' | 'list';
+  /** Milestone 4.2 Section 6 — persisted across sessions so choosing IEEE
+   * once doesn't need to be repeated on every citation popover open. */
+  citationStyle: CitationStyle;
 }
 
 /** Drag-resize bounds for the drawer — narrow enough to still show full
@@ -71,6 +79,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   sidebarCollapsed: false,
   sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
   documentsViewMode: 'grid',
+  citationStyle: 'apa7',
 };
 
 // Intentionally NOT renamed to "edum8.*" despite the EduM8 rebrand — this
@@ -128,6 +137,10 @@ function parseStoredPreferences(raw: string | null): Preferences {
         parsed.documentsViewMode === 'grid' || parsed.documentsViewMode === 'list'
           ? parsed.documentsViewMode
           : DEFAULT_PREFERENCES.documentsViewMode,
+      citationStyle:
+        parsed.citationStyle === 'apa7' || parsed.citationStyle === 'ieee'
+          ? parsed.citationStyle
+          : DEFAULT_PREFERENCES.citationStyle,
     };
   } catch {
     return { ...DEFAULT_PREFERENCES };

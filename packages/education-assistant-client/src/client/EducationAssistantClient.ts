@@ -22,9 +22,15 @@ import type { HealthResponse, ReadinessResponse } from '../types/health';
 import type { StatusResponse } from '../types/status';
 import type { SearchRequest, SearchResponse } from '../types/search';
 import type {
+  BibtexExportRequest,
+  BibtexExportResponse,
+  CitationStyle,
   CreateHighlightRequest,
+  DocumentBibtexResponse,
+  DocumentCitationResponse,
   DocumentContentResponse,
   DocumentDeleteResponse,
+  DocumentEnrichmentResponse,
   DocumentFileRequestInit,
   DocumentHighlight,
   DocumentHighlightListResponse,
@@ -36,6 +42,7 @@ import type {
   DocumentUploadResponse,
   ListDocumentsParams,
   MoveDocumentRequest,
+  UpdateDocumentMetadataRequest,
   UpdateHighlightRequest,
   UploadableFile,
 } from '../types/documents';
@@ -99,6 +106,24 @@ import type {
   ProjectSummary,
   UpdateProjectRequest,
 } from '../types/projects';
+import type {
+  AddWritingProjectReferencesResponse,
+  CompileWritingProjectResponse,
+  CreateWritingProjectFolderRequest,
+  CreateWritingProjectRequest,
+  CreateWritingProjectTextFileRequest,
+  MoveWritingProjectFileRequest,
+  RenameWritingProjectFileRequest,
+  UpdateWritingProjectFileContentRequest,
+  UpdateWritingProjectRequest,
+  WritingProject,
+  WritingProjectBibliography,
+  WritingProjectFileContent,
+  WritingProjectFileMutationResponse,
+  WritingProjectFileTree,
+  WritingProjectListResponse,
+  WritingProjectReferencesResponse,
+} from '../types/writing';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 /**
@@ -113,6 +138,18 @@ const DEFAULT_TIMEOUT_MS = 30_000;
  * Overridable per call via RequestOptions.timeoutMs.
  */
 export const DEFAULT_IMAGE_GENERATION_TIMEOUT_MS = 300_000;
+
+/**
+ * Milestone 5.1 — a real isolated LaTeX compile can legitimately take
+ * close to the compiler service's own job_timeout_seconds (45s default,
+ * see latex-compiler/app/config.py) plus network/queue overhead; the
+ * backend's own client-side budget for that hop is 55s (Settings.
+ * latex_compiler_timeout_seconds). 60s here gives this SDK's own request
+ * a small margin beyond that so the backend's own honest "busy"/
+ * "timeout" response has a chance to arrive before this client gives up
+ * first. Overridable per call via RequestOptions.timeoutMs.
+ */
+export const DEFAULT_COMPILE_TIMEOUT_MS = 60_000;
 
 /**
  * How often uploadDocument() polls GET /documents/jobs/{job_id} once
@@ -295,6 +332,148 @@ export class EducationAssistantClient {
       method: 'PATCH',
       path: `/documents/${encodeURIComponent(documentId)}`,
       body: { folder_id: request.folderId },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * Milestone 4 (Reference Library & Bibliographic Metadata Foundation):
+   * PATCH /documents/{document_id}/metadata — the "Edit metadata" action.
+   * Only fields actually present on `request` are sent, so omitting a
+   * field never clears it and only the fields you do pass get "user"
+   * provenance (see UpdateDocumentMetadataRequest's docs). SQL-only: never
+   * re-uploads, re-chunks, re-embeds, or touches Qdrant, so highlights/
+   * Research Notes/project associations/Reader anchors are all
+   * unaffected. Rejects with NotFoundError (404) if the document doesn't
+   * exist or isn't the caller's, or a ValidationError (422) for a blanked
+   * `title`/`documentType` or a malformed DOI.
+   */
+  async updateDocumentMetadata(
+    documentId: string,
+    request: UpdateDocumentMetadataRequest,
+    options: RequestOptions = {}
+  ): Promise<DocumentSummary> {
+    const body: Record<string, unknown> = {};
+    if ('title' in request) body.title = request.title;
+    if ('authors' in request) body.authors = request.authors;
+    if ('publicationYear' in request) body.publication_year = request.publicationYear;
+    if ('sourceVenue' in request) body.source_venue = request.sourceVenue;
+    if ('doi' in request) body.doi = request.doi;
+    if ('sourceUrl' in request) body.source_url = request.sourceUrl;
+    if ('documentType' in request) body.document_type = request.documentType;
+    if ('journalQuartile' in request) body.journal_quartile = request.journalQuartile;
+    if ('volume' in request) body.volume = request.volume;
+    if ('issue' in request) body.issue = request.issue;
+    if ('pageStart' in request) body.page_start = request.pageStart;
+    if ('pageEnd' in request) body.page_end = request.pageEnd;
+    if ('publisher' in request) body.publisher = request.publisher;
+    if ('abstract' in request) body.abstract = request.abstract;
+    if ('keywords' in request) body.keywords = request.keywords;
+    if ('language' in request) body.language = request.language;
+
+    const { data } = await requestJson<DocumentSummary>(this.context, {
+      method: 'PATCH',
+      path: `/documents/${encodeURIComponent(documentId)}/metadata`,
+      body,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * Milestone 4.1 (Authoritative Metadata Enrichment & Duplicate
+   * Awareness): POST /documents/{document_id}/enrich — the "Refresh
+   * metadata" action. Looks the document's DOI up against Crossref and
+   * fills/corrects fields that are missing or came from a less-trusted
+   * source (embedded file metadata, extracted text, or the filename);
+   * NEVER overwrites a field the caller (or a previous enrichment) has
+   * confirmed as "user"-sourced (see UpdateDocumentMetadataRequest's own
+   * docs on provenance).
+   *
+   * Always resolves to a 200 with a `status` describing what happened —
+   * "no_doi"/"disabled"/a Crossref failure reason are ordinary, expected
+   * outcomes, never a thrown error; existing metadata is guaranteed
+   * untouched whenever `ok` is false. Rejects with NotFoundError (404)
+   * only if the document itself doesn't exist or isn't the caller's.
+   */
+  async enrichDocumentMetadata(
+    documentId: string,
+    options: RequestOptions = {}
+  ): Promise<DocumentEnrichmentResponse> {
+    const { data } = await requestJson<DocumentEnrichmentResponse>(this.context, {
+      method: 'POST',
+      path: `/documents/${encodeURIComponent(documentId)}/enrich`,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * Milestone 4.2 (Citation & BibTeX Foundation): GET
+   * /documents/{document_id}/citation?style=... — a deterministic,
+   * formatted APA 7 / IEEE citation built from the document's CURRENT
+   * canonical metadata. No LLM, no Crossref, no third-party service —
+   * pure local formatting (see the backend's app/core/
+   * citation_formatting.py), so this works identically regardless of
+   * whether bibliographic enrichment is enabled. Rejects with
+   * NotFoundError (404) if the document doesn't exist or isn't the
+   * caller's.
+   */
+  async getDocumentCitation(
+    documentId: string,
+    style: CitationStyle,
+    options: RequestOptions = {}
+  ): Promise<DocumentCitationResponse> {
+    const { data } = await requestJson<DocumentCitationResponse>(this.context, {
+      method: 'GET',
+      path: `/documents/${encodeURIComponent(documentId)}/citation`,
+      query: { style },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * Milestone 4.2: GET /documents/{document_id}/bibtex — one complete,
+   * valid BibTeX entry using the document's PERSISTED citation key
+   * (generated once and reused on every subsequent call — see the
+   * backend's DocumentsRepository.get_or_create_citation_key for the
+   * stability guarantee: a key already pasted into a manuscript never
+   * changes just because the title was later corrected). Rejects with
+   * NotFoundError (404) if the document doesn't exist or isn't the
+   * caller's.
+   */
+  async getDocumentBibtex(
+    documentId: string,
+    options: RequestOptions = {}
+  ): Promise<DocumentBibtexResponse> {
+    const { data } = await requestJson<DocumentBibtexResponse>(this.context, {
+      method: 'GET',
+      path: `/documents/${encodeURIComponent(documentId)}/bibtex`,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * Milestone 4.2: POST /documents/bibtex-export — multi-reference `.bib`
+   * export, reusing Documents' existing multi-selection UI. Every id is
+   * ownership-checked individually server-side; an id that doesn't exist
+   * or belongs to another user is silently skipped and reported back in
+   * `skippedDocumentIds`, never a reason to fail the whole export or leak
+   * whether that id belongs to someone else. Duplicate ids collapse to
+   * one entry; two documents sharing a DOI (Milestone 4.1's "Keep Both")
+   * each export as their own distinct, valid entry.
+   */
+  async exportBibtex(
+    request: BibtexExportRequest,
+    options: RequestOptions = {}
+  ): Promise<BibtexExportResponse> {
+    const { data } = await requestJson<BibtexExportResponse>(this.context, {
+      method: 'POST',
+      path: '/documents/bibtex-export',
+      body: { document_ids: request.documentIds },
       signal: options.signal,
     });
     return data;
@@ -1561,6 +1740,595 @@ export class EducationAssistantClient {
       path: `/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`,
       signal: options.signal,
     });
+  }
+
+  /**
+   * Milestone 5 (Academic Writing & LaTeX Foundation): POST
+   * /writing-projects — creates a new LaTeX writing project, seeded with
+   * the backend's minimal honest starting template (no fake authors,
+   * affiliations, references, or content — see DEFAULT_MAIN_TEX_TEMPLATE
+   * server-side).
+   */
+  async createWritingProject(
+    request: CreateWritingProjectRequest,
+    options: RequestOptions = {}
+  ): Promise<WritingProject> {
+    const { data } = await requestJson<WritingProject>(this.context, {
+      method: 'POST',
+      path: '/writing-projects',
+      body: { title: request.title, description: request.description ?? null },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * GET /writing-projects — every writing project owned by the
+   * authenticated user. Summaries only — never includes
+   * main_tex_content (see WritingProject vs WritingProjectSummary).
+   *
+   * Milestone 5.3 Part 26/27/28/30 — `query.q` searches title/
+   * description only (no AI search). `query.sort` defaults to
+   * "updated_at" (newest-updated first, the pre-M5.3 behavior).
+   * `query.archived: true` returns ONLY archived projects — never a
+   * mixed active+archived view.
+   */
+  async listWritingProjects(
+    query: { q?: string; sort?: 'updated_at' | 'name' | 'created_at'; archived?: boolean } = {},
+    options: RequestOptions = {}
+  ): Promise<WritingProjectListResponse> {
+    const params = new URLSearchParams();
+    if (query.q) params.set('q', query.q);
+    // "updated_at" is the backend's own default — omitted here (not
+    // just falling out of `if (query.sort)`, since a caller's hook may
+    // always pass its current sort state explicitly) so an ordinary,
+    // unfiltered dashboard load still hits the exact same
+    // `/writing-projects` URL it did before Milestone 5.3, never a
+    // gratuitous `?sort=updated_at` query string.
+    if (query.sort && query.sort !== 'updated_at') params.set('sort', query.sort);
+    if (query.archived) params.set('archived', 'true');
+    const qs = params.toString();
+    const { data } = await requestJson<WritingProjectListResponse>(this.context, {
+      method: 'GET',
+      path: qs ? `/writing-projects?${qs}` : '/writing-projects',
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /** GET /writing-projects/{id} — the full project, including its LaTeX
+   * source. Rejects with NotFoundError (404) if the project doesn't
+   * exist or isn't the caller's. */
+  async getWritingProject(
+    projectId: string,
+    options: RequestOptions = {}
+  ): Promise<WritingProject> {
+    const { data } = await requestJson<WritingProject>(this.context, {
+      method: 'GET',
+      path: `/writing-projects/${encodeURIComponent(projectId)}`,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * PATCH /writing-projects/{id} — the editor's autosave endpoint
+   * (`mainTexContent`), and also how title/description are renamed.
+   * Partial update: only a field actually present in `request` is
+   * touched — omit a field entirely to leave it unchanged; `title`
+   * cannot be cleared, `description` can be explicitly cleared with
+   * `null`.
+   */
+  async updateWritingProject(
+    projectId: string,
+    request: UpdateWritingProjectRequest,
+    options: RequestOptions = {}
+  ): Promise<WritingProject> {
+    const body: Record<string, unknown> = {};
+    if ('title' in request) body.title = request.title;
+    if ('description' in request) body.description = request.description;
+    if ('mainTexContent' in request) body.main_tex_content = request.mainTexContent;
+
+    const { data } = await requestJson<WritingProject>(this.context, {
+      method: 'PATCH',
+      path: `/writing-projects/${encodeURIComponent(projectId)}`,
+      body,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * DELETE /writing-projects/{id} — deletes only this project's own row
+   * and its reference associations. Never deletes any referenced
+   * Document, its highlights, Notebook entries, or chat conversations.
+   */
+  async deleteWritingProject(projectId: string, options: RequestOptions = {}): Promise<void> {
+    await requestJson<undefined>(this.context, {
+      method: 'DELETE',
+      path: `/writing-projects/${encodeURIComponent(projectId)}`,
+      signal: options.signal,
+    });
+  }
+
+  /**
+   * GET /writing-projects/{id}/references — every current reference,
+   * with the associated document's live canonical bibliographic identity
+   * plus whether its citation key currently appears in the manuscript
+   * (`cited`). `missingCitationKeys` lists any `\cite{}` key in the
+   * manuscript that doesn't match any current reference.
+   */
+  async listWritingProjectReferences(
+    projectId: string,
+    options: RequestOptions = {}
+  ): Promise<WritingProjectReferencesResponse> {
+    const { data } = await requestJson<WritingProjectReferencesResponse>(this.context, {
+      method: 'GET',
+      path: `/writing-projects/${encodeURIComponent(projectId)}/references`,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * POST /writing-projects/{id}/references — adds one or more existing
+   * library Documents as project references (reuses Documents' existing
+   * multi-selection UX). Every document_id is ownership-checked
+   * individually server-side; never a hard failure for a
+   * duplicate/nonexistent/another-user's id — see each result's own
+   * `outcome`.
+   */
+  async addWritingProjectReferences(
+    projectId: string,
+    documentIds: string[],
+    options: RequestOptions = {}
+  ): Promise<AddWritingProjectReferencesResponse> {
+    const { data } = await requestJson<AddWritingProjectReferencesResponse>(this.context, {
+      method: 'POST',
+      path: `/writing-projects/${encodeURIComponent(projectId)}/references`,
+      body: { document_ids: documentIds },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * DELETE /writing-projects/{id}/references/{documentId} — removes only
+   * the reference association. Never deletes the Document itself, its
+   * highlights, or any Notebook entry.
+   */
+  async removeWritingProjectReference(
+    projectId: string,
+    documentId: string,
+    options: RequestOptions = {}
+  ): Promise<void> {
+    await requestJson<undefined>(this.context, {
+      method: 'DELETE',
+      path: `/writing-projects/${encodeURIComponent(projectId)}/references/${encodeURIComponent(documentId)}`,
+      signal: options.signal,
+    });
+  }
+
+  /**
+   * GET /writing-projects/{id}/bibliography — a BibTeX bibliography
+   * generated fresh from the project's current references, via the exact
+   * same Milestone 4.2 engine every other BibTeX surface uses. Read-only
+   * (Milestone 5 §13): never a second, independently-editable
+   * bibliography store.
+   */
+  async getWritingProjectBibliography(
+    projectId: string,
+    options: RequestOptions = {}
+  ): Promise<WritingProjectBibliography> {
+    const { data } = await requestJson<WritingProjectBibliography>(this.context, {
+      method: 'GET',
+      path: `/writing-projects/${encodeURIComponent(projectId)}/bibliography`,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * GET /writing-projects/{id}/export — fetches the portable project ZIP
+   * (main.tex + references.bib) as a Blob, for a caller to save/share
+   * (see lib/downloadWritingProjectExport.ts in the example app for the
+   * web-download / native-share-sheet split, mirroring
+   * fetchAttachmentBlob's own established pattern). Rejects with
+   * NotFoundError (404) if the project doesn't exist or isn't the
+   * caller's.
+   */
+  async fetchWritingProjectExportBlob(
+    projectId: string,
+    options: RequestOptions = {}
+  ): Promise<Blob> {
+    const token = await this.context.getAccessToken();
+    const url = `${this.baseUrl}/writing-projects/${encodeURIComponent(projectId)}/export`;
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    const { signal, dispose, didTimeOut } = combineSignals(options.signal, this.context.timeoutMs);
+    let response: Response;
+    try {
+      response = await fetch(url, { headers, signal });
+    } catch (cause) {
+      dispose();
+      if (isAbortError(cause)) {
+        if (didTimeOut()) {
+          throw new TimeoutError(
+            `Fetching writing project export ${projectId} timed out after ${this.context.timeoutMs}ms`
+          );
+        }
+        throw new RequestCancelledError(
+          `Fetching writing project export ${projectId} was cancelled`
+        );
+      }
+      throw new NetworkError(
+        `Network request to fetch writing project export ${projectId} failed`,
+        { cause }
+      );
+    }
+    dispose();
+
+    if (!response.ok) {
+      const requestId = extractRequestId(response.headers);
+      const bodyText = await safeReadText(response);
+      const { detail, rawBody } = parseErrorBody(bodyText);
+      throw errorFromResponse({ status: response.status, detail, requestId, rawBody });
+    }
+
+    return response.blob();
+  }
+
+  /**
+   * Milestone 5.1 — POST /writing-projects/{id}/compile. Compiles the
+   * project's CURRENT saved main_tex_content server-side (never a
+   * client-supplied body — the caller is responsible for flushing any
+   * pending autosave and awaiting a successful save FIRST, e.g. via
+   * useWritingProject's own flush-before-compile helper). Never throws
+   * for an ordinary "couldn't compile" outcome — `status` on the
+   * returned CompileWritingProjectResponse covers "success" | "error" |
+   * "timeout" | "busy" | "unavailable" as plain, renderable values; this
+   * only rejects for a genuine transport failure (network down) or an
+   * ownership/not-found 404, same as every other writing-project call.
+   * Uses DEFAULT_COMPILE_TIMEOUT_MS, not this client's normal 30s
+   * default — see that constant's docs.
+   */
+  async compileWritingProject(
+    projectId: string,
+    options: RequestOptions = {}
+  ): Promise<CompileWritingProjectResponse> {
+    const { data } = await requestJson<CompileWritingProjectResponse>(this.context, {
+      method: 'POST',
+      path: `/writing-projects/${encodeURIComponent(projectId)}/compile`,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs ?? DEFAULT_COMPILE_TIMEOUT_MS,
+    });
+    return data;
+  }
+
+  /**
+   * Milestone 5.1 — GET /writing-projects/{id}/compile/{compileId}/pdf,
+   * fetched as a Blob for the PDF preview panel (pdf.js) or a "Download
+   * PDF" action. Mirrors fetchWritingProjectExportBlob's own manual-
+   * fetch shape (a Blob response can't go through requestJson's
+   * JSON-only parsing). The artifact is short-lived (see the backend's
+   * CompileArtifactCache TTL) — a 404 here means "expired or never
+   * existed," not necessarily a real error; the caller should treat it
+   * as "compile again."
+   */
+  async fetchCompiledPdfBlob(
+    projectId: string,
+    compileId: string,
+    options: RequestOptions = {}
+  ): Promise<Blob> {
+    const token = await this.context.getAccessToken();
+    const url = `${this.baseUrl}/writing-projects/${encodeURIComponent(projectId)}/compile/${encodeURIComponent(compileId)}/pdf`;
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    const { signal, dispose, didTimeOut } = combineSignals(options.signal, this.context.timeoutMs);
+    let response: Response;
+    try {
+      response = await fetch(url, { headers, signal });
+    } catch (cause) {
+      dispose();
+      if (isAbortError(cause)) {
+        if (didTimeOut()) {
+          throw new TimeoutError(
+            `Fetching compiled PDF for writing project ${projectId} timed out after ${this.context.timeoutMs}ms`
+          );
+        }
+        throw new RequestCancelledError(
+          `Fetching compiled PDF for writing project ${projectId} was cancelled`
+        );
+      }
+      throw new NetworkError(
+        `Network request to fetch compiled PDF for writing project ${projectId} failed`,
+        { cause }
+      );
+    }
+    dispose();
+
+    if (!response.ok) {
+      const requestId = extractRequestId(response.headers);
+      const bodyText = await safeReadText(response);
+      const { detail, rawBody } = parseErrorBody(bodyText);
+      throw errorFromResponse({ status: response.status, detail, requestId, rawBody });
+    }
+
+    return response.blob();
+  }
+
+  /**
+   * Milestone 5.3 Part 30 — hides the project from the default dashboard
+   * view (`listWritingProjects()` with no `archived` option). Always
+   * reversible via restoreWritingProject().
+   */
+  async archiveWritingProject(projectId: string, options: RequestOptions = {}): Promise<WritingProject> {
+    const { data } = await requestJson<WritingProject>(this.context, {
+      method: 'POST',
+      path: `/writing-projects/${encodeURIComponent(projectId)}/archive`,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  async restoreWritingProject(projectId: string, options: RequestOptions = {}): Promise<WritingProject> {
+    const { data } = await requestJson<WritingProject>(this.context, {
+      method: 'POST',
+      path: `/writing-projects/${encodeURIComponent(projectId)}/restore`,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * Milestone 5.3 Part 29 — duplicates project metadata, the full file
+   * tree (including binary asset bytes), and project-reference
+   * associations. Never duplicates the referenced Documents, Notebook
+   * entries, or Chat conversations — see the backend route's own
+   * docstring. Omit `title` for the backend's default
+   * "{original title} (copy)".
+   */
+  async duplicateWritingProject(
+    projectId: string,
+    title?: string,
+    options: RequestOptions = {}
+  ): Promise<WritingProject> {
+    const { data } = await requestJson<WritingProject>(this.context, {
+      method: 'POST',
+      path: `/writing-projects/${encodeURIComponent(projectId)}/duplicate`,
+      body: { title: title ?? null },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * Milestone 5.3 Part 4/41 — GET /writing-projects/{id}/files. Metadata
+   * only for every real file/folder (never `contentText`/binary bytes —
+   * see getWritingProjectFileContent for that), plus the synthesized
+   * read-only `references.bib` entry.
+   */
+  async listWritingProjectFiles(
+    projectId: string,
+    options: RequestOptions = {}
+  ): Promise<WritingProjectFileTree> {
+    const { data } = await requestJson<WritingProjectFileTree>(this.context, {
+      method: 'GET',
+      path: `/writing-projects/${encodeURIComponent(projectId)}/files`,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /** Part 6 — validated server-side: safe name, no path separators/'..'. */
+  async createWritingProjectFolder(
+    projectId: string,
+    request: CreateWritingProjectFolderRequest,
+    options: RequestOptions = {}
+  ): Promise<WritingProjectFileMutationResponse> {
+    const { data } = await requestJson<WritingProjectFileMutationResponse>(this.context, {
+      method: 'POST',
+      path: `/writing-projects/${encodeURIComponent(projectId)}/files/folders`,
+      body: { parent_id: request.parentId ?? null, name: request.name },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /** Part 5 — a new, empty (or seeded) `.tex`/`.txt`/`.cls`/`.sty` file. */
+  async createWritingProjectTextFile(
+    projectId: string,
+    request: CreateWritingProjectTextFileRequest,
+    options: RequestOptions = {}
+  ): Promise<WritingProjectFileMutationResponse> {
+    const { data } = await requestJson<WritingProjectFileMutationResponse>(this.context, {
+      method: 'POST',
+      path: `/writing-projects/${encodeURIComponent(projectId)}/files/text`,
+      body: { parent_id: request.parentId ?? null, name: request.name, content_text: request.contentText ?? '' },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * Part 10/11 — a safe, bounded project-asset upload
+   * (.tex/.cls/.sty/.png/.jpg/.jpeg/.pdf only; the backend re-sniffs real
+   * bytes for binary files, never trusting the extension/declared MIME
+   * alone).
+   */
+  async uploadWritingProjectFile(
+    projectId: string,
+    file: UploadableFile,
+    fileOptions: { parentId?: string | null; name?: string } = {},
+    options: RequestOptions = {}
+  ): Promise<WritingProjectFileMutationResponse> {
+    const formData = new FormData();
+    appendUploadableFile(formData, 'file', file);
+    if (fileOptions.parentId) formData.append('parent_id', fileOptions.parentId);
+    if (fileOptions.name) formData.append('name', fileOptions.name);
+
+    const { data } = await requestMultipart<WritingProjectFileMutationResponse>(this.context, {
+      method: 'POST',
+      path: `/writing-projects/${encodeURIComponent(projectId)}/files/upload`,
+      formData,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * GET /writing-projects/{id}/files/{fileId} — a text file's content
+   * inline; for a binary file, `contentText` is null (use
+   * fetchWritingProjectFileBinaryBlob for those bytes).
+   */
+  async getWritingProjectFileContent(
+    projectId: string,
+    fileId: string,
+    options: RequestOptions = {}
+  ): Promise<WritingProjectFileContent> {
+    const { data } = await requestJson<WritingProjectFileContent>(this.context, {
+      method: 'GET',
+      path: `/writing-projects/${encodeURIComponent(projectId)}/files/${encodeURIComponent(fileId)}`,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * Part 21 — a binary asset's raw bytes as a Blob, for a small
+   * image/PDF preview pane. Mirrors fetchWritingProjectExportBlob's own
+   * manual-fetch shape.
+   */
+  async fetchWritingProjectFileBinaryBlob(
+    projectId: string,
+    fileId: string,
+    options: RequestOptions = {}
+  ): Promise<Blob> {
+    const token = await this.context.getAccessToken();
+    const url = `${this.baseUrl}/writing-projects/${encodeURIComponent(projectId)}/files/${encodeURIComponent(fileId)}/content`;
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    const { signal, dispose, didTimeOut } = combineSignals(options.signal, this.context.timeoutMs);
+    let response: Response;
+    try {
+      response = await fetch(url, { headers, signal });
+    } catch (cause) {
+      dispose();
+      if (isAbortError(cause)) {
+        if (didTimeOut()) {
+          throw new TimeoutError(
+            `Fetching writing project file ${fileId} timed out after ${this.context.timeoutMs}ms`
+          );
+        }
+        throw new RequestCancelledError(`Fetching writing project file ${fileId} was cancelled`);
+      }
+      throw new NetworkError(`Network request to fetch writing project file ${fileId} failed`, {
+        cause,
+      });
+    }
+    dispose();
+
+    if (!response.ok) {
+      const requestId = extractRequestId(response.headers);
+      const bodyText = await safeReadText(response);
+      const { detail, rawBody } = parseErrorBody(bodyText);
+      throw errorFromResponse({ status: response.status, detail, requestId, rawBody });
+    }
+
+    return response.blob();
+  }
+
+  /**
+   * Part 13/39 — the multi-file autosave endpoint for whichever text
+   * file is currently active in the editor. Same debounced-PATCH
+   * discipline as updateWritingProject's `mainTexContent` (never
+   * per-keystroke).
+   */
+  async updateWritingProjectFileContent(
+    projectId: string,
+    fileId: string,
+    request: UpdateWritingProjectFileContentRequest,
+    options: RequestOptions = {}
+  ): Promise<WritingProjectFileMutationResponse> {
+    const { data } = await requestJson<WritingProjectFileMutationResponse>(this.context, {
+      method: 'PATCH',
+      path: `/writing-projects/${encodeURIComponent(projectId)}/files/${encodeURIComponent(fileId)}`,
+      body: { content_text: request.contentText },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  async renameWritingProjectFile(
+    projectId: string,
+    fileId: string,
+    request: RenameWritingProjectFileRequest,
+    options: RequestOptions = {}
+  ): Promise<WritingProjectFileMutationResponse> {
+    const { data } = await requestJson<WritingProjectFileMutationResponse>(this.context, {
+      method: 'POST',
+      path: `/writing-projects/${encodeURIComponent(projectId)}/files/${encodeURIComponent(fileId)}/rename`,
+      body: { name: request.name },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * Part 8 — moves a file/folder within the project tree. The backend
+   * rejects a folder moved into itself or one of its own descendants
+   * (409/422 — see errorFromResponse's own mapping), and any name
+   * collision at the destination.
+   */
+  async moveWritingProjectFile(
+    projectId: string,
+    fileId: string,
+    request: MoveWritingProjectFileRequest,
+    options: RequestOptions = {}
+  ): Promise<WritingProjectFileMutationResponse> {
+    const { data } = await requestJson<WritingProjectFileMutationResponse>(this.context, {
+      method: 'POST',
+      path: `/writing-projects/${encodeURIComponent(projectId)}/files/${encodeURIComponent(fileId)}/move`,
+      body: { new_parent_id: request.newParentId },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * Part 9/16 — deletes a file, or a folder AND everything under it.
+   * Rejects (409) if this file is (or contains) the project's current
+   * root file — reassign the root first.
+   */
+  async deleteWritingProjectFile(
+    projectId: string,
+    fileId: string,
+    options: RequestOptions = {}
+  ): Promise<void> {
+    await requestJson<undefined>(this.context, {
+      method: 'DELETE',
+      path: `/writing-projects/${encodeURIComponent(projectId)}/files/${encodeURIComponent(fileId)}`,
+      signal: options.signal,
+    });
+  }
+
+  /** Part 15 — the user chooses a different `.tex` file as the project's
+   * root/main document. */
+  async setWritingProjectRootFile(
+    projectId: string,
+    fileId: string,
+    options: RequestOptions = {}
+  ): Promise<WritingProjectFileMutationResponse> {
+    const { data } = await requestJson<WritingProjectFileMutationResponse>(this.context, {
+      method: 'PUT',
+      path: `/writing-projects/${encodeURIComponent(projectId)}/root-file`,
+      body: { file_id: fileId },
+      signal: options.signal,
+    });
+    return data;
   }
 
   /**

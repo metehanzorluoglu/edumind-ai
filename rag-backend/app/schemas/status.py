@@ -39,6 +39,14 @@ class StatusResponse(BaseModel):
     conversation_scope_enabled: bool
     # --- Zoom-In / strict selected-source mode (Milestone 4) ---
     zoom_in_enabled: bool
+    # --- Secure LaTeX compilation (Milestone 5.1) ---
+    # The backend's single source of truth the Writing editor reads to
+    # hide the Compile button/PDF-preview panel entirely while this is
+    # false, rather than showing a control that would just 404 — see
+    # app/config.py's `latex_compilation_enabled` for the full flag
+    # reasoning (ships false; a human operator flips it deliberately
+    # after reviewing the Milestone 5.1 security report).
+    latex_compilation_enabled: bool
     # --- Developer/Settings page (milestone V4): availability for every
     # model this backend can call, and how long the one Ollama round trip
     # this check makes took — see app/core/readiness.py. Latency is null

@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from functools import lru_cache
 from typing import Annotated
 
@@ -6,6 +6,8 @@ from fastapi import Depends, Request
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings, get_settings
+from app.core.bibliographic_enrichment import CrossrefProvider
+from app.core.compile_artifact_cache import CompileArtifactCache
 from app.core.email_provider import ConsoleEmailProvider, EmailProvider, SmtpEmailProvider
 from app.core.embedding_provider import (
     MXBAI_EMBED_LARGE_DIMENSIONS,
@@ -14,6 +16,7 @@ from app.core.embedding_provider import (
 )
 from app.core.evidence_client import EvidenceClient
 from app.core.image_generation_service import ImageGenerationService
+from app.core.latex_compiler_client import LatexCompilerClient
 from app.core.llm_provider import LLMProvider, OllamaLLMProvider
 from app.core.rag_service import RagService
 from app.core.rate_limiter import RateLimiter
@@ -32,8 +35,11 @@ from app.db.projects_repository import ProjectsRepository
 from app.db.research_preference_repository import ResearchPreferenceRepository
 from app.db.scopes_repository import ScopesRepository
 from app.db.session import get_db, get_session_factory
+from app.db.writing_project_files_repository import WritingProjectFilesRepository
+from app.db.writing_projects_repository import WritingProjectsRepository
 from app.services.attachment_storage import AttachmentStorage
 from app.services.document_file_storage import DocumentFileStorage
+from app.services.writing_project_file_storage import WritingProjectFileStorage
 from app.services.vision_service import VisionService
 from app.vectorstore.qdrant_client import QdrantVectorStore
 
@@ -203,6 +209,21 @@ DocumentFileStorageDep = Annotated[DocumentFileStorage, Depends(get_document_fil
 
 
 @lru_cache
+def get_writing_project_file_storage() -> WritingProjectFileStorage:
+    # Milestone 5.3 — see app/services/writing_project_file_storage.py's
+    # module docstring for why this is a separate instance/directory
+    # from get_document_file_storage() above (a Writing Project's own
+    # figure/asset uploads are never RAG-corpus Documents).
+    settings = get_settings()
+    return WritingProjectFileStorage(root_dir=settings.writing_project_files_dir)
+
+
+WritingProjectFileStorageDep = Annotated[
+    WritingProjectFileStorage, Depends(get_writing_project_file_storage)
+]
+
+
+@lru_cache
 def get_image_generation_service() -> ImageGenerationService:
     settings = get_settings()
     return ImageGenerationService(
@@ -276,6 +297,24 @@ EvidenceClientDep = Annotated[EvidenceClient, Depends(get_evidence_client)]
 
 
 @lru_cache
+def get_bibliographic_provider() -> CrossrefProvider:
+    """Milestone 4.1 §2/§4. Constructed unconditionally, same reasoning as
+    get_evidence_client() above: Settings.bibliographic_enrichment_enabled
+    is the ONE place that decides whether this is ever actually called
+    (see app/core/bibliographic_enrichment_service.py's eligibility
+    check), not a second conditional-construction path here."""
+    settings = get_settings()
+    return CrossrefProvider(
+        base_url=settings.bibliographic_provider_base_url,
+        contact_email=settings.bibliographic_provider_contact_email,
+        timeout_seconds=settings.bibliographic_provider_timeout_seconds,
+    )
+
+
+BibliographicProviderDep = Annotated[CrossrefProvider, Depends(get_bibliographic_provider)]
+
+
+@lru_cache
 def get_chat_rate_limiter() -> RateLimiter:
     settings = get_settings()
     return RateLimiter(
@@ -285,6 +324,43 @@ def get_chat_rate_limiter() -> RateLimiter:
 
 
 ChatRateLimiterDep = Annotated[RateLimiter, Depends(get_chat_rate_limiter)]
+
+
+@lru_cache
+def get_latex_compiler_client() -> LatexCompilerClient:
+    """Milestone 5.1 Part 14 — constructed unconditionally, same
+    reasoning as get_evidence_client() above. Building an httpx.Client
+    opens no connection; POST /writing-projects/{id}/compile is the one
+    call site."""
+    settings = get_settings()
+    return LatexCompilerClient(
+        base_url=settings.latex_compiler_url,
+        timeout_seconds=settings.latex_compiler_timeout_seconds,
+    )
+
+
+LatexCompilerClientDep = Annotated[LatexCompilerClient, Depends(get_latex_compiler_client)]
+
+
+@lru_cache
+def get_compile_rate_limiter() -> RateLimiter:
+    settings = get_settings()
+    return RateLimiter(
+        max_requests=settings.compile_rate_limit_max_requests,
+        window_seconds=settings.compile_rate_limit_window_seconds,
+    )
+
+
+CompileRateLimiterDep = Annotated[RateLimiter, Depends(get_compile_rate_limiter)]
+
+
+@lru_cache
+def get_compile_artifact_cache() -> CompileArtifactCache:
+    settings = get_settings()
+    return CompileArtifactCache(ttl_seconds=settings.compile_artifact_ttl_seconds)
+
+
+CompileArtifactCacheDep = Annotated[CompileArtifactCache, Depends(get_compile_artifact_cache)]
 
 
 def get_documents_repository(db: DBSessionDep) -> DocumentsRepository:
@@ -359,6 +435,28 @@ def get_projects_repository(db: DBSessionDep) -> ProjectsRepository:
 
 
 ProjectsRepositoryDep = Annotated[ProjectsRepository, Depends(get_projects_repository)]
+
+
+def get_writing_projects_repository(db: DBSessionDep) -> WritingProjectsRepository:
+    # Same reasoning as get_documents_repository above: fresh per-request,
+    # never cached across requests.
+    return WritingProjectsRepository(db)
+
+
+WritingProjectsRepositoryDep = Annotated[
+    WritingProjectsRepository, Depends(get_writing_projects_repository)
+]
+
+
+def get_writing_project_files_repository(db: DBSessionDep) -> WritingProjectFilesRepository:
+    # Same reasoning as get_documents_repository above: fresh per-request,
+    # never cached across requests.
+    return WritingProjectFilesRepository(db)
+
+
+WritingProjectFilesRepositoryDep = Annotated[
+    WritingProjectFilesRepository, Depends(get_writing_project_files_repository)
+]
 
 
 def get_scopes_repository(db: DBSessionDep) -> ScopesRepository:

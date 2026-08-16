@@ -11,6 +11,13 @@ export const DOCUMENT_TYPES = [
   'report',
   'review_article',
   'curriculum_document',
+  // Milestone 4 (Reference Library & Bibliographic Metadata Foundation) —
+  // mirrors app/ingestion/metadata_schema.py's DocumentType exactly.
+  'book',
+  'book_chapter',
+  'thesis_dissertation',
+  'conference_paper',
+  'other',
 ] as const;
 
 export const DOCUMENT_TYPE_LABELS: Record<(typeof DOCUMENT_TYPES)[number] | 'unknown', string> = {
@@ -20,6 +27,11 @@ export const DOCUMENT_TYPE_LABELS: Record<(typeof DOCUMENT_TYPES)[number] | 'unk
   report: 'Report',
   review_article: 'Review article',
   curriculum_document: 'Curriculum document',
+  book: 'Book',
+  book_chapter: 'Book chapter',
+  thesis_dissertation: 'Thesis/dissertation',
+  conference_paper: 'Conference paper',
+  other: 'Other',
   // Frontend/Platform Milestone 3.2.1 Part C — the normal upload UI no
   // longer collects this (see documents/index.tsx), so most newly
   // uploaded documents will carry this value. Not in DOCUMENT_TYPES

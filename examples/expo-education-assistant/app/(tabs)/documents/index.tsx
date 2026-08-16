@@ -26,8 +26,13 @@ import { MoveToFolderDialog } from '@/components/MoveToFolderDialog';
 import { LibraryToolbar } from '@/components/documents/LibraryToolbar';
 import { LibraryContentsView } from '@/components/documents/LibraryContentsView';
 import { DetailsPanel } from '@/components/documents/DetailsPanel';
+import { DuplicateCandidateNotice } from '@/components/documents/DuplicateCandidateNotice';
+import { EditMetadataModal } from '@/components/documents/EditMetadataModal';
+import { CitationPopover } from '@/components/documents/CitationPopover';
+import { AddToWritingProjectModal } from '@/components/writing/AddToWritingProjectModal';
 import { DOCUMENT_TYPE_LABELS } from '@/lib/enums';
 import { fileExtension, formatFileSize, validateCandidateFile } from '@/lib/documentUpload';
+import { downloadTextFile } from '@/lib/downloadTextFile';
 import { safeText } from '@/lib/format';
 import { useClient } from '@/lib/ClientProvider';
 import { useFeatureFlags } from '@/lib/FeatureFlags';
@@ -136,6 +141,31 @@ export default function DocumentsScreen() {
   const [createFolderError, setCreateFolderError] = useState<string | null>(null);
   const [movingDocument, setMovingDocument] = useState<DocumentSummary | null>(null);
   const [movingFolder, setMovingFolder] = useState<FolderResponse | null>(null);
+  // Milestone 4 (Reference Library & Bibliographic Metadata Foundation)
+  // Section 9 — the "Edit metadata" action's local state, same shape as
+  // movingDocument above.
+  const [editingMetadataDocument, setEditingMetadataDocument] = useState<DocumentSummary | null>(
+    null
+  );
+  const [savingMetadata, setSavingMetadata] = useState(false);
+  const [metadataSaveError, setMetadataSaveError] = useState<string | null>(null);
+  // Milestone 4.1 (Authoritative Metadata Enrichment & Duplicate
+  // Awareness) Section 11 — "Refresh metadata" is a separate in-flight
+  // flag from savingMetadata: the two actions are mutually exclusive in
+  // the UI (EditMetadataModal disables both while either is busy) but are
+  // conceptually different requests, so they don't share one flag.
+  const [refreshingMetadata, setRefreshingMetadata] = useState(false);
+  // Milestone 4.2 (Citation & BibTeX Foundation) Section 24 — the
+  // Citation popover's local state, same "one document at a time" shape
+  // as editingMetadataDocument above.
+  const [citationDocument, setCitationDocument] = useState<DocumentSummary | null>(null);
+  const [exportingBibtex, setExportingBibtex] = useState(false);
+  // Milestone 5 (Academic Writing & LaTeX Foundation) Part 34 — "Add to
+  // writing project" from the multi-selection bar; null document ids
+  // means the modal is closed.
+  const [writingProjectPickerDocumentIds, setWritingProjectPickerDocumentIds] = useState<
+    string[] | null
+  >(null);
   const [deletingFolderIds, setDeletingFolderIds] = useState<ReadonlySet<string>>(new Set());
   const [folderActionError, setFolderActionError] = useState<string | null>(null);
   // Folder-library document rows manage their own delete state directly
@@ -176,6 +206,14 @@ export default function DocumentsScreen() {
   const [sourceVenue, setSourceVenue] = useState('');
   const [doi, setDoi] = useState('');
   const [sourceUrl, setSourceUrl] = useState('');
+  // Milestone 4.1 (Authoritative Metadata Enrichment & Duplicate
+  // Awareness) Section 24/28 — "Keep both" only ever dismisses this
+  // banner locally; it never changes anything about the upload itself
+  // (there is nothing to "confirm" server-side — the actual upload
+  // proceeds identically whether or not a duplicate candidate exists).
+  // Reset to false whenever a new preview arrives (see the effect below)
+  // so a freshly picked file always gets its own, un-dismissed warning.
+  const [duplicateWarningDismissed, setDuplicateWarningDismissed] = useState(false);
   // Frontend Milestone 1 (Finder-style Document Library): overrides the
   // upload target folder for exactly one upload — set when a file is
   // dropped from the OS directly onto the library area/a folder card
@@ -364,6 +402,7 @@ export default function DocumentsScreen() {
     setSourceVenue(preview.source_venue ?? '');
     setDoi(preview.doi ?? '');
     setSourceUrl(preview.source_url ?? '');
+    setDuplicateWarningDismissed(false);
   }, [previewState]);
 
   // react-native-web's <View> only forwards a fixed whitelist of DOM props
@@ -600,6 +639,51 @@ export default function DocumentsScreen() {
     ]);
   }
 
+  // Milestone 4 Section 9 — "Edit metadata": PATCH-only, never re-uploads/
+  // re-chunks/re-embeds (see EducationAssistantClient.updateDocumentMetadata's
+  // own docstring). refresh() afterward keeps this screen's list/details
+  // panel in sync, same convention as every other Documents Library
+  // mutation (move/delete/rename) above.
+  async function handleSaveMetadata(
+    diff: Parameters<typeof client.updateDocumentMetadata>[1]
+  ): Promise<void> {
+    if (!editingMetadataDocument) return;
+    setSavingMetadata(true);
+    setMetadataSaveError(null);
+    try {
+      await client.updateDocumentMetadata(editingMetadataDocument.document_id, diff);
+      folderLibrary.refresh();
+      setEditingMetadataDocument(null);
+    } catch (error) {
+      setMetadataSaveError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSavingMetadata(false);
+    }
+  }
+
+  // Milestone 4.1 Section 11 — "Refresh metadata": unlike Save, this does
+  // NOT close the modal (the user should see the result summary
+  // EditMetadataModal renders from the returned outcome) and keeps
+  // editingMetadataDocument pointed at the FRESH DocumentSummary the
+  // backend returns, so has_usable_doi/enrichment_status/etc. and any
+  // field the merge actually changed are reflected immediately without a
+  // second request. folderLibrary.refresh() runs in the background so the
+  // list/details panel outside the modal stay in sync too.
+  async function handleRefreshMetadata() {
+    if (!editingMetadataDocument) {
+      throw new Error('No document is being edited');
+    }
+    setRefreshingMetadata(true);
+    try {
+      const result = await client.enrichDocumentMetadata(editingMetadataDocument.document_id);
+      setEditingMetadataDocument(result.document);
+      folderLibrary.refresh();
+      return result;
+    } finally {
+      setRefreshingMetadata(false);
+    }
+  }
+
   async function handleCreateFolder(): Promise<void> {
     const name = newFolderName.trim();
     if (!name || creatingFolder) return;
@@ -719,6 +803,51 @@ export default function DocumentsScreen() {
         displayName: safeText(item.data.title, item.data.source_filename),
       }));
     navigateToChatWithSources(docs);
+  }
+
+  // Milestone 4.2 (Citation & BibTeX Foundation) Section 20/21 — reuses
+  // Documents' existing multi-selection architecture (same selectedIds
+  // source handleUseSelectedInChat above already reads) rather than a
+  // separate Reference page built solely for export.
+  async function handleExportBibtexSelected(): Promise<void> {
+    const documentIds = Array.from(selection.selectedIds)
+      .map((id) => libraryItemsById.get(id))
+      .filter(
+        (item): item is Extract<LibraryItem, { kind: 'document' }> => item?.kind === 'document'
+      )
+      .map((item) => item.data.document_id);
+    if (documentIds.length === 0) return;
+    setExportingBibtex(true);
+    setDocumentActionError(null);
+    try {
+      const result = await client.exportBibtex({ documentIds });
+      await downloadTextFile('references.bib', result.bibtex, 'application/x-bibtex');
+      const skippedCount = result.skipped_document_ids?.length ?? 0;
+      if (skippedCount > 0) {
+        setDocumentActionError(
+          `Exported ${result.count} of ${documentIds.length} references — ` +
+            `${skippedCount} could not be found.`
+        );
+      }
+    } catch {
+      setDocumentActionError('Could not export BibTeX for the selected references.');
+    } finally {
+      setExportingBibtex(false);
+    }
+  }
+
+  // Milestone 5 (Academic Writing & LaTeX Foundation) Part 34 — reuses
+  // the exact same selectedIds source handleUseSelectedInChat/
+  // handleExportBibtexSelected already read.
+  function handleAddSelectedToWritingProject(): void {
+    const documentIds = Array.from(selection.selectedIds)
+      .map((id) => libraryItemsById.get(id))
+      .filter(
+        (item): item is Extract<LibraryItem, { kind: 'document' }> => item?.kind === 'document'
+      )
+      .map((item) => item.data.document_id);
+    if (documentIds.length === 0) return;
+    setWritingProjectPickerDocumentIds(documentIds);
   }
 
   if (!hydrated) {
@@ -854,6 +983,21 @@ export default function DocumentsScreen() {
                   Review the detected fields below and edit anything that&apos;s wrong before
                   uploading.
                 </Text>
+
+                {previewState.status === 'success' &&
+                  previewState.preview.duplicate_candidate &&
+                  !duplicateWarningDismissed && (
+                    <DuplicateCandidateNotice
+                      candidate={previewState.preview.duplicate_candidate}
+                      onOpenExisting={() => {
+                        router.push(
+                          `/documents/${previewState.preview.duplicate_candidate!.document_id}`
+                        );
+                      }}
+                      onKeepBoth={() => setDuplicateWarningDismissed(true)}
+                    />
+                  )}
+
                 <TextField
                   label="Authors"
                   value={authorsText}
@@ -951,7 +1095,7 @@ export default function DocumentsScreen() {
                   label="Search this library"
                   value={searchInput}
                   onChangeText={setSearchInput}
-                  placeholder="Search by title or filename…"
+                  placeholder="Search by title, author, year, venue, DOI, or filename…"
                   onSubmitEditing={handleSearchSubmit}
                   returnKeyType="search"
                   accessibilityLabel="Search this library"
@@ -1252,6 +1396,11 @@ export default function DocumentsScreen() {
                         }
                         deletingIds={deletingItemIds}
                         onUseInChat={featureFlags.conversationScope ? handleUseInChat : undefined}
+                        onEditMetadata={(doc) => {
+                          setMetadataSaveError(null);
+                          setEditingMetadataDocument(doc);
+                        }}
+                        onCitation={(doc) => setCitationDocument(doc)}
                       />
                     )}
                   </>
@@ -1273,6 +1422,22 @@ export default function DocumentsScreen() {
                       ? () => handleOpenDocument(selectedLibraryItem.data)
                       : undefined
                   }
+                  onEditMetadata={
+                    selectedLibraryItem?.kind === 'document'
+                      ? () => {
+                          setMetadataSaveError(null);
+                          setEditingMetadataDocument(selectedLibraryItem.data);
+                        }
+                      : undefined
+                  }
+                  onCitation={
+                    selectedLibraryItem?.kind === 'document'
+                      ? () => setCitationDocument(selectedLibraryItem.data)
+                      : undefined
+                  }
+                  onExportBibtexSelected={handleExportBibtexSelected}
+                  exportingBibtex={exportingBibtex}
+                  onAddSelectedToWritingProject={handleAddSelectedToWritingProject}
                 />
               )}
             </View>
@@ -1299,6 +1464,28 @@ export default function DocumentsScreen() {
           }
         />
       )}
+      {editingMetadataDocument && (
+        <EditMetadataModal
+          document={editingMetadataDocument}
+          saving={savingMetadata}
+          error={metadataSaveError}
+          onCancel={() => {
+            setEditingMetadataDocument(null);
+            setMetadataSaveError(null);
+          }}
+          onSave={handleSaveMetadata}
+          onRefreshMetadata={handleRefreshMetadata}
+          refreshingMetadata={refreshingMetadata}
+        />
+      )}
+      {citationDocument && (
+        <CitationPopover document={citationDocument} onClose={() => setCitationDocument(null)} />
+      )}
+      <AddToWritingProjectModal
+        visible={writingProjectPickerDocumentIds !== null}
+        documentIds={writingProjectPickerDocumentIds ?? []}
+        onClose={() => setWritingProjectPickerDocumentIds(null)}
+      />
     </View>
   );
 }

@@ -1,7 +1,7 @@
 import type { DocumentSummary, FolderResponse } from 'education-assistant-client';
 import { DOCUMENT_TYPE_LABELS } from '@/lib/enums';
 import { fileExtension } from '@/lib/documentUpload';
-import { safeText } from '@/lib/format';
+import { formatAuthorsCompact, safeText } from '@/lib/format';
 
 /**
  * Frontend Milestone 1 (Finder-style Document Library): a single value both
@@ -57,17 +57,58 @@ export function libraryItemTypeLabel(item: LibraryItem): string {
   return DOCUMENT_TYPE_LABELS[item.data.document_type];
 }
 
-export type LibrarySortKey = 'name' | 'modified' | 'size' | 'type';
+/**
+ * Milestone 4 (Reference Library & Bibliographic Metadata Foundation)
+ * Section 6: "Author · Year" for a document's grid-card secondary line,
+ * when either is known — null for a folder or a document with neither
+ * (the caller falls back to libraryItemTypeLabel, exactly the pre-M4
+ * card, so a document with no bibliographic metadata yet looks unchanged).
+ * Never fabricates: an unknown author/year is simply omitted from the
+ * joined string, never rendered as a placeholder.
+ */
+export function libraryItemBylineLabel(item: LibraryItem): string | null {
+  if (item.kind === 'folder') return null;
+  const authors = item.data.authors ?? [];
+  const year = item.data.publication_year;
+  const parts = [
+    authors.length > 0 ? formatAuthorsCompact(authors) : null,
+    year ? String(year) : null,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+export type LibrarySortKey =
+  | 'name'
+  | 'modified'
+  | 'size'
+  | 'type'
+  // Milestone 4 (Reference Library & Bibliographic Metadata Foundation)
+  // Section 8: "Title" and "Recently added" are already covered by
+  // 'name' (libraryItemName already prefers title over filename) and
+  // 'modified' (documents have no separate modified timestamp — see
+  // libraryItemDate's own docstring — so it's really "date added"
+  // already); these two are genuinely new sort dimensions.
+  | 'publicationYear'
+  | 'author';
 export type LibrarySortDirection = 'asc' | 'desc';
 
 const SORT_LABELS: Record<LibrarySortKey, string> = {
-  name: 'Name',
-  modified: 'Date modified',
+  name: 'Title',
+  modified: 'Recently added',
   size: 'Size',
   type: 'Type',
+  publicationYear: 'Publication year',
+  author: 'Author',
 };
 
-export const LIBRARY_SORT_KEYS: LibrarySortKey[] = ['name', 'modified', 'size', 'type'];
+export const LIBRARY_SORT_KEYS: LibrarySortKey[] = [
+  'name',
+  'modified',
+  'publicationYear',
+  'author',
+  'type',
+  'size',
+];
 
 export function librarySortLabel(key: LibrarySortKey): string {
   return SORT_LABELS[key];
@@ -97,6 +138,39 @@ function compareByKey(a: LibraryItem, b: LibraryItem, key: LibrarySortKey): numb
       return libraryItemName(a).localeCompare(libraryItemName(b), undefined, {
         sensitivity: 'base',
       });
+    case 'publicationYear': {
+      // Milestone 4 Section 8. A folder (no publication year at all) and a
+      // document with no known year both fall back to name, same "unknown
+      // means unknown, never fabricated" honesty as the "Size" case above
+      // — an unset year is not treated as 0 or sorted as though it were
+      // the oldest/newest.
+      const ay = a.kind === 'document' ? a.data.publication_year : null;
+      const by = b.kind === 'document' ? b.data.publication_year : null;
+      if (ay == null && by == null) {
+        return libraryItemName(a).localeCompare(libraryItemName(b), undefined, {
+          sensitivity: 'base',
+        });
+      }
+      if (ay == null) return -1;
+      if (by == null) return 1;
+      return ay - by;
+    }
+    case 'author': {
+      // Compares by the first listed author (this app never reorders an
+      // authors list, so "first" is stable) — same fallback-to-name
+      // honesty as 'publicationYear' above for a folder or an authorless
+      // document.
+      const aa = a.kind === 'document' ? a.data.authors?.[0] : undefined;
+      const ba = b.kind === 'document' ? b.data.authors?.[0] : undefined;
+      if (!aa && !ba) {
+        return libraryItemName(a).localeCompare(libraryItemName(b), undefined, {
+          sensitivity: 'base',
+        });
+      }
+      if (!aa) return -1;
+      if (!ba) return 1;
+      return aa.localeCompare(ba, undefined, { sensitivity: 'base' });
+    }
     default:
       return 0;
   }

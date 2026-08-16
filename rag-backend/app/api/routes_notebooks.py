@@ -66,6 +66,8 @@ def _entry_response(
         highlight_id=str(record.highlight_id) if record.highlight_id else None,
         document_id=record.document_id,
         document_title=record.document_title_snapshot,
+        document_authors=record.document_authors_snapshot,
+        document_publication_year=record.document_publication_year_snapshot,
         page_number=record.page_number,
         excerpt=record.excerpt_snapshot,
         note_text=record.note_text,
@@ -220,6 +222,11 @@ def add_notebook_entry(
         highlight_id=highlight.id,
         document_id=highlight.document_id,
         document_title=document_title,
+        # Milestone 4: same snapshot-at-add-time rule as document_title
+        # above — copied once, here, and never re-read from the source
+        # Document again (see NotebookEntry's docstring).
+        document_authors=document.authors if document is not None else None,
+        document_publication_year=document.publication_year if document is not None else None,
         page_number=highlight.page_number,
         excerpt=highlight.selected_text,
         note_text=request.note_text if request.note_text is not None else highlight.note_text,

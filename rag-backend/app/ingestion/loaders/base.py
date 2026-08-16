@@ -14,11 +14,23 @@ class PageContent(BaseModel):
 class ExtractionSource(StrEnum):
     """Where one field's value came from — surfaced to the frontend via
     POST /documents/metadata-preview's `extraction_sources` (see
-    app/schemas/documents.py) so a reviewing user knows how much to trust
-    each field, and never persisted past that preview (see
-    app/ingestion/ingest.py's docstring on why)."""
+    app/schemas/documents.py), and persisted per-field on `Document.
+    metadata_sources` (Milestone 4) so a reviewing user always knows how
+    much to trust each field, both before and after upload.
+
+    Precedence, most trustworthy first (Milestone 4.1 Section 7):
+    USER > AUTHORITATIVE > EMBEDDED_METADATA > STRUCTURED_TEXT > FILENAME.
+    See app/core/bibliographic_enrichment.py's merge_authoritative_metadata
+    for the one place this ordering is enforced.
+    """
 
     USER = "user"
+    # Milestone 4.1: an identifier-backed scholarly metadata service
+    # (Crossref) — "authoritative" means the value came from a DOI lookup
+    # against the work's own registered record, NOT that it is guaranteed
+    # correct (a provider can itself have bad data) — see
+    # bibliographic_enrichment.py's module docstring.
+    AUTHORITATIVE = "authoritative"
     EMBEDDED_METADATA = "embedded_metadata"
     STRUCTURED_TEXT = "structured_text"
     FILENAME = "filename"

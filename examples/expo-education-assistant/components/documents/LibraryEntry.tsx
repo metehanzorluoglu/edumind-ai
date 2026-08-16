@@ -5,6 +5,7 @@ import { IconButton } from '@/components/ui/IconButton';
 import { FileIcon, FolderIcon, MoreIcon } from '@/components/icons';
 import {
   formatLibraryDate,
+  libraryItemBylineLabel,
   libraryItemDate,
   libraryItemId,
   libraryItemName,
@@ -146,7 +147,10 @@ export function LibraryEntry({
         <Text style={styles.meta} numberOfLines={1}>
           {isFolder
             ? `${item.data.folder_count} folder${item.data.folder_count === 1 ? '' : 's'} · ${item.data.document_count} doc${item.data.document_count === 1 ? '' : 's'}`
-            : libraryItemTypeLabel(item)}
+            : // Milestone 4 Section 6: "Author · Year" when known, falling
+              // back to the pre-M4 type label (PDF, journal article, …)
+              // for a document with no bibliographic metadata yet.
+              (libraryItemBylineLabel(item) ?? libraryItemTypeLabel(item))}
         </Text>
         {!isFolder && isSampleSource(item.data.source_filename) && (
           <Badge label="Sample" tone="warning" />

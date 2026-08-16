@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from app.db.document_highlights_repository import DocumentHighlightsRepository
 from app.db.documents_repository import DocumentsRepository
 from app.db.scopes_repository import ScopesRepository
+from app.db.writing_projects_repository import WritingProjectsRepository
 from app.services.document_file_storage import DocumentFileStorage
 from app.vectorstore.qdrant_client import QdrantVectorStore
 
@@ -48,6 +49,7 @@ def delete_document_by_id(
     documents_repository: DocumentsRepository,
     scopes_repository: ScopesRepository,
     document_highlights_repository: DocumentHighlightsRepository,
+    writing_projects_repository: WritingProjectsRepository,
     document_file_storage: DocumentFileStorage | None = None,
 ) -> DocumentDeletionResult | None:
     """Returns None if no document with this ID exists *for this user* —
@@ -64,11 +66,16 @@ def delete_document_by_id(
     (Frontend Milestone 3 — Document Reader) every DocumentHighlight row
     anchored to this document, same reasoning — see
     DocumentHighlightsRepository.delete_for_document's docstring. Also
-    deletes (Frontend Milestone 3.1) the document's original stored file,
-    if one exists — `document_file_storage` is optional only so existing
-    callers/tests that never persisted a file (or don't care about it) can
-    omit it without constructing a real storage instance; every real
-    caller (routes_documents.py, cli/documents.py) passes one.
+    removes (Milestone 5 — Academic Writing & LaTeX Foundation) every
+    WritingProjectDocument reference row pointing at this document, same
+    reasoning — see WritingProjectsRepository.delete_references_for_
+    document's docstring: the WritingProject itself is never touched,
+    only the reference association. Also deletes (Frontend Milestone 3.1)
+    the document's original stored file, if one exists —
+    `document_file_storage` is optional only so existing callers/tests
+    that never persisted a file (or don't care about it) can omit it
+    without constructing a real storage instance; every real caller
+    (routes_documents.py, cli/documents.py) passes one.
 
     Deliberately does NOT touch `notebook_entries` — a NotebookEntry
     survives its source document's deletion by design (M3.1 Notebook spec
@@ -83,6 +90,7 @@ def delete_document_by_id(
     deleted_chunks = vector_store.delete_document(document_id, user_id=str(user_id))
     scopes_repository.delete_associations_for_document(document_id)
     document_highlights_repository.delete_for_document(document_id)
+    writing_projects_repository.delete_references_for_document(document_id)
     documents_repository.delete(user_id, document_id)
     if document_file_storage is not None and record.storage_key is not None:
         document_file_storage.delete(record.storage_key)

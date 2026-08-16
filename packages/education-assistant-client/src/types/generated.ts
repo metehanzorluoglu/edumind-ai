@@ -948,6 +948,489 @@ export interface paths {
         patch: operations["update_research_preference_status_projects__project_id__research_preferences__suggestion_id__patch"];
         trace?: never;
     };
+    "/writing-projects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Writing Projects
+         * @description Milestone 5.3 Part 26/27/28 — the project dashboard's own list
+         *     call. `q` searches title/description only (Part 27); `sort` defaults
+         *     to the pre-M5.3 behavior (most-recently-updated first) so an old
+         *     frontend build that never passes these params sees identical
+         *     ordering to before; `archived=true` shows ONLY archived projects
+         *     (never a mixed view — Part 30's "hidden from the default active
+         *     view").
+         */
+        get: operations["list_writing_projects_writing_projects_get"];
+        put?: never;
+        /**
+         * Create Writing Project
+         * @description Milestone 5 Section 8 — every new project starts from a minimal,
+         *     honest template (the project's own title, an empty Introduction
+         *     section) — never fake authors/affiliations/references.
+         */
+        post: operations["create_writing_project_writing_projects_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/{project_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Writing Project */
+        get: operations["get_writing_project_writing_projects__project_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Writing Project
+         * @description Milestone 5 Section 30 / 5.3 Part 35 — deletes ONLY this project's
+         *     own row, its reference associations, and (new in 5.3) its OWN file
+         *     tree — the file rows first (so the delete never leaves orphaned
+         *     rows if a later step fails), then the project row, then any binary
+         *     asset bytes on disk, then a final best-effort sweep of the whole
+         *     per-project storage subtree (covers any asset whose row-level
+         *     storage_key was somehow already gone — belt and suspenders, never
+         *     required in the ordinary path). Never touches the referenced
+         *     Documents, their highlights, Notebook entries, or any chat
+         *     conversation — none of those are owned by a WritingProject.
+         */
+        delete: operations["delete_writing_project_writing_projects__project_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Writing Project
+         * @description Milestone 5 Section 7 — the autosave endpoint: the editor PATCHes
+         *     `main_tex_content` here on a debounced interval, never per keystroke.
+         *     Partial update — only a field actually present in the request body is
+         *     touched (same convention as PATCH /documents/{id}/metadata).
+         */
+        patch: operations["update_writing_project_writing_projects__project_id__patch"];
+        trace?: never;
+    };
+    "/writing-projects/{project_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Archive Writing Project
+         * @description Milestone 5.3 Part 30 — hides the project from the default
+         *     dashboard view without deleting anything; always reversible.
+         */
+        post: operations["archive_writing_project_writing_projects__project_id__archive_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/{project_id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Restore Writing Project */
+        post: operations["restore_writing_project_writing_projects__project_id__restore_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/{project_id}/duplicate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Duplicate Writing Project
+         * @description Milestone 5.3 Part 29 — copies project metadata, the full file
+         *     tree (including binary asset BYTES, physically re-saved under the
+         *     new project's own storage subtree — never shared with the source),
+         *     and project-reference associations. Deliberately does NOT duplicate
+         *     Documents, Notebook entries, or Chat conversations (Part 29) — a
+         *     citation key in the copied main.tex still resolves against the
+         *     exact same canonical Document the source project references.
+         */
+        post: operations["duplicate_writing_project_writing_projects__project_id__duplicate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/{project_id}/references": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Writing Project References
+         * @description Milestone 5 Section 3/27 — every reference's bibliographic identity
+         *     is read live from the current Document row (never a copy). `cited`
+         *     and `missing_citation_keys` are computed fresh from the project's
+         *     current main_tex_content on every call — never persisted, so they can
+         *     never drift out of sync with the manuscript.
+         */
+        get: operations["list_writing_project_references_writing_projects__project_id__references_get"];
+        put?: never;
+        /**
+         * Add Writing Project References
+         * @description Milestone 5 Section 4/37 — adds one or more Documents as project
+         *     references. Every document_id is ownership-checked individually
+         *     (`WritingProjectsRepository.add_reference`) — a guessed id belonging
+         *     to another user reports "document_not_found", indistinguishable from
+         *     a truly nonexistent id, never leaking whose document it is.
+         */
+        post: operations["add_writing_project_references_writing_projects__project_id__references_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/{project_id}/references/{document_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove Writing Project Reference
+         * @description Milestone 5 Section 5 — removes ONLY the association. Never
+         *     deletes the Document, its highlights, or any Notebook entry.
+         */
+        delete: operations["remove_writing_project_reference_writing_projects__project_id__references__document_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/{project_id}/bibliography": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Writing Project Bibliography
+         * @description Milestone 5 Section 12/13 — generated fresh from current
+         *     references via the exact Milestone 4.2 BibTeX engine (app/core/
+         *     bibtex.export_bibtex) — never a second, independently-maintained
+         *     bibliography store.
+         */
+        get: operations["get_writing_project_bibliography_writing_projects__project_id__bibliography_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/{project_id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Writing Project
+         * @description Milestone 5 Section 23/24, extended by 5.3 Part 31 — a portable
+         *     ZIP: the root file is ALWAYS written to "main.tex" at the archive's
+         *     top level (matching the compile snapshot's own convention — Part 15:
+         *     the root document compiles as main.tex regardless of what the user
+         *     actually named/renamed it to in the tree), every other project file
+         *     at its own real relative path (preserving folder structure exactly),
+         *     and references.bib (freshly generated, same as the bibliography
+         *     endpoint). No internal IDs, tokens, user-account data, or
+         *     application metadata — a normal LaTeX environment can build this
+         *     project unmodified.
+         */
+        get: operations["export_writing_project_writing_projects__project_id__export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/{project_id}/compile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Compile Writing Project
+         * @description Milestone 5.1 Part 14 — compiles the project's CURRENT saved
+         *     main_tex_content (never client-supplied source — Part 13/33: the
+         *     frontend is responsible for flushing its pending autosave and
+         *     awaiting a successful save BEFORE calling this endpoint, exactly the
+         *     same "flush -> save -> act" discipline the References panel already
+         *     follows). Orchestrates the isolated latex-compiler service; the main
+         *     backend process itself never executes LaTeX (Part 1's core
+         *     invariant).
+         */
+        post: operations["compile_writing_project_writing_projects__project_id__compile_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/{project_id}/compile/{compile_id}/pdf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Compiled Pdf
+         * @description Milestone 5.1 Part 16/17/42 — a short-lived, ownership-checked
+         *     fetch of one compile's PDF bytes. A guessed/expired/wrong-owner
+         *     compile_id 404s identically to a nonexistent one (Part 42: never
+         *     leak whether a compile_id exists for someone else's project).
+         */
+        get: operations["get_compiled_pdf_writing_projects__project_id__compile__compile_id__pdf_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/{project_id}/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Files
+         * @description Part 4/41 — metadata only (no `content_text`/binary bytes) so a
+         *     100-file project's tree loads in one cheap request (Part 47).
+         */
+        get: operations["list_files_writing_projects__project_id__files_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/{project_id}/files/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Folder */
+        post: operations["create_folder_writing_projects__project_id__files_folders_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/{project_id}/files/text": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Text File */
+        post: operations["create_text_file_writing_projects__project_id__files_text_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/{project_id}/files/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload File
+         * @description Part 10/11 — a safe, bounded project-asset upload. `name` defaults
+         *     to the uploaded file's own declared filename but is always
+         *     RE-VALIDATED here exactly like a create-file request name (Part 11:
+         *     "never trust client MIME alone" applies just as much to the client's
+         *     declared filename).
+         */
+        post: operations["upload_file_writing_projects__project_id__files_upload_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/{project_id}/files/{file_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get File Content
+         * @description Part 39/47 — an explicit, separate fetch (never bundled into the
+         *     tree listing) — opening a file is a deliberate user action, not
+         *     something that should cost N extra requests when merely BROWSING the
+         *     tree (Part 47's "no N+1 content fetches" is about the tree view, not
+         *     this route).
+         */
+        get: operations["get_file_content_writing_projects__project_id__files__file_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete File
+         * @description Part 9/16/35 — a folder delete is always recursive; the current
+         *     root file (or a folder containing it) can never be deleted without
+         *     reassigning the root first (Part 16). Disk bytes for any deleted
+         *     binary descendants are removed only AFTER the DB commit succeeds.
+         */
+        delete: operations["delete_file_writing_projects__project_id__files__file_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update File
+         * @description Part 13/39 — the autosave endpoint for whichever project text file
+         *     is currently active in the editor (the exact same debounced-PATCH
+         *     discipline as PATCH /writing-projects/{id}'s own main_tex_content
+         *     field — never per-keystroke).
+         */
+        patch: operations["update_file_writing_projects__project_id__files__file_id__patch"];
+        trace?: never;
+    };
+    "/writing-projects/{project_id}/files/{file_id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Binary File Content
+         * @description Part 21 — the raw bytes for a binary asset's preview pane. Never
+         *     trusts the DB's mime_type blindly for anything security-sensitive —
+         *     it was already sniffed from real content at upload time (upload_file
+         *     above), so re-serving it here is safe.
+         */
+        get: operations["get_binary_file_content_writing_projects__project_id__files__file_id__content_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/{project_id}/files/{file_id}/rename": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rename File */
+        post: operations["rename_file_writing_projects__project_id__files__file_id__rename_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/{project_id}/files/{file_id}/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Move File */
+        post: operations["move_file_writing_projects__project_id__files__file_id__move_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/{project_id}/root-file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Root File
+         * @description Part 15 — the user chooses a different `.tex` file as the
+         *     project's root/main document.
+         */
+        put: operations["set_root_file_writing_projects__project_id__root_file_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/search": {
         parameters: {
             query?: never;
@@ -1091,6 +1574,172 @@ export interface paths {
          *     gate rather than relying on a router simply not being included).
          */
         patch: operations["move_document_route_documents__document_id__patch"];
+        trace?: never;
+    };
+    "/documents/{document_id}/metadata": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Document Metadata Route
+         * @description Milestone 4's "Edit metadata" action — a partial, SQL-only
+         *     bibliographic correction. Only fields actually present in the request
+         *     body are touched (see `model_fields_set`, same convention as PATCH
+         *     /projects/{id}). Every field that IS present is recorded with "user"
+         *     provenance in `metadata_sources` — the mechanism that guarantees
+         *     Milestone 4 Section 5's "USER/MANUAL correction > any future automatic
+         *     extraction": no other code path in this system ever re-runs extraction
+         *     against an already-ingested document, so once a field is marked "user"
+         *     here, nothing will ever overwrite it again.
+         *
+         *     Deliberately does NOT call vector_store.update_chunk_metadata (unlike
+         *     `python -m cli.documents refresh-metadata`, its CLI cousin) — never
+         *     re-uploads, re-chunks, re-embeds, or writes to Qdrant. This means a
+         *     RAG answer's citation (sourced from the Qdrant chunk payload — see
+         *     app/vectorstore/schemas.py's ChunkPayload) can keep showing this
+         *     document's pre-edit title/authors/etc. until a future re-ingestion;
+         *     every direct read of this document (Documents list/card, Reader
+         *     header, Sources picker, this endpoint's own response) always reflects
+         *     the correction immediately, since those all read the `documents` SQL
+         *     row — the source of truth for bibliographic identity — not Qdrant.
+         *     This is an intentional, documented consequence of Milestone 4's "no
+         *     Qdrant mutation" constraint, not an oversight.
+         */
+        patch: operations["update_document_metadata_route_documents__document_id__metadata_patch"];
+        trace?: never;
+    };
+    "/documents/{document_id}/enrich": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Enrich Document Route
+         * @description Milestone 4.1 §11 — the explicit "Refresh metadata" action, the
+         *     user-triggered counterpart to document_ingestion_jobs.py's automatic
+         *     post-ingest hook: both call the exact same enrich_document() (see
+         *     app/core/bibliographic_enrichment_service.py) so their merge/
+         *     precedence/failure-handling behavior can never drift apart.
+         *
+         *     404s for a document that doesn't exist or isn't owned by this user
+         *     (same indistinguishable-404 convention as every other document route
+         *     here — see DocumentsRepository.get's docstring) BEFORE calling
+         *     enrich_document(), so "not found" is reported the normal HTTP way
+         *     rather than via the response body's `status` field. Every other
+         *     outcome — including "this document has no usable DOI" and "Crossref
+         *     had nothing/was unreachable" — is a normal 200 with `ok=False` and a
+         *     specific `status`, never an error response: none of those are a
+         *     caller mistake, and the existing metadata is always left exactly as
+         *     it was (Section 9).
+         */
+        post: operations["enrich_document_route_documents__document_id__enrich_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/documents/{document_id}/citation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Document Citation
+         * @description Milestone 4.2 (Citation & BibTeX Foundation) Section 7/28/29/35 —
+         *     a deterministic, formatted APA 7 / IEEE citation built from this
+         *     document's CURRENT canonical SQL metadata (never a Qdrant payload,
+         *     never a cached/stale snapshot — the same source of truth
+         *     _document_summary already reads). No LLM, no Crossref, no third-party
+         *     service call: app/core/citation_formatting.py is pure, local,
+         *     deterministic formatting, so this works identically regardless of
+         *     Crossref's enabled/disabled state (Section 29). 404s for a document
+         *     that doesn't exist or isn't owned by this user, same indistinguishable
+         *     convention as every other document route here.
+         */
+        get: operations["get_document_citation_documents__document_id__citation_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/documents/{document_id}/bibtex": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Document Bibtex
+         * @description Milestone 4.2 Section 18/19 — one complete, valid BibTeX entry for
+         *     a single document, using its PERSISTED citation key (generated once
+         *     and reused on every subsequent call — see DocumentsRepository.
+         *     get_or_create_citation_key for the stability guarantee, Section 16/17).
+         *     Same 404 convention and same "current canonical metadata, no external
+         *     calls" guarantees as get_document_citation above.
+         */
+        get: operations["get_document_bibtex_documents__document_id__bibtex_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/documents/bibtex-export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Bibtex Export
+         * @description Milestone 4.2 Section 20/21/22/23/34 — multi-reference `.bib`
+         *     export, reusing Documents' existing multi-selection UI (no separate
+         *     "Reference page"). Every id is looked up via get_or_create_citation_key
+         *     — itself already ownership-scoped via DocumentsRepository.get's
+         *     indistinguishable-404 convention — so an id that doesn't exist or
+         *     belongs to another user is silently SKIPPED (reported honestly in
+         *     `skipped_document_ids`, Section 34) rather than either leaking whose
+         *     document it is or failing the entire export over one bad id. Duplicate
+         *     ids in the request collapse to one entry (Section 21: "no duplicate
+         *     entries for same selected document"). Two different documents sharing
+         *     a DOI (Milestone 4.1's "Keep Both") each export as their own distinct,
+         *     fully valid entry (Section 23) — their citation keys are already
+         *     guaranteed unique within this user's whole key space (see
+         *     get_or_create_citation_key's per-user collision scope), so a subset of
+         *     that space is automatically still unique without any extra collision
+         *     handling here. export_bibtex further sorts the result by citation_key
+         *     (Section 22's deterministic order).
+         */
+        post: operations["post_bibtex_export_documents_bibtex_export_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/documents/{document_id}/file": {
@@ -1577,12 +2226,60 @@ export interface components {
             /** Document Id */
             document_id: string;
         };
+        /** AddWritingProjectReferenceRequest */
+        AddWritingProjectReferenceRequest: {
+            /** Document Ids */
+            document_ids: string[];
+        };
+        /** AddWritingProjectReferenceResult */
+        AddWritingProjectReferenceResult: {
+            /** Document Id */
+            document_id: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "added" | "already_present" | "project_not_found" | "document_not_found" | "limit_reached";
+        };
+        /** AddWritingProjectReferencesResponse */
+        AddWritingProjectReferencesResponse: {
+            /** Results */
+            results: components["schemas"]["AddWritingProjectReferenceResult"][];
+        };
+        /**
+         * BibtexExportRequest
+         * @description POST /documents/bibtex-export — Milestone 4.2 Section 20/21. Reuses
+         *     Documents' existing multi-selection UI (no separate "Reference page" —
+         *     Section 20); `document_ids` are ownership-checked individually by the
+         *     route (Section 34), never trusted as already belonging to the caller.
+         */
+        BibtexExportRequest: {
+            /** Document Ids */
+            document_ids: string[];
+        };
+        /**
+         * BibtexExportResponse
+         * @description `bibtex` contains one valid entry per successfully resolved document,
+         *     in deterministic citation_key order (Section 22). `skipped_document_ids`
+         *     lists any requested id that doesn't exist or isn't the caller's own —
+         *     reported honestly rather than silently dropped or failing the whole
+         *     export (Section 34's ownership check skips, it never leaks whether a
+         *     skipped id belongs to someone else).
+         */
+        BibtexExportResponse: {
+            /** Bibtex */
+            bibtex: string;
+            /** Count */
+            count: number;
+            /** Skipped Document Ids */
+            skipped_document_ids?: string[];
+        };
         /** Body_post_document_documents_post */
         Body_post_document_documents_post: {
             /** File */
             file: string;
             /** Document Type */
-            document_type?: ("journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown") | null;
+            document_type?: ("journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "book" | "book_chapter" | "thesis_dissertation" | "conference_paper" | "other" | "unknown") | null;
             /** Journal Quartile */
             journal_quartile?: ("Q1" | "Q2") | null;
             /** Title */
@@ -1608,6 +2305,15 @@ export interface components {
             /** File */
             file: string;
         };
+        /** Body_upload_file_writing_projects__project_id__files_upload_post */
+        Body_upload_file_writing_projects__project_id__files_upload_post: {
+            /** File */
+            file: string;
+            /** Parent Id */
+            parent_id?: string | null;
+            /** Name */
+            name?: string | null;
+        };
         /** Body_upload_project_document_projects__project_id__documents_upload_post */
         Body_upload_project_document_projects__project_id__documents_upload_post: {
             /** File */
@@ -1616,7 +2322,7 @@ export interface components {
              * Document Type
              * @enum {string}
              */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "book" | "book_chapter" | "thesis_dissertation" | "conference_paper" | "other" | "unknown";
             /** Journal Quartile */
             journal_quartile?: ("Q1" | "Q2") | null;
             /** Title */
@@ -1650,10 +2356,20 @@ export interface components {
         Citation: {
             /** Source Id */
             source_id: string;
+            /**
+             * Source Kind
+             * @default document
+             * @enum {string}
+             */
+            source_kind: "document" | "attachment";
             /** Document Id */
-            document_id: string;
+            document_id?: string | null;
             /** Chunk Id */
-            chunk_id: string;
+            chunk_id?: string | null;
+            /** Attachment Id */
+            attachment_id?: string | null;
+            /** Display Name */
+            display_name?: string | null;
             /** Title */
             title?: string | null;
             /** Authors */
@@ -1662,11 +2378,8 @@ export interface components {
             publication_year?: number | null;
             /** Source Venue */
             source_venue?: string | null;
-            /**
-             * Document Type
-             * @enum {string}
-             */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
+            /** Document Type */
+            document_type?: ("journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "book" | "book_chapter" | "thesis_dissertation" | "conference_paper" | "other" | "unknown") | null;
             /** Journal Quartile */
             journal_quartile?: ("Q1" | "Q2") | null;
             /** Page Start */
@@ -1678,13 +2391,60 @@ export interface components {
             /** Source Url */
             source_url?: string | null;
             /** Score */
-            score: number;
+            score?: number | null;
             /**
              * Scope
              * @default general
              * @enum {string}
              */
             scope: "chat" | "project" | "general";
+        };
+        /** CompileDiagnosticResponse */
+        CompileDiagnosticResponse: {
+            /** Severity */
+            severity: string;
+            /** Message */
+            message: string;
+            /** Line */
+            line?: number | null;
+        };
+        /**
+         * CompileWritingProjectResponse
+         * @description Milestone 5.1 Part 15 — POST /writing-projects/{id}/compile's
+         *     response. Deliberately never includes container paths, environment
+         *     variables, or a raw stack trace (Part 15) — `log_excerpt` is already
+         *     sanitized by the compiler service (latex-compiler/app/log_sanitizer.py)
+         *     before it ever reaches this backend.
+         */
+        CompileWritingProjectResponse: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "success" | "error" | "timeout" | "busy" | "unavailable";
+            /** Diagnostics */
+            diagnostics?: components["schemas"]["CompileDiagnosticResponse"][];
+            /**
+             * Log Excerpt
+             * @default
+             */
+            log_excerpt: string;
+            /**
+             * Duration Ms
+             * @default 0
+             */
+            duration_ms: number;
+            /** Page Count */
+            page_count?: number | null;
+            /** Compile Id */
+            compile_id?: string | null;
+            /** Pdf Size Bytes */
+            pdf_size_bytes?: number | null;
+            /**
+             * Source Hash
+             * @default
+             */
+            source_hash: string;
         };
         /** ConversationDetailResponse */
         ConversationDetailResponse: {
@@ -1726,7 +2486,7 @@ export interface components {
              * Document Type
              * @enum {string}
              */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "book" | "book_chapter" | "thesis_dissertation" | "conference_paper" | "other" | "unknown";
             /**
              * Added At
              * Format: date-time
@@ -1832,13 +2592,6 @@ export interface components {
             note_text?: string | null;
             visual_anchor?: components["schemas"]["HighlightVisualAnchor"] | null;
         };
-        /** CreateFolderRequest */
-        CreateFolderRequest: {
-            /** Name */
-            name: string;
-            /** Parent Id */
-            parent_id?: string | null;
-        };
         /** CreateNotebookRequest */
         CreateNotebookRequest: {
             /** Name */
@@ -1853,6 +2606,25 @@ export interface components {
         CreateProjectRequest: {
             /** Name */
             name: string;
+            /** Description */
+            description?: string | null;
+        };
+        /** CreateTextFileRequest */
+        CreateTextFileRequest: {
+            /** Parent Id */
+            parent_id?: string | null;
+            /** Name */
+            name: string;
+            /**
+             * Content Text
+             * @default
+             */
+            content_text: string;
+        };
+        /** CreateWritingProjectRequest */
+        CreateWritingProjectRequest: {
+            /** Title */
+            title: string;
             /** Description */
             description?: string | null;
         };
@@ -1873,6 +2645,37 @@ export interface components {
             email: string;
             /** Display Name */
             display_name?: string | null;
+        };
+        /**
+         * DocumentBibtexResponse
+         * @description GET /documents/{id}/bibtex — Milestone 4.2 Section 18/19. `bibtex`
+         *     is one complete, valid entry; `citation_key` is the same PERSISTED,
+         *     stable key now also exposed on BibliographicMetadataFields.citation_key
+         *     (surfaced again here so a caller that only wants BibTeX never needs a
+         *     second request just to learn the key it was assigned).
+         */
+        DocumentBibtexResponse: {
+            /** Citation Key */
+            citation_key: string;
+            /** Bibtex */
+            bibtex: string;
+        };
+        /**
+         * DocumentCitationResponse
+         * @description GET /documents/{id}/citation?style=... — Milestone 4.2 Section 7.
+         *     `formatted` is the complete, deterministic APA 7 / IEEE citation text,
+         *     built fresh from the document's CURRENT canonical SQL metadata on
+         *     every call (Section 28/30 — never a cached/stale value); degrades
+         *     gracefully for missing fields (Section 8) rather than erroring.
+         */
+        DocumentCitationResponse: {
+            /**
+             * Style
+             * @enum {string}
+             */
+            style: "apa7" | "ieee";
+            /** Formatted */
+            formatted: string;
         };
         /**
          * DocumentContentChunk
@@ -1905,12 +2708,67 @@ export interface components {
          *     chunk_size), so the frontend groups consecutive chunks sharing a
          *     page_number into one page section rather than assuming one chunk per
          *     page.
+         *
+         *     Milestone 4: also carries the full bibliographic field set (not just
+         *     `title`) so the Reader header can show authors/year alongside the
+         *     title without a second request (Section 10 — "header gets
+         *     bibliographic identity access without cluttering the PDF canvas").
          */
         DocumentContentResponse: {
-            /** Document Id */
-            document_id: string;
+            /**
+             * Document Type
+             * @enum {string}
+             */
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "book" | "book_chapter" | "thesis_dissertation" | "conference_paper" | "other" | "unknown";
+            /** Journal Quartile */
+            journal_quartile?: ("Q1" | "Q2") | null;
             /** Title */
             title?: string | null;
+            /** Authors */
+            authors?: string[];
+            /** Publication Year */
+            publication_year?: number | null;
+            /** Source Venue */
+            source_venue?: string | null;
+            /** Doi */
+            doi?: string | null;
+            /** Source Url */
+            source_url?: string | null;
+            /** Volume */
+            volume?: string | null;
+            /** Issue */
+            issue?: string | null;
+            /** Page Start */
+            page_start?: number | null;
+            /** Page End */
+            page_end?: number | null;
+            /** Publisher */
+            publisher?: string | null;
+            /** Abstract */
+            abstract?: string | null;
+            /** Keywords */
+            keywords?: string[];
+            /** Language */
+            language?: string | null;
+            /** Metadata Sources */
+            metadata_sources?: {
+                [key: string]: string;
+            };
+            /** Last Enriched At */
+            last_enriched_at?: string | null;
+            /** Enrichment Provider */
+            enrichment_provider?: string | null;
+            /** Enrichment Status */
+            enrichment_status?: string | null;
+            /**
+             * Has Usable Doi
+             * @default false
+             */
+            has_usable_doi: boolean;
+            /** Citation Key */
+            citation_key?: string | null;
+            /** Document Id */
+            document_id: string;
             /** Source Filename */
             source_filename: string;
             /** File Format */
@@ -1933,6 +2791,40 @@ export interface components {
             document_id: string;
             /** Deleted Chunks */
             deleted_chunks: number;
+        };
+        /**
+         * DocumentEnrichmentResponse
+         * @description POST /documents/{id}/enrich — Milestone 4.1's user-triggered
+         *     "Refresh metadata" action (Section 11). Returns BOTH the outcome of
+         *     this specific attempt (status/fields_updated/manual_fields_preserved)
+         *     AND the document's current, post-attempt state in one response — the
+         *     same "no per-document request explosion" reasoning
+         *     BibliographicMetadataFields' own docstring already gives for bundling
+         *     metadata_sources onto every document shape, applied here so the
+         *     frontend never needs a second GET just to redraw the metadata panel
+         *     after a refresh.
+         */
+        DocumentEnrichmentResponse: {
+            /** Ok */
+            ok: boolean;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "succeeded" | "not_found" | "timeout" | "unavailable" | "rate_limited" | "malformed_response" | "unknown_error" | "no_doi" | "disabled" | "not_found_document";
+            /** Fields Updated */
+            fields_updated?: string[];
+            /**
+             * Manual Fields Preserved
+             * @default 0
+             */
+            manual_fields_preserved: number;
+            /**
+             * Qdrant Sync Failed
+             * @default false
+             */
+            qdrant_sync_failed: boolean;
+            document: components["schemas"]["DocumentSummary"];
         };
         /** DocumentHighlightListResponse */
         DocumentHighlightListResponse: {
@@ -2025,6 +2917,15 @@ export interface components {
          *     (e.g. "title", "authors") and only ever include fields that actually
          *     got a non-empty value — they exist purely to inform the review UI,
          *     and are never persisted anywhere past this response.
+         *
+         *     `duplicate_candidate` (Milestone 4.1): non-None only when the
+         *     extracted DOI exactly matches another document this same user already
+         *     owns — surfaced here, BEFORE the (potentially slow) upload even
+         *     starts, so the frontend can offer "Open existing" / "Keep both"
+         *     (Section 28) as part of the same pre-upload review step that already
+         *     shows extracted title/authors/etc. Never blocks anything by itself:
+         *     proceeding to POST /documents with "Keep both" uploads exactly as
+         *     normal — this field is purely informational.
          */
         DocumentMetadataPreviewResponse: {
             /** Title */
@@ -2051,22 +2952,15 @@ export interface components {
             extraction_confidence?: {
                 [key: string]: string;
             };
+            duplicate_candidate?: components["schemas"]["DuplicateDocumentCandidate"] | null;
         };
         /** DocumentSummary */
         DocumentSummary: {
-            /** Document Id */
-            document_id: string;
-            /** Source Filename */
-            source_filename: string;
-            /** Folder Id */
-            folder_id?: string | null;
-            /** Folder Name */
-            folder_name?: string | null;
             /**
              * Document Type
              * @enum {string}
              */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "book" | "book_chapter" | "thesis_dissertation" | "conference_paper" | "other" | "unknown";
             /** Journal Quartile */
             journal_quartile?: ("Q1" | "Q2") | null;
             /** Title */
@@ -2081,6 +2975,47 @@ export interface components {
             doi?: string | null;
             /** Source Url */
             source_url?: string | null;
+            /** Volume */
+            volume?: string | null;
+            /** Issue */
+            issue?: string | null;
+            /** Page Start */
+            page_start?: number | null;
+            /** Page End */
+            page_end?: number | null;
+            /** Publisher */
+            publisher?: string | null;
+            /** Abstract */
+            abstract?: string | null;
+            /** Keywords */
+            keywords?: string[];
+            /** Language */
+            language?: string | null;
+            /** Metadata Sources */
+            metadata_sources?: {
+                [key: string]: string;
+            };
+            /** Last Enriched At */
+            last_enriched_at?: string | null;
+            /** Enrichment Provider */
+            enrichment_provider?: string | null;
+            /** Enrichment Status */
+            enrichment_status?: string | null;
+            /**
+             * Has Usable Doi
+             * @default false
+             */
+            has_usable_doi: boolean;
+            /** Citation Key */
+            citation_key?: string | null;
+            /** Document Id */
+            document_id: string;
+            /** Source Filename */
+            source_filename: string;
+            /** Folder Id */
+            folder_id?: string | null;
+            /** Folder Name */
+            folder_name?: string | null;
             /** Chunk Count */
             chunk_count: number;
             /**
@@ -2103,20 +3038,11 @@ export interface components {
          *     (see DocumentJobResponse) for progress and the eventual result.
          */
         DocumentUploadAcceptedResponse: {
-            /** Job Id */
-            job_id: string;
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "processing" | "completed" | "failed";
-            /** Source Filename */
-            source_filename: string;
             /**
              * Document Type
              * @enum {string}
              */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "book" | "book_chapter" | "thesis_dissertation" | "conference_paper" | "other" | "unknown";
             /** Journal Quartile */
             journal_quartile?: ("Q1" | "Q2") | null;
             /** Title */
@@ -2131,6 +3057,48 @@ export interface components {
             doi?: string | null;
             /** Source Url */
             source_url?: string | null;
+            /** Volume */
+            volume?: string | null;
+            /** Issue */
+            issue?: string | null;
+            /** Page Start */
+            page_start?: number | null;
+            /** Page End */
+            page_end?: number | null;
+            /** Publisher */
+            publisher?: string | null;
+            /** Abstract */
+            abstract?: string | null;
+            /** Keywords */
+            keywords?: string[];
+            /** Language */
+            language?: string | null;
+            /** Metadata Sources */
+            metadata_sources?: {
+                [key: string]: string;
+            };
+            /** Last Enriched At */
+            last_enriched_at?: string | null;
+            /** Enrichment Provider */
+            enrichment_provider?: string | null;
+            /** Enrichment Status */
+            enrichment_status?: string | null;
+            /**
+             * Has Usable Doi
+             * @default false
+             */
+            has_usable_doi: boolean;
+            /** Citation Key */
+            citation_key?: string | null;
+            /** Job Id */
+            job_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "processing" | "completed" | "failed";
+            /** Source Filename */
+            source_filename: string;
             /** Page Count */
             page_count: number;
             /** Total Chunks */
@@ -2142,19 +3110,11 @@ export interface components {
         };
         /** DocumentUploadResponse */
         DocumentUploadResponse: {
-            /** Document Id */
-            document_id: string;
-            /** Source Filename */
-            source_filename: string;
-            /** File Format */
-            file_format: string;
-            /** Folder Id */
-            folder_id?: string | null;
             /**
              * Document Type
              * @enum {string}
              */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "book" | "book_chapter" | "thesis_dissertation" | "conference_paper" | "other" | "unknown";
             /** Journal Quartile */
             journal_quartile?: ("Q1" | "Q2") | null;
             /** Title */
@@ -2169,6 +3129,47 @@ export interface components {
             doi?: string | null;
             /** Source Url */
             source_url?: string | null;
+            /** Volume */
+            volume?: string | null;
+            /** Issue */
+            issue?: string | null;
+            /** Page Start */
+            page_start?: number | null;
+            /** Page End */
+            page_end?: number | null;
+            /** Publisher */
+            publisher?: string | null;
+            /** Abstract */
+            abstract?: string | null;
+            /** Keywords */
+            keywords?: string[];
+            /** Language */
+            language?: string | null;
+            /** Metadata Sources */
+            metadata_sources?: {
+                [key: string]: string;
+            };
+            /** Last Enriched At */
+            last_enriched_at?: string | null;
+            /** Enrichment Provider */
+            enrichment_provider?: string | null;
+            /** Enrichment Status */
+            enrichment_status?: string | null;
+            /**
+             * Has Usable Doi
+             * @default false
+             */
+            has_usable_doi: boolean;
+            /** Citation Key */
+            citation_key?: string | null;
+            /** Document Id */
+            document_id: string;
+            /** Source Filename */
+            source_filename: string;
+            /** File Format */
+            file_format: string;
+            /** Folder Id */
+            folder_id?: string | null;
             /** Page Count */
             page_count: number;
             /** Chunk Count */
@@ -2192,15 +3193,63 @@ export interface components {
             source_filename: string;
         };
         /**
+         * DuplicateDocumentCandidate
+         * @description Milestone 4.1 §23/§24/§27 — a non-destructive pointer at an
+         *     ALREADY-OWNED document this one may duplicate. `match_type` is always
+         *     "exact_doi" today (the only signal this milestone implements besides
+         *     the pre-existing SHA-256 check, which stays a hard 409 at actual
+         *     upload time rather than a preview-time candidate — see Section 25).
+         *     High confidence by construction: an exact normalized-DOI match is
+         *     Section 27's strongest signal short of a byte-identical file, so this
+         *     never needs its own separate confidence field the way a (deferred)
+         *     fuzzy match would.
+         */
+        DuplicateDocumentCandidate: {
+            /** Document Id */
+            document_id: string;
+            /** Title */
+            title?: string | null;
+            /** Authors */
+            authors?: string[];
+            /** Publication Year */
+            publication_year?: number | null;
+            /** Source Filename */
+            source_filename: string;
+            /** Folder Id */
+            folder_id?: string | null;
+            /** Folder Name */
+            folder_name?: string | null;
+            /**
+             * Match Type
+             * @default exact_doi
+             * @constant
+             */
+            match_type: "exact_doi";
+        };
+        /**
+         * DuplicateWritingProjectRequest
+         * @description Milestone 5.3 Part 29 — `title` is optional; when omitted the
+         *     duplicate is titled "{original title} (copy)".
+         */
+        DuplicateWritingProjectRequest: {
+            /** Title */
+            title?: string | null;
+        };
+        /**
          * ExtractionSource
          * @description Where one field's value came from — surfaced to the frontend via
          *     POST /documents/metadata-preview's `extraction_sources` (see
-         *     app/schemas/documents.py) so a reviewing user knows how much to trust
-         *     each field, and never persisted past that preview (see
-         *     app/ingestion/ingest.py's docstring on why).
+         *     app/schemas/documents.py), and persisted per-field on `Document.
+         *     metadata_sources` (Milestone 4) so a reviewing user always knows how
+         *     much to trust each field, both before and after upload.
+         *
+         *     Precedence, most trustworthy first (Milestone 4.1 Section 7):
+         *     USER > AUTHORITATIVE > EMBEDDED_METADATA > STRUCTURED_TEXT > FILENAME.
+         *     See app/core/bibliographic_enrichment.py's merge_authoritative_metadata
+         *     for the one place this ordering is enforced.
          * @enum {string}
          */
-        ExtractionSource: "user" | "embedded_metadata" | "structured_text" | "filename";
+        ExtractionSource: "user" | "authoritative" | "embedded_metadata" | "structured_text" | "filename";
         /** FolderBreadcrumb */
         FolderBreadcrumb: {
             /** Id */
@@ -2299,6 +3348,39 @@ export interface components {
             save_to_project_id?: string | null;
             /** Reference Images */
             reference_images?: components["schemas"]["ReferenceImageInput"][] | null;
+        };
+        /**
+         * GeneratedFileNodeResponse
+         * @description Milestone 5.3 Part 3 — `references.bib`, synthesized fresh on
+         *     every call from the exact same live BibTeX generation
+         *     GET /writing-projects/{id}/bibliography already uses. Never a real
+         *     row (see WritingProjectFile's own docstring) — deliberately a
+         *     DIFFERENT response type from WritingProjectFileNodeResponse (no
+         *     `id`, no mutation actions apply to it) so the frontend can never
+         *     accidentally attempt to rename/move/delete it through the same code
+         *     path as a real file.
+         */
+        GeneratedFileNodeResponse: {
+            /**
+             * Name
+             * @default references.bib
+             * @constant
+             */
+            name: "references.bib";
+            /**
+             * Path
+             * @default references.bib
+             * @constant
+             */
+            path: "references.bib";
+            /**
+             * Read Only
+             * @default true
+             * @constant
+             */
+            read_only: true;
+            /** Reference Count */
+            reference_count: number;
         };
         /**
          * GenericMessageResponse
@@ -2467,7 +3549,7 @@ export interface components {
              * Document Type
              * @enum {string}
              */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "book" | "book_chapter" | "thesis_dissertation" | "conference_paper" | "other" | "unknown";
             /** Journal Quartile */
             journal_quartile?: ("Q1" | "Q2") | null;
             /** Doi */
@@ -2494,6 +3576,11 @@ export interface components {
             /** Folder Id */
             folder_id?: string | null;
         };
+        /** MoveFileRequest */
+        MoveFileRequest: {
+            /** New Parent Id */
+            new_parent_id?: string | null;
+        };
         /** NotebookEntryListResponse */
         NotebookEntryListResponse: {
             /** Entries */
@@ -2518,6 +3605,10 @@ export interface components {
             document_id?: string | null;
             /** Document Title */
             document_title?: string | null;
+            /** Document Authors */
+            document_authors?: string[] | null;
+            /** Document Publication Year */
+            document_publication_year?: number | null;
             /** Page Number */
             page_number?: number | null;
             /** Excerpt */
@@ -2652,7 +3743,7 @@ export interface components {
              * Document Type
              * @enum {string}
              */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "book" | "book_chapter" | "thesis_dissertation" | "conference_paper" | "other" | "unknown";
             /**
              * Added At
              * Format: date-time
@@ -2826,7 +3917,7 @@ export interface components {
              * Document Type
              * @enum {string}
              */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "book" | "book_chapter" | "thesis_dissertation" | "conference_paper" | "other" | "unknown";
             /** Journal Quartile */
             journal_quartile?: ("Q1" | "Q2") | null;
             /** Title */
@@ -2861,7 +3952,7 @@ export interface components {
              * Document Type
              * @enum {string}
              */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "book" | "book_chapter" | "thesis_dissertation" | "conference_paper" | "other" | "unknown";
             /** Reused */
             reused: boolean;
         };
@@ -2982,6 +4073,11 @@ export interface components {
             /** Title */
             title: string;
         };
+        /** RenameFileRequest */
+        RenameFileRequest: {
+            /** Name */
+            name: string;
+        };
         /** RenameNotebookRequest */
         RenameNotebookRequest: {
             /** Name */
@@ -3042,7 +4138,7 @@ export interface components {
         /** RetrievalFilters */
         RetrievalFilters: {
             /** Document Type */
-            document_type?: ("journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown") | null;
+            document_type?: ("journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "book" | "book_chapter" | "thesis_dissertation" | "conference_paper" | "other" | "unknown") | null;
             /** Journal Quartile */
             journal_quartile?: ("Q1" | "Q2") | null;
             /** Publication Year From */
@@ -3084,7 +4180,7 @@ export interface components {
              * Document Type
              * @enum {string}
              */
-            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "unknown";
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "book" | "book_chapter" | "thesis_dissertation" | "conference_paper" | "other" | "unknown";
             /** Journal Quartile */
             journal_quartile?: ("Q1" | "Q2") | null;
             /** Title */
@@ -3143,6 +4239,11 @@ export interface components {
             /** Auth Code */
             auth_code: string;
         };
+        /** SetRootFileRequest */
+        SetRootFileRequest: {
+            /** File Id */
+            file_id: string;
+        };
         /**
          * StatusResponse
          * @description GET /status — deliberately excludes raw document text, filesystem
@@ -3187,6 +4288,8 @@ export interface components {
             conversation_scope_enabled: boolean;
             /** Zoom In Enabled */
             zoom_in_enabled: boolean;
+            /** Latex Compilation Enabled */
+            latex_compilation_enabled: boolean;
             /** Text Model Available */
             text_model_available: boolean;
             /** Embedding Model Available */
@@ -3274,6 +4377,70 @@ export interface components {
         UpdateDocumentHighlightRequest: {
             /** Note Text */
             note_text?: string | null;
+        };
+        /**
+         * UpdateDocumentMetadataRequest
+         * @description PATCH /documents/{id}/metadata — Milestone 4's "Edit metadata"
+         *     action. Every field is optional; only a field ACTUALLY PRESENT in the
+         *     request body is touched (see `model_fields_set`, same partial-update
+         *     convention as UpdateProjectRequest) — sending only `{"doi": "..."}`
+         *     corrects the DOI without touching anything else, and a field can be
+         *     explicitly cleared by sending it as `null`/`""`/`[]` rather than
+         *     omitting it. `title` cannot be blanked to null (a document always
+         *     needs some displayable identity — same rule POST /documents' title
+         *     fallback already enforces via clean_filename_as_title), matching
+         *     UpdateProjectRequest.name's own "name, when present, can never be
+         *     blanked out" precedent; every other field can be cleared.
+         *
+         *     Never includes `metadata_sources` — routes_documents.py's
+         *     update_document_metadata computes that itself (every field present
+         *     here always gets "user" provenance, per Milestone 4 Section 5's
+         *     "USER/MANUAL correction > any future automatic extraction"
+         *     guarantee), so a client could never spoof a field's provenance label
+         *     even if it tried.
+         *
+         *     This is a SQL-only metadata correction (Milestone 4 Section 9/13):
+         *     never re-uploads, re-chunks, re-embeds, or writes to Qdrant — see
+         *     DocumentsRepository.update_metadata / METADATA_FIELDS.
+         */
+        UpdateDocumentMetadataRequest: {
+            /** Title */
+            title?: string | null;
+            /** Authors */
+            authors?: string[] | null;
+            /** Publication Year */
+            publication_year?: number | null;
+            /** Source Venue */
+            source_venue?: string | null;
+            /** Doi */
+            doi?: string | null;
+            /** Source Url */
+            source_url?: string | null;
+            /** Document Type */
+            document_type?: ("journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "book" | "book_chapter" | "thesis_dissertation" | "conference_paper" | "other" | "unknown") | null;
+            /** Journal Quartile */
+            journal_quartile?: ("Q1" | "Q2") | null;
+            /** Volume */
+            volume?: string | null;
+            /** Issue */
+            issue?: string | null;
+            /** Page Start */
+            page_start?: number | null;
+            /** Page End */
+            page_end?: number | null;
+            /** Publisher */
+            publisher?: string | null;
+            /** Abstract */
+            abstract?: string | null;
+            /** Keywords */
+            keywords?: string[] | null;
+            /** Language */
+            language?: string | null;
+        };
+        /** UpdateFileContentRequest */
+        UpdateFileContentRequest: {
+            /** Content Text */
+            content_text: string;
         };
         /**
          * UpdateFolderRequest
@@ -3383,6 +4550,22 @@ export interface components {
              */
             status: "confirmed" | "rejected" | "suppressed";
         };
+        /**
+         * UpdateWritingProjectRequest
+         * @description Partial update — same "only touch a field actually present"
+         *     convention as UpdateProjectRequest/UpdateDocumentMetadataRequest.
+         *     `title` can never be blanked; `description` can be explicitly
+         *     cleared; `main_tex_content` is what the editor's autosave PATCHes on
+         *     every debounced save (Section 7).
+         */
+        UpdateWritingProjectRequest: {
+            /** Title */
+            title?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Main Tex Content */
+            main_tex_content?: string | null;
+        };
         /** UserResponse */
         UserResponse: {
             /** Id */
@@ -3413,6 +4596,242 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /**
+         * WritingProjectBibliographyResponse
+         * @description GET /writing-projects/{id}/bibliography — generated fresh, on
+         *     demand, from the project's current references via the exact same
+         *     Milestone 4.2 BibTeX engine every other BibTeX surface uses (Section
+         *     12: "Do NOT create manually duplicated BibTeX rows in another
+         *     database").
+         */
+        WritingProjectBibliographyResponse: {
+            /** Bibtex */
+            bibtex: string;
+            /** Reference Count */
+            reference_count: number;
+        };
+        /** WritingProjectFileContentResponse */
+        WritingProjectFileContentResponse: {
+            file: components["schemas"]["WritingProjectFileNodeResponse"];
+            /** Content Text */
+            content_text?: string | null;
+        };
+        /** WritingProjectFileMutationResponse */
+        WritingProjectFileMutationResponse: {
+            file: components["schemas"]["WritingProjectFileNodeResponse"];
+        };
+        /**
+         * WritingProjectFileNodeResponse
+         * @description One real (database-backed) file or folder entry.
+         */
+        WritingProjectFileNodeResponse: {
+            /** Id */
+            id: string;
+            /** Parent Id */
+            parent_id: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "folder" | "text" | "binary" | "generated";
+            /** Name */
+            name: string;
+            /** Path */
+            path: string;
+            /** Mime Type */
+            mime_type?: string | null;
+            /** Size Bytes */
+            size_bytes: number;
+            /**
+             * Is Root
+             * @default false
+             */
+            is_root: boolean;
+        };
+        /** WritingProjectFileTreeResponse */
+        WritingProjectFileTreeResponse: {
+            /** Files */
+            files: components["schemas"]["WritingProjectFileNodeResponse"][];
+            /** Generated */
+            generated: components["schemas"]["GeneratedFileNodeResponse"][];
+            /** Root File Id */
+            root_file_id: string | null;
+            /** Total Size Bytes */
+            total_size_bytes: number;
+            /** File Count */
+            file_count: number;
+            /** Max Files */
+            max_files: number;
+            /** Max Total Bytes */
+            max_total_bytes: number;
+        };
+        /** WritingProjectListResponse */
+        WritingProjectListResponse: {
+            /** Projects */
+            projects: components["schemas"]["WritingProjectSummaryResponse"][];
+            /** Total */
+            total: number;
+        };
+        /**
+         * WritingProjectReferenceResponse
+         * @description One project reference — the document's own CURRENT canonical
+         *     metadata (Section 3), never a copied/frozen snapshot. `cited` reflects
+         *     whether this document's citation_key currently appears anywhere in
+         *     the project's main_tex_content (Section 27), computed fresh on every
+         *     request from app/core/latex_citations.parse_cite_keys — never stored,
+         *     so it can never drift out of sync with the actual manuscript text.
+         */
+        WritingProjectReferenceResponse: {
+            /**
+             * Document Type
+             * @enum {string}
+             */
+            document_type: "journal_article" | "practitioner_article" | "policy_document" | "report" | "review_article" | "curriculum_document" | "book" | "book_chapter" | "thesis_dissertation" | "conference_paper" | "other" | "unknown";
+            /** Journal Quartile */
+            journal_quartile?: ("Q1" | "Q2") | null;
+            /** Title */
+            title?: string | null;
+            /** Authors */
+            authors?: string[];
+            /** Publication Year */
+            publication_year?: number | null;
+            /** Source Venue */
+            source_venue?: string | null;
+            /** Doi */
+            doi?: string | null;
+            /** Source Url */
+            source_url?: string | null;
+            /** Volume */
+            volume?: string | null;
+            /** Issue */
+            issue?: string | null;
+            /** Page Start */
+            page_start?: number | null;
+            /** Page End */
+            page_end?: number | null;
+            /** Publisher */
+            publisher?: string | null;
+            /** Abstract */
+            abstract?: string | null;
+            /** Keywords */
+            keywords?: string[];
+            /** Language */
+            language?: string | null;
+            /** Metadata Sources */
+            metadata_sources?: {
+                [key: string]: string;
+            };
+            /** Last Enriched At */
+            last_enriched_at?: string | null;
+            /** Enrichment Provider */
+            enrichment_provider?: string | null;
+            /** Enrichment Status */
+            enrichment_status?: string | null;
+            /**
+             * Has Usable Doi
+             * @default false
+             */
+            has_usable_doi: boolean;
+            /** Citation Key */
+            citation_key?: string | null;
+            /** Document Id */
+            document_id: string;
+            /** Source Filename */
+            source_filename: string;
+            /**
+             * Added At
+             * Format: date-time
+             */
+            added_at: string;
+            /** Cited */
+            cited: boolean;
+        };
+        /** WritingProjectReferencesResponse */
+        WritingProjectReferencesResponse: {
+            /** References */
+            references: components["schemas"]["WritingProjectReferenceResponse"][];
+            /** Total */
+            total: number;
+            /** Missing Citation Keys */
+            missing_citation_keys?: string[];
+            /**
+             * Source Hash
+             * @default
+             */
+            source_hash: string;
+        };
+        /**
+         * WritingProjectResponse
+         * @description The full project, including its LaTeX source — GET/POST/PATCH
+         *     /writing-projects/{id} only (never the list response, see
+         *     WritingProjectsRepository.list_for_user's own docstring).
+         */
+        WritingProjectResponse: {
+            /** Id */
+            id: string;
+            /** Title */
+            title: string;
+            /** Description */
+            description?: string | null;
+            /** Main Tex Content */
+            main_tex_content: string;
+            /** Root File Id */
+            root_file_id?: string | null;
+            /** Archived At */
+            archived_at?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** WritingProjectSummaryResponse */
+        WritingProjectSummaryResponse: {
+            /** Id */
+            id: string;
+            /** Title */
+            title: string;
+            /** Description */
+            description?: string | null;
+            /** Reference Count */
+            reference_count: number;
+            /**
+             * File Count
+             * @default 0
+             */
+            file_count: number;
+            /** Archived At */
+            archived_at?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** CreateFolderRequest */
+        app__schemas__folders__CreateFolderRequest: {
+            /** Name */
+            name: string;
+            /** Parent Id */
+            parent_id?: string | null;
+        };
+        /** CreateFolderRequest */
+        app__schemas__writing_files__CreateFolderRequest: {
+            /** Parent Id */
+            parent_id?: string | null;
+            /** Name */
+            name: string;
         };
     };
     responses: never;
@@ -5284,6 +6703,910 @@ export interface operations {
             };
         };
     };
+    list_writing_projects_writing_projects_get: {
+        parameters: {
+            query?: {
+                q?: string | null;
+                sort?: "updated_at" | "name" | "created_at";
+                archived?: boolean;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingProjectListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_writing_project_writing_projects_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateWritingProjectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingProjectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_writing_project_writing_projects__project_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingProjectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_writing_project_writing_projects__project_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_writing_project_writing_projects__project_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateWritingProjectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingProjectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    archive_writing_project_writing_projects__project_id__archive_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingProjectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_writing_project_writing_projects__project_id__restore_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingProjectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    duplicate_writing_project_writing_projects__project_id__duplicate_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DuplicateWritingProjectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingProjectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_writing_project_references_writing_projects__project_id__references_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingProjectReferencesResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_writing_project_references_writing_projects__project_id__references_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddWritingProjectReferenceRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AddWritingProjectReferencesResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_writing_project_reference_writing_projects__project_id__references__document_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_writing_project_bibliography_writing_projects__project_id__bibliography_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingProjectBibliographyResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_writing_project_writing_projects__project_id__export_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    compile_writing_project_writing_projects__project_id__compile_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompileWritingProjectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_compiled_pdf_writing_projects__project_id__compile__compile_id__pdf_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                compile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_files_writing_projects__project_id__files_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingProjectFileTreeResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_folder_writing_projects__project_id__files_folders_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["app__schemas__writing_files__CreateFolderRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingProjectFileMutationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_text_file_writing_projects__project_id__files_text_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateTextFileRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingProjectFileMutationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_file_writing_projects__project_id__files_upload_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_file_writing_projects__project_id__files_upload_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingProjectFileMutationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_file_content_writing_projects__project_id__files__file_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingProjectFileContentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_file_writing_projects__project_id__files__file_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_file_writing_projects__project_id__files__file_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateFileContentRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingProjectFileMutationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_binary_file_content_writing_projects__project_id__files__file_id__content_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_file_writing_projects__project_id__files__file_id__rename_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenameFileRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingProjectFileMutationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    move_file_writing_projects__project_id__files__file_id__move_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MoveFileRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingProjectFileMutationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_root_file_writing_projects__project_id__root_file_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetRootFileRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingProjectFileMutationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     post_search_search_post: {
         parameters: {
             query?: never;
@@ -5527,6 +7850,179 @@ export interface operations {
             };
         };
     };
+    update_document_metadata_route_documents__document_id__metadata_patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateDocumentMetadataRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enrich_document_route_documents__document_id__enrich_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentEnrichmentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_document_citation_documents__document_id__citation_get: {
+        parameters: {
+            query: {
+                style: "apa7" | "ieee";
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentCitationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_document_bibtex_documents__document_id__bibtex_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentBibtexResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_bibtex_export_documents_bibtex_export_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BibtexExportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BibtexExportResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_document_file_documents__document_id__file_get: {
         parameters: {
             query?: never;
@@ -5744,7 +8240,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CreateFolderRequest"];
+                "application/json": components["schemas"]["app__schemas__folders__CreateFolderRequest"];
             };
         };
         responses: {

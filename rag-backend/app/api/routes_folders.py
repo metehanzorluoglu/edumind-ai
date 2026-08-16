@@ -28,9 +28,9 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from app.api.routes_documents import _document_summary
 from app.config import Settings
 from app.core.security import CurrentUserDep, get_current_user
-from app.db.documents_repository import DocumentRecord
 from app.db.folders_repository import (
     CircularFolderReferenceError,
     FolderDeleteResult,
@@ -38,8 +38,12 @@ from app.db.folders_repository import (
     FolderNotEmptyError,
     FolderRecord,
 )
-from app.deps import DocumentsRepositoryDep, FoldersRepositoryDep, SettingsDep
-from app.schemas.documents import DocumentSummary
+from app.deps import (
+    DocumentFileStorageDep,
+    DocumentsRepositoryDep,
+    FoldersRepositoryDep,
+    SettingsDep,
+)
 from app.schemas.folders import (
     CreateFolderRequest,
     DeleteFolderResponse,
@@ -50,6 +54,16 @@ from app.schemas.folders import (
 )
 
 router = APIRouter(prefix="/folders", tags=["folders"], dependencies=[Depends(get_current_user)])
+
+# get_folder_contents() below reuses routes_documents.py's own
+# _document_summary() rather than building a second DocumentSummary here
+# (this module used to have its own copy, which silently fell behind as
+# routes_documents.py's DocumentSummary grew — Milestone 4's volume/issue/
+# page_start/page_end/publisher/abstract/keywords/language/
+# metadata_sources fields, and Milestone 4.1's last_enriched_at/
+# enrichment_provider/enrichment_status/has_usable_doi, were never present
+# on a document reached through the folder-library listing until this fix.
+# One shared builder is the only way that can't happen again.
 
 _MAX_LIMIT = 200
 
@@ -85,24 +99,6 @@ def _folder_response(record: FolderRecord) -> FolderResponse:
     )
 
 
-def _document_summary(record: DocumentRecord) -> DocumentSummary:
-    return DocumentSummary(
-        document_id=record.document_id,
-        source_filename=record.source_filename,
-        folder_id=str(record.folder_id) if record.folder_id else None,
-        document_type=record.document_type,  # type: ignore[arg-type]
-        journal_quartile=record.journal_quartile,  # type: ignore[arg-type]
-        title=record.title,
-        authors=record.authors,
-        publication_year=record.publication_year,
-        source_venue=record.source_venue,
-        doi=record.doi,
-        source_url=record.source_url,
-        chunk_count=record.chunk_count,
-        ingested_at=record.ingested_at,
-    )
-
-
 @router.post("", response_model=FolderResponse, status_code=status.HTTP_201_CREATED)
 def create_folder(
     request: CreateFolderRequest,
@@ -130,6 +126,7 @@ def get_folder_contents(
     settings: SettingsDep,
     folders_repository: FoldersRepositoryDep,
     documents_repository: DocumentsRepositoryDep,
+    document_file_storage: DocumentFileStorageDep,
     folder_id: str | None = Query(default=None, description="Omit or blank for root"),
     limit: int = Query(default=50, ge=1, le=_MAX_LIMIT),
     offset: int = Query(default=0, ge=0),
@@ -162,7 +159,7 @@ def get_folder_contents(
         folder=folder_response,
         breadcrumbs=breadcrumbs,
         folders=[_folder_response(f) for f in child_folders],
-        documents=[_document_summary(d) for d in documents],
+        documents=[_document_summary(d, document_file_storage) for d in documents],
         documents_total=documents_total,
     )
 

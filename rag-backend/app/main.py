@@ -19,6 +19,8 @@ from app.api.routes_notebooks import router as notebooks_router
 from app.api.routes_projects import router as projects_router
 from app.api.routes_search import router as search_router
 from app.api.routes_status import router as status_router
+from app.api.routes_writing import router as writing_router
+from app.api.routes_writing_files import router as writing_files_router
 from app.config import get_settings, refuse_dev_email_backend_in_production
 from app.core.evidence_shadow import shutdown_shadow_executor
 from app.db.conversations_repository import sweep_stale_generating_messages
@@ -83,6 +85,8 @@ def create_app() -> FastAPI:
     app.include_router(chat_router)
     app.include_router(conversations_router)
     app.include_router(projects_router)
+    app.include_router(writing_router)
+    app.include_router(writing_files_router)
     app.include_router(search_router)
     app.include_router(documents_router)
     # Folder library (Milestone 1) is always mounted, unlike images below —

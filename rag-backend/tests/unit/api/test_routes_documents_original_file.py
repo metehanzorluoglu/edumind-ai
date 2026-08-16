@@ -615,6 +615,59 @@ class TestNotebooks:
         assert entry["document_title"] is not None
         assert entry["page_number"] == 1
 
+    def test_add_highlight_entry_snapshots_authors_and_publication_year(self, harness) -> None:
+        """Milestone 4: same snapshot-at-add-time rule as document_title —
+        copied from the source Document once, here, and never re-read."""
+        client, *_ = harness
+        resp = client.post(
+            "/documents",
+            data={
+                "document_type": "report",
+                "authors": "Jane Doe, John Smith",
+                "publication_year": "2020",
+            },
+            files={
+                "file": (
+                    "paper.pdf",
+                    io.BytesIO(_make_pdf_bytes("Students completed a twelve week program.")),
+                    "application/pdf",
+                )
+            },
+        )
+        job = client.get(f"/documents/jobs/{resp.json()['job_id']}").json()
+        document = job["document"]
+        highlight = client.post(
+            f"/documents/{document['document_id']}/highlights",
+            json={
+                "page_number": 1,
+                "selected_text": "genuine excerpt",
+                "visual_anchor": {"rects": [[0, 0, 1, 1]]},
+            },
+        ).json()
+        notebook_id = client.post("/notebooks", json={"name": "NB"}).json()["id"]
+
+        entry = client.post(
+            f"/notebooks/{notebook_id}/entries",
+            json={
+                "entry_type": "highlight",
+                "document_id": document["document_id"],
+                "highlight_id": highlight["id"],
+            },
+        ).json()
+        assert entry["document_authors"] == ["Jane Doe", "John Smith"]
+        assert entry["document_publication_year"] == 2020
+
+    def test_manual_entry_has_no_document_snapshot_fields(self, harness) -> None:
+        client, *_ = harness
+        notebook_id = client.post("/notebooks", json={"name": "NB"}).json()["id"]
+        entry = client.post(
+            f"/notebooks/{notebook_id}/entries",
+            json={"entry_type": "manual", "note_text": "A standalone note."},
+        ).json()
+        assert entry["document_title"] is None
+        assert entry["document_authors"] is None
+        assert entry["document_publication_year"] is None
+
     def test_add_highlight_entry_is_idempotent_never_a_duplicate(self, harness) -> None:
         client, *_ = harness
         document = _upload_pdf(client)

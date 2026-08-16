@@ -1,6 +1,7 @@
 export {
   EducationAssistantClient,
   DEFAULT_IMAGE_GENERATION_TIMEOUT_MS,
+  DEFAULT_COMPILE_TIMEOUT_MS,
 } from './client/EducationAssistantClient';
 export type {
   EducationAssistantClientOptions,
@@ -99,6 +100,33 @@ export type {
   UseProjectsResult,
 } from './hooks/useProjects';
 
+export { useWritingProjects } from './hooks/useWritingProjects';
+export type {
+  DeleteWritingProjectState,
+  ProjectActionState,
+  UseWritingProjectsResult,
+  WritingProjectSort,
+  WritingProjectsListState,
+} from './hooks/useWritingProjects';
+
+export { useWritingProject, DEFAULT_AUTOSAVE_DELAY_MS } from './hooks/useWritingProject';
+export type {
+  UseWritingProjectResult,
+  WritingProjectBibliographyState,
+  WritingProjectCompileState,
+  WritingProjectLoadState,
+  WritingProjectReferencesState,
+  WritingProjectSaveStatus,
+} from './hooks/useWritingProject';
+
+export { useWritingProjectFiles } from './hooks/useWritingProjectFiles';
+export type {
+  ActiveFileLoadState,
+  ActiveFileSaveStatus,
+  UseWritingProjectFilesResult,
+  WritingFileTreeState,
+} from './hooks/useWritingProjectFiles';
+
 export {
   useConversationMessages,
   thinkingContextForRequest,
@@ -123,10 +151,16 @@ export type {
   SearchResponse,
 } from './types/search';
 export type {
+  BibtexExportRequest,
+  BibtexExportResponse,
+  CitationStyle,
   CreateHighlightRequest,
+  DocumentBibtexResponse,
+  DocumentCitationResponse,
   DocumentContentChunk,
   DocumentContentResponse,
   DocumentDeleteResponse,
+  DocumentEnrichmentResponse,
   DocumentFileRequestInit,
   DocumentHighlight,
   DocumentHighlightListResponse,
@@ -138,9 +172,12 @@ export type {
   DocumentUploadAcceptedResponse,
   DocumentUploadMetadata,
   DocumentUploadResponse,
+  DuplicateDocumentCandidate,
+  EnrichmentRunStatus,
   ExtractionSource,
   ListDocumentsParams,
   MoveDocumentRequest,
+  UpdateDocumentMetadataRequest,
   UpdateHighlightRequest,
   UploadableFile,
 } from './types/documents';
@@ -227,6 +264,33 @@ export type {
   ProjectSummary,
   UpdateProjectRequest,
 } from './types/projects';
+export type {
+  AddWritingProjectReferenceOutcome,
+  AddWritingProjectReferenceResult,
+  AddWritingProjectReferencesResponse,
+  CompileDiagnostic,
+  CompileStatus,
+  CompileWritingProjectResponse,
+  CreateWritingProjectFolderRequest,
+  CreateWritingProjectRequest,
+  CreateWritingProjectTextFileRequest,
+  GeneratedFileNode,
+  MoveWritingProjectFileRequest,
+  RenameWritingProjectFileRequest,
+  UpdateWritingProjectFileContentRequest,
+  UpdateWritingProjectRequest,
+  WritingProject,
+  WritingProjectBibliography,
+  WritingProjectFileContent,
+  WritingProjectFileKind,
+  WritingProjectFileMutationResponse,
+  WritingProjectFileNode,
+  WritingProjectFileTree,
+  WritingProjectListResponse,
+  WritingProjectReference,
+  WritingProjectReferencesResponse,
+  WritingProjectSummary,
+} from './types/writing';
 export type {
   GenerateImagesRequest,
   GenerateImagesResponse,

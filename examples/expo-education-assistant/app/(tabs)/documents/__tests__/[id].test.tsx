@@ -238,6 +238,21 @@ describe('DocumentReaderScreen', () => {
     expect(findByText(renderer.root, 'Students completed a 12-week program.')).toBeTruthy();
   });
 
+  it('Milestone 4: shows an author/year byline alongside the title when known', async () => {
+    const renderer = await renderReader([
+      contentRoute({ ...CONTENT, authors: ['Jeff Forrester', 'Jane Doe'], publication_year: 2004 }),
+      highlightsRoute(),
+    ]);
+    expect(findByText(renderer.root, 'Forrester et al. · 2004')).toBeTruthy();
+  });
+
+  it('Milestone 4: shows no byline at all for a document with no known authors/year', async () => {
+    const renderer = await renderReader([contentRoute(), highlightsRoute()]);
+    // CONTENT has no authors/publication_year — nothing fabricated, no
+    // empty "·" separator floating in the header either.
+    expect(queryByText(renderer.root, /·/)).toBeNull();
+  });
+
   it('shows a "no readable text" state with a Use in chat fallback when there are no chunks', async () => {
     const renderer = await renderReader([
       contentRoute({ ...CONTENT, chunks: [] }),

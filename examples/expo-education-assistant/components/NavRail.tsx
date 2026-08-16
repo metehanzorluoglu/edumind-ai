@@ -1,6 +1,13 @@
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { ChatIcon, DocumentsIcon, NotesIcon, PanelIcon, SettingsIcon } from '@/components/icons';
+import {
+  ChatIcon,
+  DocumentsIcon,
+  NotesIcon,
+  PanelIcon,
+  SettingsIcon,
+  WritingIcon,
+} from '@/components/icons';
 import { EduM8Symbol } from '@/components/EduM8Logo';
 import { useAuth } from '@/lib/AuthProvider';
 import { DARK_PALETTE, useTheme } from '@/lib/Preferences';
@@ -15,12 +22,13 @@ const dark = DARK_PALETTE;
 // below: Documents' new in-library search (Part D) replaces it as the
 // primary, navigable entry point. See this milestone's report ("Part F")
 // for why the route itself is kept rather than deleted.
-export type NavSection = 'chat' | 'search' | 'documents' | 'notes' | 'settings';
+export type NavSection = 'chat' | 'search' | 'documents' | 'notes' | 'writing' | 'settings';
 
 const SECTIONS: { key: NavSection; label: string; Icon: typeof ChatIcon }[] = [
   { key: 'chat', label: 'Chat', Icon: ChatIcon },
   { key: 'documents', label: 'Documents', Icon: DocumentsIcon },
   { key: 'notes', label: 'Research Notes', Icon: NotesIcon },
+  { key: 'writing', label: 'Writing', Icon: WritingIcon },
   { key: 'settings', label: 'Settings', Icon: SettingsIcon },
 ];
 

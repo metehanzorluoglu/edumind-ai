@@ -48,6 +48,7 @@ from app.db.conversations_repository import (
     ConversationsRepository,
     ConversationSummary,
     MessageRecord,
+    MessageSourceRecord,
     NewAttachment,
 )
 from app.db.models_auth import User
@@ -55,6 +56,7 @@ from app.db.models_conversations import Message
 from app.db.project_knowledge_repository import ProjectKnowledgeRecord, ProjectKnowledgeRepository
 from app.db.project_profile_repository import ProjectProfileRecord, ProjectProfileRepository
 from app.db.projects_repository import ProjectsRepository
+from app.db.documents_repository import DocumentRecord, DocumentsRepository
 from app.db.scopes_repository import ConversationDocumentRecord, ScopesRepository
 from app.deps import (
     AttachmentStorageDep,
@@ -144,37 +146,170 @@ def _transparency_response(data: dict[str, object]) -> TransparencyResponse | No
     return TransparencyResponse.model_validate(data)
 
 
-def _message_response(message: MessageRecord) -> MessageResponse:
+#: Milestone 4.1 §32 — which MessageSourceResponse fields _message_response
+#: is willing to refresh from the documents table's current canonical row
+#: when it disagrees with the snapshot `message_sources` stored at
+#: generation time. Deliberately the exact same field set the CLI's
+#: `refresh-metadata` command already treats as safe to sync (see
+#: cli/documents.py's _REFRESH_FIELDS) — never document_type/
+#: journal_quartile, which double as retrieval-filter fields elsewhere and
+#: are explicitly out of scope here ("do not weaken citation provenance" —
+#: rank/score/snippet_text/chunk_id/chunk_index/page_number/scope, the
+#: actual evidentiary parts of a citation, are never touched by this).
+_CITATION_FRESHENABLE_FIELDS = (
+    "title",
+    "authors",
+    "publication_year",
+    "source_venue",
+    "doi",
+    "source_url",
+)
+
+
+def _canonical_documents_for_messages(
+    user_id: uuid.UUID, messages: list[MessageRecord], documents_repository: DocumentsRepository
+) -> dict[str, DocumentRecord]:
+    """One batch lookup per request (not one per message/source) for
+    get_conversation's whole history — a conversation typically cites a
+    small, repeated set of documents, so this is a handful of point
+    lookups even for a long thread, never an unbounded per-message cost.
+
+    Collects document_ids from BOTH `message.sources` (the retrieval-
+    context list) AND `message.citations` (the separate, raw-JSON inline
+    `[S1]`-style list a generated answer actually references) — these are
+    two independent snapshots of the same generation-time bibliographic
+    data (see _message_response's and _freshened_citations' docstrings for
+    why each needs its own overlay pass), found in production validation:
+    `message.sources[].title` alone was NOT enough to freshen what a user
+    actually sees, since the visible citation cards render from
+    `message.citations`, not `message.sources`."""
+    distinct_ids: set[str] = {s.document_id for m in messages for s in m.sources if s.document_id}
+    for m in messages:
+        for c in m.citations or []:
+            if isinstance(c, dict):
+                citation_document_id = c.get("document_id")
+                if isinstance(citation_document_id, str):
+                    distinct_ids.add(citation_document_id)
+    canonical: dict[str, DocumentRecord] = {}
+    for document_id in distinct_ids:
+        record = documents_repository.get(user_id, document_id)
+        if record is not None:
+            canonical[document_id] = record
+    return canonical
+
+
+def _freshened_citations(
+    raw_citations: object, canonical_documents: dict[str, DocumentRecord]
+) -> list[dict[str, object]]:
+    """The `message.citations` counterpart to _message_response's
+    `_source_response` inner function — same overlay, same field set
+    (_CITATION_FRESHENABLE_FIELDS), same "never blank a field the snapshot
+    had" rule, same untouched provenance fields (score/chunk_id/
+    document_type/journal_quartile/page_start/page_end/scope/source_kind/
+    attachment_id are always the stored snapshot's own values). Necessary
+    because `message.citations` is a raw JSON column (a list of plain
+    dicts matching app.core.citation.Citation's field names, not a typed
+    MessageSourceRecord) built once at generation time and never touched
+    by a later metadata edit or enrichment — without this, a corrected
+    title/authors/etc. would freshen the (less-visible) Sources panel but
+    NOT the actual inline citation cards a user sees under an answer,
+    which is what production validation caught. An attachment-kind
+    citation (`document_id is None`) is returned unchanged — there is no
+    corpus document to look up."""
+    if not isinstance(raw_citations, list):
+        return raw_citations  # type: ignore[return-value]
+    freshened: list[dict[str, object]] = []
+    for citation in raw_citations:
+        if not isinstance(citation, dict):
+            freshened.append(citation)
+            continue
+        document_id = citation.get("document_id")
+        canonical = (
+            canonical_documents.get(document_id) if isinstance(document_id, str) else None
+        )
+        if canonical is None:
+            freshened.append(citation)
+            continue
+        updated = dict(citation)
+        for field_name in _CITATION_FRESHENABLE_FIELDS:
+            canonical_value = getattr(canonical, field_name)
+            if canonical_value not in (None, "", []):
+                updated[field_name] = canonical_value
+        freshened.append(updated)
+    return freshened
+
+
+def _message_response(
+    message: MessageRecord, canonical_documents: dict[str, DocumentRecord] | None = None
+) -> MessageResponse:
+    """Milestone 4.1 §32: a citation's `message_sources` row is a snapshot
+    of a document's bibliographic identity taken at generation time — if
+    the user later corrects or enriches that document's metadata, old
+    citations would otherwise keep showing the stale snapshot forever
+    (Milestone 4's own documented limitation, since a metadata edit never
+    touches Qdrant OR the already-written `message_sources` rows).
+    `canonical_documents` (see _canonical_documents_for_messages above)
+    lets get_conversation overlay the CURRENT `documents` row's display
+    fields on top of the snapshot wherever both a canonical record exists
+    for that document_id AND that field actually has a present value —
+    never blanking a field the snapshot had just because the current
+    record happens to lack it (e.g. a deleted/renamed document). This
+    does NOT touch citation validation or provenance (rank/score/
+    snippet_text/chunk_id/chunk_index/page_number/scope are always the
+    stored snapshot's own values) — only which title/authors/year/venue/
+    doi/url text is displayed alongside an already-validated citation.
+    Callers that don't pass `canonical_documents` (i.e. omit it/pass None)
+    get the exact pre-4.1 behavior: the raw stored snapshot, unchanged.
+
+    Freshens BOTH `sources` (via `_source_response` below) AND `citations`
+    (via `_freshened_citations`) — production validation caught that the
+    visible inline citation cards render from `citations`, a separate raw
+    snapshot from `sources`, so freshening only one left the other stale."""
+
+    def _source_response(s: MessageSourceRecord) -> MessageSourceResponse:
+        display: dict[str, object] = {
+            field_name: getattr(s, field_name) for field_name in _CITATION_FRESHENABLE_FIELDS
+        }
+        canonical = canonical_documents.get(s.document_id or "") if canonical_documents else None
+        if canonical is not None:
+            for field_name in _CITATION_FRESHENABLE_FIELDS:
+                canonical_value = getattr(canonical, field_name)
+                if canonical_value not in (None, "", []):
+                    display[field_name] = canonical_value
+        return MessageSourceResponse(
+            rank=s.rank,
+            document_id=s.document_id,
+            chunk_id=s.chunk_id,
+            chunk_index=s.chunk_index,
+            page_number=s.page_number,
+            score=s.score,
+            snippet_text=s.snippet_text,
+            title=display["title"],  # type: ignore[arg-type]
+            authors=display["authors"],  # type: ignore[arg-type]
+            publication_year=display["publication_year"],  # type: ignore[arg-type]
+            source_venue=display["source_venue"],  # type: ignore[arg-type]
+            document_type=s.document_type,  # type: ignore[arg-type]
+            journal_quartile=s.journal_quartile,  # type: ignore[arg-type]
+            doi=display["doi"],  # type: ignore[arg-type]
+            source_url=display["source_url"],  # type: ignore[arg-type]
+            source_filename=s.source_filename,
+            scope=s.scope,  # type: ignore[arg-type]
+        )
+
+    freshened_citations = (
+        _freshened_citations(message.citations, canonical_documents)
+        if canonical_documents
+        else message.citations
+    )
     return MessageResponse(
         id=str(message.id),
         role=message.role,  # type: ignore[arg-type]
         content=message.content,
-        citations=message.citations,  # type: ignore[arg-type]
+        citations=freshened_citations,  # type: ignore[arg-type]
         citation_warnings=message.citation_warnings,
         insufficient_evidence=message.insufficient_evidence,
         created_at=message.created_at,
-        sources=[
-            MessageSourceResponse(
-                rank=s.rank,
-                document_id=s.document_id,
-                chunk_id=s.chunk_id,
-                chunk_index=s.chunk_index,
-                page_number=s.page_number,
-                score=s.score,
-                snippet_text=s.snippet_text,
-                title=s.title,
-                authors=s.authors,
-                publication_year=s.publication_year,
-                source_venue=s.source_venue,
-                document_type=s.document_type,  # type: ignore[arg-type]
-                journal_quartile=s.journal_quartile,  # type: ignore[arg-type]
-                doi=s.doi,
-                source_url=s.source_url,
-                source_filename=s.source_filename,
-                scope=s.scope,  # type: ignore[arg-type]
-            )
-            for s in message.sources
-        ],
+        sources=[_source_response(s) for s in message.sources],
         attachments=[
             MessageAttachmentResponse(
                 id=str(a.id),
@@ -309,19 +444,25 @@ def get_conversation(
     user: CurrentUserDep,
     repository: ConversationsRepositoryDep,
     projects_repository: ProjectsRepositoryDep,
+    documents_repository: DocumentsRepositoryDep,
 ) -> ConversationDetailResponse:
     conversation = repository.get(user.id, conversation_id)
     if conversation is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     messages = repository.get_messages(user.id, conversation_id) or []
     project_refs = projects_repository.get_project_refs_for_conversation(user.id, conversation_id)
+    # Milestone 4.1 §32 — see _message_response's docstring: this overlays
+    # each citation's display fields with the document's CURRENT SQL
+    # metadata wherever it's fresher than the snapshot taken at generation
+    # time, without touching citation validation/provenance.
+    canonical_documents = _canonical_documents_for_messages(user.id, messages, documents_repository)
     return ConversationDetailResponse(
         id=str(conversation.id),
         title=conversation.title,
         title_is_custom=conversation.title_is_custom,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
-        messages=[_message_response(m) for m in messages],
+        messages=[_message_response(m, canonical_documents) for m in messages],
         projects=[
             ConversationProjectResponse(id=str(ref.id), name=ref.name) for ref in project_refs
         ],

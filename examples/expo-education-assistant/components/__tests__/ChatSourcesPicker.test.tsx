@@ -1086,6 +1086,42 @@ describe('ChatSourcesPicker — filter and library actions', () => {
     expect((global.fetch as jest.Mock).mock.calls.length).toBe(fetchCallsBefore);
   });
 
+  it('Milestone 4: a titleless document shows "Author et al. (Year)" instead of a truncated filename', async () => {
+    const doc = { ...DOC_B, folder_id: null, authors: ['Jeff Forrester'], publication_year: 2004 };
+    const renderer = await renderPicker({
+      target: { kind: 'pending' },
+      initialSelection: [],
+      routes: [rootContentsRoute([], [doc])],
+    });
+    expect(findByText(renderer.root, 'Forrester (2004)')).toBeTruthy();
+    expect(queryByText(renderer.root, 'b.pdf')).toBeNull();
+  });
+
+  it('Milestone 4: still falls back to the filename when neither title nor authors are known', async () => {
+    const renderer = await renderPicker({
+      target: { kind: 'pending' },
+      initialSelection: [],
+      routes: [rootContentsRoute([], [{ ...DOC_B, folder_id: null }])],
+    });
+    expect(findByText(renderer.root, 'b.pdf')).toBeTruthy();
+  });
+
+  it('Milestone 4: the client-side filter also matches by author name', async () => {
+    const doc = { ...DOC_A, authors: ['Ada Lovelace'] };
+    const renderer = await renderPicker({
+      target: { kind: 'pending' },
+      initialSelection: [],
+      routes: [rootContentsRoute([], [doc])],
+    });
+    const filterInput = renderer.root.find(
+      (node) => String(node.type) === 'TextInput' && node.props.placeholder === 'Filter by name…'
+    );
+    await act(async () => {
+      filterInput.props.onChangeText('Lovelace');
+    });
+    expect(findByText(renderer.root, 'AI Education')).toBeTruthy();
+  });
+
   it('shows a truthful "no matches" state rather than an empty list when the filter matches nothing', async () => {
     const renderer = await renderPicker({
       target: { kind: 'pending' },

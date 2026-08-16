@@ -17,6 +17,7 @@ from app.db import (
     models_projects,  # noqa: F401
     models_research_preferences,  # noqa: F401
     models_scopes,  # noqa: F401
+    models_writing,  # noqa: F401
 )
 from app.db.base import Base
 

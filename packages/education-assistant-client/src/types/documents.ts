@@ -11,6 +11,69 @@ export type DocumentDeleteResponse = components['schemas']['DocumentDeleteRespon
 export type DocumentMetadataPreviewResponse =
   components['schemas']['DocumentMetadataPreviewResponse'];
 export type ExtractionSource = components['schemas']['ExtractionSource'];
+/**
+ * Milestone 4.1 (Authoritative Metadata Enrichment & Duplicate Awareness):
+ * POST /documents/{id}/enrich's response — the outcome of one "Refresh
+ * metadata" attempt (`status`/`fieldsUpdated`/`manualFieldsPreserved`)
+ * plus the document's current, post-attempt state (`document`), so the
+ * caller never needs a second request just to redraw the metadata panel.
+ */
+export type DocumentEnrichmentResponse = components['schemas']['DocumentEnrichmentResponse'];
+/**
+ * Every value DocumentEnrichmentResponse.status / DocumentSummary.
+ * enrichmentStatus can hold. "succeeded" plus Crossref lookup failure
+ * modes, plus three "never even attempted a lookup" values ("disabled",
+ * "no_doi", "not_found_document") that are never persisted server-side —
+ * see the backend's EnrichmentRunStatus for the authoritative source.
+ */
+export type EnrichmentRunStatus = components['schemas']['DocumentEnrichmentResponse']['status'];
+/**
+ * Milestone 4.1 §23/§24 — a non-destructive pointer at another document
+ * this same user already owns, surfaced on
+ * DocumentMetadataPreviewResponse.duplicateCandidate when the extracted
+ * DOI exactly matches. Never blocks the upload by itself.
+ */
+export type DuplicateDocumentCandidate = components['schemas']['DuplicateDocumentCandidate'];
+
+/**
+ * GET /documents/{id}/citation?style=... — a deterministic, formatted
+ * APA 7 / IEEE citation built from the document's current canonical
+ * metadata (never a cached snapshot, never Crossref/an LLM — see the
+ * backend's app/core/citation_formatting.py). `formatted` degrades
+ * gracefully for incomplete records rather than erroring.
+ */
+export type DocumentCitationResponse = components['schemas']['DocumentCitationResponse'];
+/**
+ * Milestone 4.2 (Citation & BibTeX Foundation) Section 5 — the exactly-two
+ * initial citation styles, derived from DocumentCitationResponse's own
+ * `style` field (the backend has no separately-named CitationStyleValue
+ * schema — a bare Literal used only as a query param / response field is
+ * inlined by openapi-typescript rather than hoisted into
+ * components['schemas']).
+ */
+export type CitationStyle = DocumentCitationResponse['style'];
+/**
+ * GET /documents/{id}/bibtex — one complete, valid BibTeX entry plus the
+ * document's PERSISTED, stable `citation_key` (see
+ * DocumentSummary.citationKey's own docs — same key, surfaced here too so
+ * a caller that only wants BibTeX never needs a second request).
+ */
+export type DocumentBibtexResponse = components['schemas']['DocumentBibtexResponse'];
+
+/** POST /documents/bibtex-export — reuses Documents' existing
+ * multi-selection UI (Section 20); every id is ownership-checked
+ * individually server-side. */
+export interface BibtexExportRequest {
+  documentIds: string[];
+}
+/**
+ * `bibtex` is the concatenation of one valid entry per successfully
+ * resolved id, in deterministic citation_key order (Section 22).
+ * `skippedDocumentIds` lists any requested id that doesn't exist or isn't
+ * the caller's own — reported honestly rather than silently dropped or
+ * failing the whole export (Section 34).
+ */
+export type BibtexExportResponse = components['schemas']['BibtexExportResponse'];
 
 /**
  * Metadata fields accepted by POST /documents (multipart form). `file` is
@@ -46,6 +109,37 @@ export interface DocumentUploadMetadata {
  * root when `folderId` is null. */
 export interface MoveDocumentRequest {
   folderId: string | null;
+}
+
+/**
+ * Milestone 4 (Reference Library & Bibliographic Metadata Foundation):
+ * PATCH /documents/{id}/metadata — the "Edit metadata" action. Partial
+ * update, same convention as UpdateProjectRequest: omit a field entirely
+ * to leave it unchanged; pass a field as `null` (or `[]` for a list field)
+ * to explicitly clear it. Never re-uploads, re-chunks, re-embeds, or
+ * touches Qdrant (SQL-only correction — see the backend's
+ * UpdateDocumentMetadataRequest docstring). `title` cannot be cleared to
+ * null/empty — the backend rejects that with a 422, same as
+ * `documentType`. Every field sent here is recorded with "user"
+ * provenance server-side (see DocumentSummary.metadataSources).
+ */
+export interface UpdateDocumentMetadataRequest {
+  title?: string;
+  authors?: string[];
+  publicationYear?: number | null;
+  sourceVenue?: string | null;
+  doi?: string | null;
+  sourceUrl?: string | null;
+  documentType?: DocumentType;
+  journalQuartile?: JournalQuartile;
+  volume?: string | null;
+  issue?: string | null;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  publisher?: string | null;
+  abstract?: string | null;
+  keywords?: string[];
+  language?: string | null;
 }
 
 export interface ListDocumentsParams {

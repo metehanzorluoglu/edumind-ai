@@ -241,6 +241,93 @@ services:
     networks:
       - edumind-rpi5-net
 
+  # Milestone 5.1 (Secure LaTeX Compilation Service) — an isolated,
+  # sandboxed pdflatex/bibtex runtime. Deliberately its OWN image/
+  # container (never folded into the backend), on its OWN internal-only
+  # Docker network (`latex-compiler-net` below, `internal: true` — no
+  # default route out to the internet, matching Part 5's "compiler jobs
+  # should have no outbound network access"), hardened at the container
+  # level (Part 6-9 — see the flags below, all verified against the
+  # built image with real `docker inspect`/`docker exec` commands: see
+  # the Milestone 5.1 report's "Container Security" section). Never
+  # published to a host port and never reachable from the browser
+  # directly (Part 1) — only `backend`, which also joins
+  # `latex-compiler-net`, can reach it, by its compose service name.
+  latex-compiler:
+    build:
+      context: ../../latex-compiler
+      dockerfile: Dockerfile
+
+    platform: linux/arm64
+
+    # No .env.oracle — this service has no use for the backend's secret
+    # bundle (same reasoning as evidence-service above) and reads no
+    # environment variables of its own in normal operation (latex-
+    # compiler/app/config.py's LATEX_COMPILER_*-prefixed settings all
+    # have sensible defaults matching this file).
+
+    # Part 7 — read-only root filesystem; the only writable area is a
+    # size-bounded tmpfs at /tmp, where every compile job's working
+    # directory lives (latex-compiler/app/config.py's `working_root`).
+    # The image itself pre-builds TeX's format cache at BUILD time (see
+    # the Dockerfile's fmtutil warm-up step) specifically so the runtime
+    # user never needs to write into texmf-var.
+    read_only: true
+    tmpfs:
+      - /tmp:rw,size=256m,mode=1777
+
+    # Part 8 — no root, no privilege escalation, no added Linux
+    # capabilities. Verified via `docker exec ... cat /proc/1/status`
+    # showing every Cap* bitmask at zero (Milestone 5.1 report).
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # Part 9 — bounds CPU/RAM/process-count for a single compile job.
+    # Conservative given this host's real, tight budget: qdrant (0.5) +
+    # backend (1.0) + evidence-service (2.0) already nominally reserve
+    # 3.5 of 4 OCPUs (see evidence-service's own comment above) — 0.5
+    # here brings nominal reservation to the full 4.0, which is why
+    # `concurrency: 1` (latex-compiler/app/config.py) and a real,
+    # measured host-resilience test (Milestone 5.1 report) matter more
+    # here than the CPU number alone. Real observed usage is idle
+    # between compiles, not constant, the same way every other service
+    # on this host is (see that report's live `docker stats` numbers).
+    mem_limit: 768m
+    cpus: "0.5"
+    pids_limit: 64
+
+    # No `ports:` at all (Part 1) — `expose` only documents the
+    # container-internal port for `backend` on the shared internal
+    # network below; it publishes nothing to the host.
+    expose:
+      - "8200"
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import json, urllib.request; json.loads(urllib.request.urlopen('http://127.0.0.1:8200/health', timeout=5).read())"
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+    restart: unless-stopped
+
+    # Part 5 — ONLY this dedicated internal network, never the shared
+    # edumind-rpi5-net the rest of the stack uses. `internal: true`
+    # (defined below) means containers on this network have no default
+    # route to the internet at all — this service cannot reach Ollama,
+    # Qdrant, evidence-service, or anything outside the compose project
+    # even if a future code change tried to.
+    networks:
+      - latex-compiler-net
+
   backend:
     build:
       context: ../../rag-backend
@@ -293,14 +380,17 @@ services:
 
     restart: unless-stopped
 
-    # Deliberately does NOT depend on evidence-service (Milestone 11
-    # §12/§30: "Backend must NOT depend on evidence service for startup
-    # availability... Optional component must remain optional.") — chat
-    # continues to work identically whether evidence-service is healthy,
-    # still starting, or not running at all, since
-    # EVIDENCE_ANALYSIS_ENABLED defaults to false and every call site
-    # (app/core/evidence_shadow.py) treats a client failure as a
-    # no-op-and-log outcome, never a raised exception.
+    # Deliberately does NOT depend on evidence-service OR latex-compiler
+    # (Milestone 11 §12/§30's "Backend must NOT depend on evidence
+    # service for startup availability... Optional component must remain
+    # optional" — the same reasoning now applies identically to
+    # Milestone 5.1's compiler service). Chat/RAG/Documents/Writing's
+    # non-compile features all continue to work whether latex-compiler
+    # is healthy, still starting, or not running at all —
+    # LatexCompilerClient (app/core/latex_compiler_client.py) never
+    # raises on a connection failure, it returns a structured "busy"/
+    # "unavailable" outcome the compile ROUTE surfaces, which is the one
+    # and only endpoint that ever calls it.
     depends_on:
       qdrant:
         condition: service_healthy
@@ -309,8 +399,15 @@ services:
       backend-migrate:
         condition: service_completed_successfully
 
+    # Joins BOTH networks — the shared stack network (qdrant/ollama/
+    # evidence-service/frontend) plus the dedicated, internet-isolated
+    # latex-compiler-net (Part 5). This is deliberate: backend is the
+    # only container with a foot in both, because it's the only
+    # component that legitimately needs to reach the sandboxed compiler
+    # (Part 1: "Browser should NOT call the compiler service directly").
     networks:
       - edumind-rpi5-net
+      - latex-compiler-net
 
 volumes:
   backend-data:
@@ -336,3 +433,19 @@ networks:
   edumind-rpi5-net:
     name: edumind-rpi5_net
     driver: bridge
+
+  # Milestone 5.1 Part 5 — `internal: true` is the actual isolation
+  # mechanism: Docker gives this network's containers no default route
+  # to the outside world at all (no NAT/masquerade rule to the host's
+  # external interface), so latex-compiler cannot reach the internet
+  # even if a future code change tried to, regardless of any
+  # application-level restriction. Container-to-container traffic
+  # WITHIN this network (backend <-> latex-compiler) still works
+  # normally — `internal` only removes the external route, not internal
+  # connectivity or Docker's embedded DNS. Verified in the Milestone 5.1
+  # report's "Network Isolation" section with a real `docker exec`
+  # attempt from inside the compiler container.
+  latex-compiler-net:
+    name: edumind-oracle_latex-compiler-net
+    driver: bridge
+    internal: true

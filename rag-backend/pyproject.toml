@@ -20,6 +20,7 @@ dependencies = [
   "cryptography>=43.0",
   "httpx>=0.27",
   "argon2-cffi>=23.1",
+  "citeproc-py>=0.10.7",
 ]
 
 [project.optional-dependencies]
@@ -31,6 +32,7 @@ dev = [
   "ruff>=0.6",
   "mypy>=1.11",
   "types-beautifulsoup4>=4.12",
+  "bibtexparser>=1.4.4",
 ]
 
 [build-system]
@@ -51,11 +53,34 @@ select = ["E", "F", "I", "UP", "B", "C4", "SIM", "N", "RUF"]
 [tool.ruff.lint.isort]
 known-first-party = ["app", "cli", "scripts", "evaluation"]
 
+[tool.ruff.lint.per-file-ignores]
+# Milestone 4.2 (Citation & BibTeX Foundation): this file's fixtures are
+# real, captured citeproc-py output strings (see its own module
+# docstring) — the en dashes (RUF001) are genuine APA/IEEE punctuation
+# citeproc-py renders, and long full-citation-text lines (E501) can't be
+# wrapped without breaking the exact string-equality assertions they
+# exist to make.
+"tests/unit/core/test_citation_formatting.py" = ["E501", "RUF001"]
+# Milestone 4.2: dense fixture-construction tests (many short-lived
+# CitationItem literals per test) genuinely read better as 2-3 wide lines
+# than wrapped across many — same reasoning as above, narrower scope.
+"tests/unit/core/test_bibtex.py" = ["E501"]
+"tests/unit/api/test_routes_documents_citation.py" = ["E501"]
+
 [tool.mypy]
 python_version = "3.13"
 strict = true
 warn_unused_ignores = true
 exclude = ["^\\.venv/"]
+
+[[tool.mypy.overrides]]
+# Milestone 4.2 (Citation & BibTeX Foundation): citeproc-py ships no
+# py.typed marker / stub package. app/core/citation_formatting.py is the
+# only module that imports it, and confines every citeproc-py value to
+# that one file (converted to/from our own typed CitationItem at the
+# boundary) — see that module's own docstring.
+module = "citeproc.*"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

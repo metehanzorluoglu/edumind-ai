@@ -18,12 +18,19 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 
+from app.core.bibliographic_enrichment_service import enrich_document, has_usable_doi
+from app.core.bibtex import export_bibtex, render_bibtex_entry
+from app.core.citation_formatting import format_citation
+from app.core.citation_item import CitationItem, document_to_citation_item
+from app.core.conversation_title import sanitize_title
 from app.core.document_deletion import delete_document_by_id
 from app.core.document_ingestion_jobs import run_ingestion_job
 from app.core.security import CurrentUserDep, get_current_user
 from app.db.document_highlights_repository import DocumentHighlightRecord
-from app.db.documents_repository import DocumentRecord
+from app.db.documents_repository import DocumentRecord, DocumentsRepository
+from app.db.folders_repository import FoldersRepository
 from app.deps import (
+    BibliographicProviderDep,
     DocumentFileStorageDep,
     DocumentHighlightsRepositoryDep,
     DocumentJobsRepositoryDep,
@@ -34,6 +41,7 @@ from app.deps import (
     ScopesRepositoryDep,
     SettingsDep,
     VectorStoreDep,
+    WritingProjectsRepositoryDep,
 )
 from app.ingestion.chunker import chunk_pages
 from app.ingestion.errors import (
@@ -42,14 +50,21 @@ from app.ingestion.errors import (
     UnsupportedFileTypeError,
 )
 from app.ingestion.ingest import ingest_document
+from app.ingestion.loaders.base import ExtractionSource
 from app.ingestion.loaders.dispatch import load_document
 from app.ingestion.metadata_extraction import apply_filename_fallback, confidence_for_source
 from app.ingestion.metadata_schema import DocumentType, JournalQuartile
 from app.schemas.documents import (
+    BibtexExportRequest,
+    BibtexExportResponse,
+    CitationStyleValue,
     CreateDocumentHighlightRequest,
+    DocumentBibtexResponse,
+    DocumentCitationResponse,
     DocumentContentChunk,
     DocumentContentResponse,
     DocumentDeleteResponse,
+    DocumentEnrichmentResponse,
     DocumentHighlightListResponse,
     DocumentHighlightResponse,
     DocumentJobResponse,
@@ -58,9 +73,11 @@ from app.schemas.documents import (
     DocumentSummary,
     DocumentUploadAcceptedResponse,
     DocumentUploadResponse,
+    DuplicateDocumentCandidate,
     HighlightVisualAnchor,
     MoveDocumentRequest,
     UpdateDocumentHighlightRequest,
+    UpdateDocumentMetadataRequest,
 )
 from app.services.document_file_storage import (
     DocumentFileStorage,
@@ -71,6 +88,90 @@ from app.services.document_file_storage import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["documents"], dependencies=[Depends(get_current_user)])
+
+
+def _document_summary(
+    record: DocumentRecord, document_file_storage: DocumentFileStorage
+) -> DocumentSummary:
+    """Shared by GET /documents, PATCH /documents/{id} (folder move), and
+    PATCH /documents/{id}/metadata — every response-building call site that
+    reports a DocumentSummary needs the exact same field set from the exact
+    same DocumentRecord, and Milestone 4 added enough new bibliographic
+    fields (see BibliographicMetadataFields) that hand-repeating them at
+    each call site risked one silently drifting out of sync."""
+    return DocumentSummary(
+        document_id=record.document_id,
+        source_filename=record.source_filename,
+        folder_id=str(record.folder_id) if record.folder_id else None,
+        folder_name=record.folder_name,
+        document_type=record.document_type,  # type: ignore[arg-type]
+        journal_quartile=record.journal_quartile,  # type: ignore[arg-type]
+        title=record.title,
+        authors=record.authors,
+        publication_year=record.publication_year,
+        source_venue=record.source_venue,
+        doi=record.doi,
+        source_url=record.source_url,
+        volume=record.volume,
+        issue=record.issue,
+        page_start=record.page_start,
+        page_end=record.page_end,
+        publisher=record.publisher,
+        abstract=record.abstract,
+        keywords=record.keywords,
+        language=record.language,
+        metadata_sources=record.metadata_sources,
+        last_enriched_at=record.last_enriched_at,
+        enrichment_provider=record.enrichment_provider,
+        enrichment_status=record.enrichment_status,
+        has_usable_doi=has_usable_doi(record),
+        citation_key=record.citation_key,
+        chunk_count=record.chunk_count,
+        ingested_at=record.ingested_at,
+        original_file_available=_original_file_available(record, document_file_storage),
+    )
+
+
+def _document_upload_response(
+    record: DocumentRecord, document_file_storage: DocumentFileStorage
+) -> DocumentUploadResponse:
+    """Shared by GET /documents/jobs/{job_id} — kept separate from
+    _document_summary() above only because DocumentUploadResponse and
+    DocumentSummary are genuinely different response shapes (file_format/
+    chunk_count vs. folder_name), not because the bibliographic fields
+    differ."""
+    return DocumentUploadResponse(
+        document_id=record.document_id,
+        source_filename=record.source_filename,
+        file_format=record.file_format,
+        folder_id=str(record.folder_id) if record.folder_id else None,
+        document_type=record.document_type,  # type: ignore[arg-type]
+        journal_quartile=record.journal_quartile,  # type: ignore[arg-type]
+        title=record.title,
+        authors=record.authors,
+        publication_year=record.publication_year,
+        source_venue=record.source_venue,
+        doi=record.doi,
+        source_url=record.source_url,
+        volume=record.volume,
+        issue=record.issue,
+        page_start=record.page_start,
+        page_end=record.page_end,
+        publisher=record.publisher,
+        abstract=record.abstract,
+        keywords=record.keywords,
+        language=record.language,
+        metadata_sources=record.metadata_sources,
+        last_enriched_at=record.last_enriched_at,
+        enrichment_provider=record.enrichment_provider,
+        enrichment_status=record.enrichment_status,
+        has_usable_doi=has_usable_doi(record),
+        citation_key=record.citation_key,
+        page_count=record.page_count,
+        chunk_count=record.chunk_count,
+        ingested_at=record.ingested_at,
+        original_file_available=_original_file_available(record, document_file_storage),
+    )
 
 
 def _original_file_available(
@@ -300,6 +401,15 @@ def post_document(
         source_venue=metadata.source_venue,
         doi=metadata.doi,
         source_url=metadata.source_url,
+        volume=metadata.volume,
+        issue=metadata.issue,
+        page_start=metadata.page_start,
+        page_end=metadata.page_end,
+        publisher=metadata.publisher,
+        abstract=metadata.abstract,
+        keywords=metadata.keywords,
+        language=metadata.language,
+        metadata_sources=metadata.metadata_sources,
         page_count=metadata.page_count,
         total_chunks=len(chunks),
         timings=request_timer.as_dict() or None,
@@ -330,24 +440,7 @@ def get_document_job(
     if job.status == "completed" and job.document_id is not None:
         record = documents_repository.get(user.id, job.document_id)
         if record is not None:
-            document_response = DocumentUploadResponse(
-                document_id=record.document_id,
-                source_filename=record.source_filename,
-                file_format=record.file_format,
-                folder_id=str(record.folder_id) if record.folder_id else None,
-                document_type=record.document_type,  # type: ignore[arg-type]
-                journal_quartile=record.journal_quartile,  # type: ignore[arg-type]
-                title=record.title,
-                authors=record.authors,
-                publication_year=record.publication_year,
-                source_venue=record.source_venue,
-                doi=record.doi,
-                source_url=record.source_url,
-                page_count=record.page_count,
-                chunk_count=record.chunk_count,
-                ingested_at=record.ingested_at,
-                original_file_available=_original_file_available(record, document_file_storage),
-            )
+            document_response = _document_upload_response(record, document_file_storage)
 
     return DocumentJobResponse(
         job_id=job.job_id,
@@ -367,7 +460,10 @@ def get_document_job(
 
 @router.post("/documents/metadata-preview", response_model=DocumentMetadataPreviewResponse)
 def post_metadata_preview(
-    user: CurrentUserDep, file: UploadFile
+    user: CurrentUserDep,
+    documents_repository: DocumentsRepositoryDep,
+    folders_repository: FoldersRepositoryDep,
+    file: UploadFile,
 ) -> DocumentMetadataPreviewResponse:
     """Extraction only — deliberately does not chunk, embed, or write
     anything to Qdrant/SQL, so calling this (e.g. once per file the user
@@ -406,6 +502,43 @@ def post_metadata_preview(
         extraction_confidence={
             field: confidence_for_source(source) for field, source in metadata.sources.items()
         },
+        duplicate_candidate=_exact_doi_duplicate_candidate(
+            user.id, metadata.doi, documents_repository, folders_repository
+        ),
+    )
+
+
+def _exact_doi_duplicate_candidate(
+    user_id: uuid.UUID,
+    doi: str | None,
+    documents_repository: DocumentsRepository,
+    folders_repository: FoldersRepository,
+) -> DuplicateDocumentCandidate | None:
+    """Milestone 4.1 §23/§24 — the exact-DOI half of duplicate awareness.
+    `doi` is already normalized by this point (extract_doi()/normalize_doi()
+    inside load_document() only ever populate ExtractedMetadata.doi with a
+    normalized value — see app/ingestion/metadata_extraction.py), so this
+    is a plain equality lookup, never a fuzzy one (Section 26's fuzzy
+    matching is separately deferred). Returns None — no candidate, no
+    warning — whenever there's no DOI to check at all, which is the common
+    case for most uploads."""
+    if not doi:
+        return None
+    existing = documents_repository.find_by_doi(user_id, doi)
+    if existing is None:
+        return None
+    folder_name = None
+    if existing.folder_id is not None:
+        folder = folders_repository.get(user_id, existing.folder_id)
+        folder_name = folder.name if folder is not None else None
+    return DuplicateDocumentCandidate(
+        document_id=existing.document_id,
+        title=existing.title,
+        authors=existing.authors,
+        publication_year=existing.publication_year,
+        source_filename=existing.source_filename,
+        folder_id=str(existing.folder_id) if existing.folder_id else None,
+        folder_name=folder_name,
     )
 
 
@@ -417,10 +550,11 @@ def get_documents(
     limit: int = 20,
     offset: int = 0,
     # Frontend/Platform Milestone 3.2.1 Part D — optional LIBRARY search
-    # (title/filename substring, across every folder), never semantic
-    # corpus retrieval — see DocumentsRepository.search_for_user's
-    # docstring for the distinction from GET /search. Omitted/blank
-    # behaves exactly as before this milestone.
+    # (title/author/year/venue/DOI/filename substring, across every folder
+    # — extended to the bibliographic fields in Milestone 4 Section 7),
+    # never semantic corpus retrieval — see DocumentsRepository.
+    # search_for_user's docstring for the distinction from GET /search.
+    # Omitted/blank behaves exactly as before this milestone.
     q: str | None = None,
 ) -> DocumentListResponse:
     records, total = (
@@ -429,26 +563,7 @@ def get_documents(
         else documents_repository.list_for_user(user.id, limit=limit, offset=offset)
     )
     return DocumentListResponse(
-        documents=[
-            DocumentSummary(
-                document_id=record.document_id,
-                source_filename=record.source_filename,
-                folder_id=str(record.folder_id) if record.folder_id else None,
-                folder_name=record.folder_name,
-                document_type=record.document_type,  # type: ignore[arg-type]
-                journal_quartile=record.journal_quartile,  # type: ignore[arg-type]
-                title=record.title,
-                authors=record.authors,
-                publication_year=record.publication_year,
-                source_venue=record.source_venue,
-                doi=record.doi,
-                source_url=record.source_url,
-                chunk_count=record.chunk_count,
-                ingested_at=record.ingested_at,
-                original_file_available=_original_file_available(record, document_file_storage),
-            )
-            for record in records
-        ],
+        documents=[_document_summary(record, document_file_storage) for record in records],
         total=total,
     )
 
@@ -487,22 +602,220 @@ def move_document_route(
     record = documents_repository.move_to_folder(user.id, document_id, target_folder_id)
     if record is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Document not found")
-    return DocumentSummary(
-        document_id=record.document_id,
-        source_filename=record.source_filename,
-        folder_id=str(record.folder_id) if record.folder_id else None,
-        document_type=record.document_type,  # type: ignore[arg-type]
-        journal_quartile=record.journal_quartile,  # type: ignore[arg-type]
-        title=record.title,
-        authors=record.authors,
-        publication_year=record.publication_year,
-        source_venue=record.source_venue,
-        doi=record.doi,
-        source_url=record.source_url,
-        chunk_count=record.chunk_count,
-        ingested_at=record.ingested_at,
-        original_file_available=_original_file_available(record, document_file_storage),
+    return _document_summary(record, document_file_storage)
+
+
+@router.patch("/documents/{document_id}/metadata", response_model=DocumentSummary)
+def update_document_metadata_route(
+    document_id: str,
+    request: UpdateDocumentMetadataRequest,
+    user: CurrentUserDep,
+    documents_repository: DocumentsRepositoryDep,
+    document_file_storage: DocumentFileStorageDep,
+) -> DocumentSummary:
+    """Milestone 4's "Edit metadata" action — a partial, SQL-only
+    bibliographic correction. Only fields actually present in the request
+    body are touched (see `model_fields_set`, same convention as PATCH
+    /projects/{id}). Every field that IS present is recorded with "user"
+    provenance in `metadata_sources` — the mechanism that guarantees
+    Milestone 4 Section 5's "USER/MANUAL correction > any future automatic
+    extraction": no other code path in this system ever re-runs extraction
+    against an already-ingested document, so once a field is marked "user"
+    here, nothing will ever overwrite it again.
+
+    Deliberately does NOT call vector_store.update_chunk_metadata (unlike
+    `python -m cli.documents refresh-metadata`, its CLI cousin) — never
+    re-uploads, re-chunks, re-embeds, or writes to Qdrant. This means a
+    RAG answer's citation (sourced from the Qdrant chunk payload — see
+    app/vectorstore/schemas.py's ChunkPayload) can keep showing this
+    document's pre-edit title/authors/etc. until a future re-ingestion;
+    every direct read of this document (Documents list/card, Reader
+    header, Sources picker, this endpoint's own response) always reflects
+    the correction immediately, since those all read the `documents` SQL
+    row — the source of truth for bibliographic identity — not Qdrant.
+    This is an intentional, documented consequence of Milestone 4's "no
+    Qdrant mutation" constraint, not an oversight."""
+    fields_set = request.model_fields_set
+    sanitized_title = sanitize_title(request.title) if request.title else ""
+    if "title" in fields_set and not sanitized_title:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, detail="title cannot be blanked to empty"
+        )
+    if "document_type" in fields_set and request.document_type is None:
+        # Document.document_type is a NOT NULL column (see
+        # app/db/models_documents.py) — unlike every other field here,
+        # there is no honest "cleared" state for it to fall back to
+        # (that's what "unknown"/"other" are for, via DocumentType's own
+        # values — see its docstring). Caught here, as a clean 422,
+        # instead of letting a NOT NULL constraint fail at commit time.
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="document_type cannot be cleared to null — choose 'unknown' or 'other' instead",
+        )
+
+    updates: dict[str, object] = {}
+    sources_update: dict[str, str] = {}
+    for field in fields_set:
+        if field not in DocumentsRepository.METADATA_FIELDS:
+            # UpdateDocumentMetadataRequest never declares a field outside
+            # this set — see its own docstring — so this can only mean the
+            # two have drifted out of sync with each other, a programmer
+            # error to fail loudly on rather than silently ignore.
+            raise HTTPException(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"'{field}' is not an editable metadata field",
+            )
+        updates[field] = sanitized_title if field == "title" else getattr(request, field)
+        sources_update[field] = ExtractionSource.USER.value
+
+    if not updates:
+        record = documents_repository.get(user.id, document_id)
+        if record is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Document not found")
+        return _document_summary(record, document_file_storage)
+
+    existing = documents_repository.get(user.id, document_id)
+    if existing is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Document not found")
+    updates["metadata_sources"] = {**existing.metadata_sources, **sources_update}
+
+    record = documents_repository.update_metadata(user.id, document_id, updates)
+    if record is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Document not found")
+    return _document_summary(record, document_file_storage)
+
+
+@router.post("/documents/{document_id}/enrich", response_model=DocumentEnrichmentResponse)
+def enrich_document_route(
+    document_id: str,
+    user: CurrentUserDep,
+    settings: SettingsDep,
+    documents_repository: DocumentsRepositoryDep,
+    bibliographic_provider: BibliographicProviderDep,
+    vector_store: VectorStoreDep,
+    document_file_storage: DocumentFileStorageDep,
+) -> DocumentEnrichmentResponse:
+    """Milestone 4.1 §11 — the explicit "Refresh metadata" action, the
+    user-triggered counterpart to document_ingestion_jobs.py's automatic
+    post-ingest hook: both call the exact same enrich_document() (see
+    app/core/bibliographic_enrichment_service.py) so their merge/
+    precedence/failure-handling behavior can never drift apart.
+
+    404s for a document that doesn't exist or isn't owned by this user
+    (same indistinguishable-404 convention as every other document route
+    here — see DocumentsRepository.get's docstring) BEFORE calling
+    enrich_document(), so "not found" is reported the normal HTTP way
+    rather than via the response body's `status` field. Every other
+    outcome — including "this document has no usable DOI" and "Crossref
+    had nothing/was unreachable" — is a normal 200 with `ok=False` and a
+    specific `status`, never an error response: none of those are a
+    caller mistake, and the existing metadata is always left exactly as
+    it was (Section 9)."""
+    existing = documents_repository.get(user.id, document_id)
+    if existing is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    result = enrich_document(
+        user_id=user.id,
+        document_id=document_id,
+        documents_repository=documents_repository,
+        provider=bibliographic_provider,
+        settings=settings,
+        vector_store=vector_store,
     )
+
+    record = documents_repository.get(user.id, document_id) or existing
+    return DocumentEnrichmentResponse(
+        ok=result.ok,
+        status=result.status,
+        fields_updated=list(result.fields_updated),
+        manual_fields_preserved=result.manual_fields_preserved,
+        qdrant_sync_failed=result.qdrant_sync_failed,
+        document=_document_summary(record, document_file_storage),
+    )
+
+
+@router.get("/documents/{document_id}/citation", response_model=DocumentCitationResponse)
+def get_document_citation(
+    document_id: str,
+    style: CitationStyleValue,
+    user: CurrentUserDep,
+    documents_repository: DocumentsRepositoryDep,
+) -> DocumentCitationResponse:
+    """Milestone 4.2 (Citation & BibTeX Foundation) Section 7/28/29/35 —
+    a deterministic, formatted APA 7 / IEEE citation built from this
+    document's CURRENT canonical SQL metadata (never a Qdrant payload,
+    never a cached/stale snapshot — the same source of truth
+    _document_summary already reads). No LLM, no Crossref, no third-party
+    service call: app/core/citation_formatting.py is pure, local,
+    deterministic formatting, so this works identically regardless of
+    Crossref's enabled/disabled state (Section 29). 404s for a document
+    that doesn't exist or isn't owned by this user, same indistinguishable
+    convention as every other document route here."""
+    record = documents_repository.get(user.id, document_id)
+    if record is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Document not found")
+    item = document_to_citation_item(record)
+    formatted = format_citation(item, style)
+    return DocumentCitationResponse(style=style, formatted=formatted)
+
+
+@router.get("/documents/{document_id}/bibtex", response_model=DocumentBibtexResponse)
+def get_document_bibtex(
+    document_id: str,
+    user: CurrentUserDep,
+    documents_repository: DocumentsRepositoryDep,
+) -> DocumentBibtexResponse:
+    """Milestone 4.2 Section 18/19 — one complete, valid BibTeX entry for
+    a single document, using its PERSISTED citation key (generated once
+    and reused on every subsequent call — see DocumentsRepository.
+    get_or_create_citation_key for the stability guarantee, Section 16/17).
+    Same 404 convention and same "current canonical metadata, no external
+    calls" guarantees as get_document_citation above."""
+    record = documents_repository.get_or_create_citation_key(user.id, document_id)
+    if record is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Document not found")
+    assert record.citation_key is not None  # guaranteed by get_or_create_citation_key
+    item = document_to_citation_item(record)
+    bibtex_text = render_bibtex_entry(item, record.citation_key)
+    return DocumentBibtexResponse(citation_key=record.citation_key, bibtex=bibtex_text)
+
+
+@router.post("/documents/bibtex-export", response_model=BibtexExportResponse)
+def post_bibtex_export(
+    request: BibtexExportRequest,
+    user: CurrentUserDep,
+    documents_repository: DocumentsRepositoryDep,
+) -> BibtexExportResponse:
+    """Milestone 4.2 Section 20/21/22/23/34 — multi-reference `.bib`
+    export, reusing Documents' existing multi-selection UI (no separate
+    "Reference page"). Every id is looked up via get_or_create_citation_key
+    — itself already ownership-scoped via DocumentsRepository.get's
+    indistinguishable-404 convention — so an id that doesn't exist or
+    belongs to another user is silently SKIPPED (reported honestly in
+    `skipped_document_ids`, Section 34) rather than either leaking whose
+    document it is or failing the entire export over one bad id. Duplicate
+    ids in the request collapse to one entry (Section 21: "no duplicate
+    entries for same selected document"). Two different documents sharing
+    a DOI (Milestone 4.1's "Keep Both") each export as their own distinct,
+    fully valid entry (Section 23) — their citation keys are already
+    guaranteed unique within this user's whole key space (see
+    get_or_create_citation_key's per-user collision scope), so a subset of
+    that space is automatically still unique without any extra collision
+    handling here. export_bibtex further sorts the result by citation_key
+    (Section 22's deterministic order)."""
+    skipped: list[str] = []
+    items: list[tuple[CitationItem, str]] = []
+    for document_id in dict.fromkeys(request.document_ids):  # de-dup, preserve order
+        record = documents_repository.get_or_create_citation_key(user.id, document_id)
+        if record is None:
+            skipped.append(document_id)
+            continue
+        assert record.citation_key is not None
+        items.append((document_to_citation_item(record), record.citation_key))
+
+    bibtex_text = export_bibtex(items)
+    return BibtexExportResponse(bibtex=bibtex_text, count=len(items), skipped_document_ids=skipped)
 
 
 @router.delete("/documents/{document_id}", response_model=DocumentDeleteResponse)
@@ -513,6 +826,7 @@ def delete_document_route(
     vector_store: VectorStoreDep,
     scopes_repository: ScopesRepositoryDep,
     document_highlights_repository: DocumentHighlightsRepositoryDep,
+    writing_projects_repository: WritingProjectsRepositoryDep,
     document_file_storage: DocumentFileStorageDep,
 ) -> DocumentDeleteResponse:
     """Deletes a document and every chunk belonging to it, identified by its
@@ -529,6 +843,7 @@ def delete_document_route(
         documents_repository=documents_repository,
         scopes_repository=scopes_repository,
         document_highlights_repository=document_highlights_repository,
+        writing_projects_repository=writing_projects_repository,
         document_file_storage=document_file_storage,
     )
     if result is None:
@@ -629,10 +944,30 @@ def get_document_content(
     chunks = vector_store.get_document_chunks(document_id, user_id=str(user.id))
     return DocumentContentResponse(
         document_id=record.document_id,
-        title=record.title,
         source_filename=record.source_filename,
         file_format=record.file_format,
         page_count=record.page_count,
+        document_type=record.document_type,  # type: ignore[arg-type]
+        journal_quartile=record.journal_quartile,  # type: ignore[arg-type]
+        title=record.title,
+        authors=record.authors,
+        publication_year=record.publication_year,
+        source_venue=record.source_venue,
+        doi=record.doi,
+        source_url=record.source_url,
+        volume=record.volume,
+        issue=record.issue,
+        page_start=record.page_start,
+        page_end=record.page_end,
+        publisher=record.publisher,
+        abstract=record.abstract,
+        keywords=record.keywords,
+        language=record.language,
+        metadata_sources=record.metadata_sources,
+        last_enriched_at=record.last_enriched_at,
+        enrichment_provider=record.enrichment_provider,
+        enrichment_status=record.enrichment_status,
+        has_usable_doi=has_usable_doi(record),
         chunks=[
             DocumentContentChunk(
                 chunk_id=chunk.chunk_id,

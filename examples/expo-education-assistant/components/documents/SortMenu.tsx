@@ -26,6 +26,10 @@ export interface SortMenuProps {
  * against the details panel — this single button + popover reads the same
  * way FolderRow/ItemActionsMenu's own Modal-panel pattern already does
  * elsewhere on this screen, so it's not a new interaction idiom.
+ *
+ * The row list itself is generic (maps LIBRARY_SORT_KEYS) — Milestone 4
+ * added "Publication year"/"Author" to that list without needing any
+ * change here.
  */
 export function SortMenu({
   sortKey,
