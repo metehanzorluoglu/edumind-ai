@@ -3543,3 +3543,156 @@ describe('Writing Projects (Milestone 5: Academic Writing & LaTeX Foundation)', 
     );
   });
 });
+
+describe('Writing Templates & Project Import (Milestone 5.4)', () => {
+  function writingProject(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: 'w1',
+      title: 'My Paper',
+      description: null,
+      main_tex_content: '\\documentclass{article}',
+      root_file_id: 'f1',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      ...overrides,
+    };
+  }
+
+  it('listWritingTemplates() GETs /writing-templates', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        templates: [
+          {
+            id: 'blank-article',
+            name: 'Blank Article',
+            description: 'A minimal starting point.',
+            category: 'Article',
+            license: 'EduM8-authored',
+            source: 'EduM8',
+            version: 1,
+            file_count: 1,
+          },
+        ],
+        total: 1,
+      })
+    );
+    const result = await makeClient().listWritingTemplates();
+
+    expect(result.total).toBe(1);
+    expect(result.templates[0]!.id).toBe('blank-article');
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-templates');
+  });
+
+  it('getWritingTemplate() GETs /writing-templates/{id}', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'academic-article',
+        name: 'Academic Article',
+        description: 'Multi-file article.',
+        category: 'Article',
+        license: 'EduM8-authored',
+        source: 'EduM8',
+        version: 1,
+        file_count: 6,
+        root: 'main.tex',
+        files: [{ path: 'main.tex', kind: 'text' }],
+      })
+    );
+    const result = await makeClient().getWritingTemplate('academic-article');
+
+    expect(result.root).toBe('main.tex');
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-templates/academic-article');
+  });
+
+  it('createWritingProjectFromTemplate() POSTs title/description and returns the new project', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(writingProject({ title: 'My Thesis' }), 201));
+    const result = await makeClient().createWritingProjectFromTemplate('blank-article', {
+      title: 'My Thesis',
+    });
+
+    expect(result.title).toBe('My Thesis');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-templates/blank-article/create');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ title: 'My Thesis', description: null });
+  });
+
+  it('inspectWritingProjectImport() POSTs multipart form data with the file', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        session_id: 's1',
+        suggested_title: 'Imported Project',
+        files: [{ path: 'main.tex', kind: 'text', size_bytes: 20 }],
+        root_candidates: ['main.tex'],
+        preselected_root: 'main.tex',
+        warnings: [],
+        total_size_bytes: 20,
+        expires_at: '2026-01-01T00:30:00Z',
+      })
+    );
+    const file = new File(['zip bytes'], 'project.zip', { type: 'application/zip' });
+    const result = await makeClient().inspectWritingProjectImport(file);
+
+    expect(result.session_id).toBe('s1');
+    expect(result.preselected_root).toBe('main.tex');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/import/inspect');
+    expect(init.headers['Content-Type']).toBeUndefined();
+    const formData = init.body as FormData;
+    expect(formData.get('file')).toBeInstanceOf(File);
+  });
+
+  it('inspectWritingProjectImport() rejects with a ValidationError on a 422 (rejected archive)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ detail: 'Archive contains an unsafe path' }, 422)
+    );
+    const file = new File(['zip bytes'], 'evil.zip', { type: 'application/zip' });
+    await expect(makeClient().inspectWritingProjectImport(file)).rejects.toThrow(ValidationError);
+  });
+
+  it('confirmWritingProjectImport() POSTs title/description/root_path and returns the new project', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(writingProject({ title: 'Imported Paper' }), 201));
+    const result = await makeClient().confirmWritingProjectImport('s1', {
+      title: 'Imported Paper',
+      rootPath: 'alt.tex',
+    });
+
+    expect(result.title).toBe('Imported Paper');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/import/s1/confirm');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({
+      title: 'Imported Paper',
+      description: null,
+      root_path: 'alt.tex',
+    });
+  });
+
+  it('confirmWritingProjectImport() sends root_path: null when omitted', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(writingProject()));
+    await makeClient().confirmWritingProjectImport('s1', { title: 'X' });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(init.body)).toEqual({ title: 'X', description: null, root_path: null });
+  });
+
+  it('confirmWritingProjectImport() rejects with a NotFoundError on a 404 (unknown/expired/foreign session)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ detail: 'Import session not found or has expired — please re-upload' }, 404)
+    );
+    await expect(
+      makeClient().confirmWritingProjectImport('gone', { title: 'X' })
+    ).rejects.toThrow(NotFoundError);
+  });
+
+  it('cancelWritingProjectImport() DELETEs /writing-projects/import/{sessionId}', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await makeClient().cancelWritingProjectImport('s1');
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:8000/writing-projects/import/s1');
+    expect(init.method).toBe('DELETE');
+  });
+});

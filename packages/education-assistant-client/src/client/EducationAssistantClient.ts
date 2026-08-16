@@ -124,6 +124,15 @@ import type {
   WritingProjectListResponse,
   WritingProjectReferencesResponse,
 } from '../types/writing';
+import type {
+  ConfirmWritingProjectImportRequest,
+  WritingProjectImportInspection,
+} from '../types/writingImport';
+import type {
+  CreateWritingProjectFromTemplateRequest,
+  WritingTemplateDetail,
+  WritingTemplateListResponse,
+} from '../types/writingTemplates';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 /**
@@ -2329,6 +2338,122 @@ export class EducationAssistantClient {
       signal: options.signal,
     });
     return data;
+  }
+
+  // --- Milestone 5.4 (LaTeX Templates & Project Import) ---------------
+
+  /**
+   * GET /writing-templates — the curated template gallery. No file
+   * bodies (Part 48) — cheap to call on every visit to the gallery.
+   */
+  async listWritingTemplates(
+    options: RequestOptions = {}
+  ): Promise<WritingTemplateListResponse> {
+    const { data } = await requestJson<WritingTemplateListResponse>(this.context, {
+      method: 'GET',
+      path: '/writing-templates',
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /** GET /writing-templates/{id} — the file tree + root document for a
+   * template's "Preview" screen. */
+  async getWritingTemplate(
+    templateId: string,
+    options: RequestOptions = {}
+  ): Promise<WritingTemplateDetail> {
+    const { data } = await requestJson<WritingTemplateDetail>(this.context, {
+      method: 'GET',
+      path: `/writing-templates/${encodeURIComponent(templateId)}`,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * POST /writing-templates/{id}/create — clones the template's files
+   * into a brand-new, completely normal WritingProject (Part 16: no
+   * template-specific behavior remains after this call returns).
+   */
+  async createWritingProjectFromTemplate(
+    templateId: string,
+    request: CreateWritingProjectFromTemplateRequest,
+    options: RequestOptions = {}
+  ): Promise<WritingProject> {
+    const { data } = await requestJson<WritingProject>(this.context, {
+      method: 'POST',
+      path: `/writing-templates/${encodeURIComponent(templateId)}/create`,
+      body: { title: request.title, description: request.description ?? null },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * POST /writing-projects/import/inspect (multipart) — the ENTIRE
+   * zip-bomb/zip-slip/symlink/etc. security pipeline runs before this
+   * call returns; a rejected archive throws (ValidationError, 422) and
+   * never creates a session. On success, present `files`/`warnings`/
+   * `rootCandidates` for user review — never call
+   * confirmWritingProjectImport() without that review (Part 9).
+   */
+  async inspectWritingProjectImport(
+    file: UploadableFile,
+    options: RequestOptions = {}
+  ): Promise<WritingProjectImportInspection> {
+    const formData = new FormData();
+    appendUploadableFile(formData, 'file', file);
+
+    const { data } = await requestMultipart<WritingProjectImportInspection>(this.context, {
+      method: 'POST',
+      path: '/writing-projects/import/inspect',
+      formData,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * POST /writing-projects/import/{sessionId}/confirm — creates the
+   * project atomically from a previously inspected session (Part 15: the
+   * whole project is created, or nothing is). `rootPath` is required
+   * whenever the inspection had multiple root candidates and none was
+   * preselected; omitting it in that case rejects with a 422
+   * ValidationError. Deletes the session and its staged bytes on
+   * success.
+   */
+  async confirmWritingProjectImport(
+    sessionId: string,
+    request: ConfirmWritingProjectImportRequest,
+    options: RequestOptions = {}
+  ): Promise<WritingProject> {
+    const { data } = await requestJson<WritingProject>(this.context, {
+      method: 'POST',
+      path: `/writing-projects/import/${encodeURIComponent(sessionId)}/confirm`,
+      body: {
+        title: request.title,
+        description: request.description ?? null,
+        root_path: request.rootPath ?? null,
+      },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * DELETE /writing-projects/import/{sessionId} — discards a staged
+   * upload without creating a project (Part 32: no unbounded
+   * accumulation). Safe to call even after the session has already
+   * expired/been confirmed — both cases 404, which callers should treat
+   * as "already gone", not an error worth surfacing.
+   */
+  async cancelWritingProjectImport(sessionId: string, options: RequestOptions = {}): Promise<void> {
+    await requestJson<undefined>(this.context, {
+      method: 'DELETE',
+      path: `/writing-projects/import/${encodeURIComponent(sessionId)}`,
+      signal: options.signal,
+    });
   }
 
   /**

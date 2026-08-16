@@ -1431,6 +1431,118 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/writing-templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Writing Templates
+         * @description Part 48 — same-origin, no file bodies (bounded, cheap even with
+         *     many templates in the registry).
+         */
+        get: operations["list_writing_templates_writing_templates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-templates/{template_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Writing Template */
+        get: operations["get_writing_template_writing_templates__template_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-templates/{template_id}/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create From Template */
+        post: operations["create_from_template_writing_templates__template_id__create_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/import/inspect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Inspect Import
+         * @description Part 5/6/9 — accepts .zip only; the ENTIRE inspection pipeline
+         *     (app/core/writing_project_import.py) runs before anything is staged
+         *     to disk or recorded in the database. A rejected archive (Parts 6-8's
+         *     release-critical categories) never creates a session at all.
+         */
+        post: operations["inspect_import_writing_projects_import_inspect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/import/{session_id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm Import */
+        post: operations["confirm_import_writing_projects_import__session_id__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/import/{session_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Cancel Import */
+        delete: operations["cancel_import_writing_projects_import__session_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/search": {
         parameters: {
             query?: never;
@@ -2274,6 +2386,11 @@ export interface components {
             /** Skipped Document Ids */
             skipped_document_ids?: string[];
         };
+        /** Body_inspect_import_writing_projects_import_inspect_post */
+        Body_inspect_import_writing_projects_import_inspect_post: {
+            /** File */
+            file: string;
+        };
         /** Body_post_document_documents_post */
         Body_post_document_documents_post: {
             /** File */
@@ -2446,6 +2563,15 @@ export interface components {
              */
             source_hash: string;
         };
+        /** ConfirmImportRequest */
+        ConfirmImportRequest: {
+            /** Title */
+            title: string;
+            /** Description */
+            description?: string | null;
+            /** Root Path */
+            root_path?: string | null;
+        };
         /** ConversationDetailResponse */
         ConversationDetailResponse: {
             /** Id */
@@ -2591,6 +2717,13 @@ export interface components {
             /** Note Text */
             note_text?: string | null;
             visual_anchor?: components["schemas"]["HighlightVisualAnchor"] | null;
+        };
+        /** CreateFromTemplateRequest */
+        CreateFromTemplateRequest: {
+            /** Title */
+            title: string;
+            /** Description */
+            description?: string | null;
         };
         /** CreateNotebookRequest */
         CreateNotebookRequest: {
@@ -3421,6 +3554,47 @@ export interface components {
         HighlightVisualAnchor: {
             /** Rects */
             rects: number[][];
+        };
+        /** ImportFilePreviewResponse */
+        ImportFilePreviewResponse: {
+            /** Path */
+            path: string;
+            /** Kind */
+            kind: string;
+            /** Size Bytes */
+            size_bytes: number;
+        };
+        /**
+         * ImportInspectionResponse
+         * @description Part 14 — everything the "review detected files/root document"
+         *     preview screen needs. `session_id` is opaque and ownership-scoped
+         *     (Part 31) — the confirm/cancel calls that follow always re-verify it
+         *     belongs to the calling user.
+         */
+        ImportInspectionResponse: {
+            /** Session Id */
+            session_id: string;
+            /** Suggested Title */
+            suggested_title: string;
+            /** Files */
+            files: components["schemas"]["ImportFilePreviewResponse"][];
+            /** Root Candidates */
+            root_candidates: string[];
+            /** Preselected Root */
+            preselected_root: string | null;
+            /** Warnings */
+            warnings: components["schemas"]["ImportWarningResponse"][];
+            /** Total Size Bytes */
+            total_size_bytes: number;
+            /** Expires At */
+            expires_at: string;
+        };
+        /** ImportWarningResponse */
+        ImportWarningResponse: {
+            /** Path */
+            path: string;
+            /** Reason */
+            reason: string;
         };
         /** LoginRequest */
         LoginRequest: {
@@ -4818,6 +4992,73 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /**
+         * WritingTemplateDetailResponse
+         * @description GET /writing-templates/{id} — includes the file LIST (paths only,
+         *     for the preview UI) but never file bodies over this endpoint; the
+         *     gallery's "Preview" affordance shows structure, never a compiled
+         *     PDF (Part 22: "do not compile every template merely to show gallery
+         *     cards").
+         */
+        WritingTemplateDetailResponse: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description: string;
+            /** Category */
+            category: string;
+            /** License */
+            license: string;
+            /** Source */
+            source: string;
+            /** Version */
+            version: number;
+            /** File Count */
+            file_count: number;
+            /** Root */
+            root: string;
+            /** Files */
+            files: components["schemas"]["WritingTemplateFileResponse"][];
+        };
+        /** WritingTemplateFileResponse */
+        WritingTemplateFileResponse: {
+            /** Path */
+            path: string;
+            /** Kind */
+            kind: string;
+        };
+        /** WritingTemplateListResponse */
+        WritingTemplateListResponse: {
+            /** Templates */
+            templates: components["schemas"]["WritingTemplateSummaryResponse"][];
+            /** Total */
+            total: number;
+        };
+        /**
+         * WritingTemplateSummaryResponse
+         * @description One gallery card — deliberately no file bodies (Part 48: "gallery
+         *     should not load template file bodies eagerly").
+         */
+        WritingTemplateSummaryResponse: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description: string;
+            /** Category */
+            category: string;
+            /** License */
+            license: string;
+            /** Source */
+            source: string;
+            /** Version */
+            version: number;
+            /** File Count */
+            file_count: number;
         };
         /** CreateFolderRequest */
         app__schemas__folders__CreateFolderRequest: {
@@ -7595,6 +7836,210 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["WritingProjectFileMutationResponse"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_writing_templates_writing_templates_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingTemplateListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_writing_template_writing_templates__template_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                template_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingTemplateDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_from_template_writing_templates__template_id__create_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                template_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateFromTemplateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingProjectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    inspect_import_writing_projects_import_inspect_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_inspect_import_writing_projects_import_inspect_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportInspectionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_import_writing_projects_import__session_id__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfirmImportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingProjectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_import_writing_projects_import__session_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

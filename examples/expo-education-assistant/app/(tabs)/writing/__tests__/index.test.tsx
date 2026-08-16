@@ -108,14 +108,6 @@ function archiveWritingProjectRoute(projectId: string, response: unknown): Fetch
   };
 }
 
-function createWritingProjectRoute(response: unknown): FetchRoute {
-  return {
-    method: 'POST',
-    matches: (u) => u.endsWith('/writing-projects'),
-    respond: () => jsonResponse(response, 201),
-  };
-}
-
 function deleteWritingProjectRoute(projectId: string): FetchRoute {
   return {
     method: 'DELETE',
@@ -206,49 +198,12 @@ describe('WritingHomeScreen', () => {
     expect(mockPush).toHaveBeenCalledWith('/writing/w-1');
   });
 
-  it('creating a project POSTs its title and navigates to the new project', async () => {
-    const renderer = await renderScreen([
-      listWritingProjectsRoute([]),
-      createWritingProjectRoute({
-        id: 'w-2',
-        title: 'New Paper',
-        description: null,
-        main_tex_content: '\\documentclass{article}',
-        created_at: '2026-01-01T00:00:00Z',
-        updated_at: '2026-01-01T00:00:00Z',
-      }),
-    ]);
-
-    act(() => {
-      findPressableByLabel(renderer.root, 'New writing project').props.onPress();
-    });
-
-    // Milestone 5.3 — the dashboard now also has a "Search writing
-    // projects" TextInput (also starting at value === ''), so this
-    // locates the create form's title field specifically.
-    const input = renderer.root.find(
-      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'Project title'
-    );
-    act(() => {
-      input.props.onChangeText('New Paper');
-    });
-
-    await act(async () => {
-      findPressableByText(renderer.root, 'Create').props.onPress();
-      await flushAsync();
-    });
-
-    const postCall = (global.fetch as jest.Mock).mock.calls.find(
-      ([url, init]: [string, RequestInit]) =>
-        init?.method === 'POST' && String(url).endsWith('/writing-projects')
-    );
-    expect(postCall).toBeTruthy();
-    expect(JSON.parse(postCall[1].body as string)).toEqual({
-      title: 'New Paper',
-      description: null,
-    });
-    expect(mockPush).toHaveBeenCalledWith('/writing/w-2');
-  });
+  // Milestone 5.4 Part 24 — "+ New writing project" now opens
+  // CreateWritingProjectModal (Blank / EduM8 template / Upload .zip)
+  // instead of an inline title form; the full create-modal flow
+  // (including the Blank-project path this test used to cover directly)
+  // is exercised in index.createModal.test.tsx instead, kept in its own
+  // file per that file's own docstring.
 
   it('deleting a project removes it from the list after confirmation', async () => {
     const originalConfirm = (global as { confirm?: unknown }).confirm;
@@ -298,8 +253,7 @@ describe('WritingHomeScreen', () => {
 
       const searchInput = renderer.root.find(
         (n) =>
-          String(n.type) === 'TextInput' &&
-          n.props.accessibilityLabel === 'Search writing projects'
+          String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'Search writing projects'
       );
       act(() => {
         searchInput.props.onChangeText('climate');

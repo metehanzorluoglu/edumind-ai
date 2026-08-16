@@ -694,6 +694,34 @@ class Settings(BaseSettings):
     # changes, and zero new failure surface for restore.
     writing_project_files_dir: str = "./data/writing-project-files"
 
+    # --- LaTeX Templates & Project Import (Milestone 5.4) ---
+    # Deliberately the SAME `/data`-mounted volume + same "already covered
+    # by oracle-backup.sh with zero script changes" reasoning as
+    # writing_project_files_dir above. Staged ZIP uploads are TEMPORARY
+    # (Part 32: TTL + cleanup on success/cancel/failure/timeout) — placing
+    # them here rather than a container-ephemeral path is still correct
+    # even though they're short-lived, because the M5.3 production
+    # rollout found the ephemeral-vs-persistent distinction is exactly
+    # the kind of thing that's easy to get wrong once and expensive to
+    # discover later; there is no reason to introduce that risk twice.
+    writing_import_staging_dir: str = "./data/writing-import-staging"
+    # How long an uploaded-but-not-yet-confirmed import session survives
+    # before it's eligible for cleanup (Part 32). 30 minutes is generous
+    # enough for a user to review a large project's file-tree preview and
+    # pick a root document without feeling rushed, while still bounding
+    # worst-case staging accumulation to "uploads in the last 30 minutes
+    # that were never confirmed or cancelled."
+    writing_import_session_ttl_minutes: int = Field(default=30, ge=1, le=1440)
+    # Part 6 — release critical archive limits, chosen against this
+    # milestone's own rollout-time disk numbers (101GB free after M5.3's
+    # rollout) and MAX_PROJECT_TOTAL_STORAGE_BYTES (100MB per project,
+    # app/db/models_writing.py) — an imported project must fit the exact
+    # same storage envelope as any other project, so the upload cap sits
+    # comfortably below that (a well-formed LaTeX project's SOURCE is
+    # tiny; the true payload — figures/PDFs — already faces
+    # MAX_BINARY_FILE_BYTES per file inside the archive check itself).
+    writing_import_max_archive_bytes: int = Field(default=30_000_000, ge=1_000_000)
+
     @field_validator("retrieval_min_score", mode="before")
     @classmethod
     def _blank_env_value_means_disabled(cls, value: object) -> object:

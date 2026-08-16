@@ -1,0 +1,18 @@
+{
+  "id": "research-proposal",
+  "name": "Research Proposal",
+  "description": "A research-proposal starter with the sections a funding/thesis-committee proposal typically needs: Aims, Background, Methodology, Timeline, and Budget.",
+  "category": "Research Proposal",
+  "license": "EduM8-authored — free to use and redistribute within EduM8; no external attribution required.",
+  "source": "EduM8",
+  "version": 1,
+  "root": "main.tex",
+  "files": [
+    "main.tex",
+    "sections/aims.tex",
+    "sections/background.tex",
+    "sections/methodology.tex",
+    "sections/timeline.tex",
+    "sections/budget.tex"
+  ]
+}

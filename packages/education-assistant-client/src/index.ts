@@ -127,6 +127,21 @@ export type {
   WritingFileTreeState,
 } from './hooks/useWritingProjectFiles';
 
+export { useWritingTemplates } from './hooks/useWritingTemplates';
+export type {
+  CreateFromTemplateState,
+  UseWritingTemplatesResult,
+  WritingTemplateDetailState,
+  WritingTemplatesListState,
+} from './hooks/useWritingTemplates';
+
+export { useWritingProjectImport } from './hooks/useWritingProjectImport';
+export type {
+  ConfirmWritingProjectImportState,
+  UseWritingProjectImportResult,
+  WritingProjectImportInspectState,
+} from './hooks/useWritingProjectImport';
+
 export {
   useConversationMessages,
   thinkingContextForRequest,
@@ -291,6 +306,19 @@ export type {
   WritingProjectReferencesResponse,
   WritingProjectSummary,
 } from './types/writing';
+export type {
+  CreateWritingProjectFromTemplateRequest,
+  WritingTemplateDetail,
+  WritingTemplateFile,
+  WritingTemplateListResponse,
+  WritingTemplateSummary,
+} from './types/writingTemplates';
+export type {
+  ConfirmWritingProjectImportRequest,
+  ImportFilePreview,
+  ImportWarning,
+  WritingProjectImportInspection,
+} from './types/writingImport';
 export type {
   GenerateImagesRequest,
   GenerateImagesResponse,

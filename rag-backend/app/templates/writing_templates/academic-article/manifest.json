@@ -1,0 +1,18 @@
+{
+  "id": "academic-article",
+  "name": "Academic Article",
+  "description": "A structured, multi-file academic article starter with separate section files (Introduction, Methods, Results, Discussion, Conclusion) already wired together with \\input.",
+  "category": "Article",
+  "license": "EduM8-authored — free to use and redistribute within EduM8; no external attribution required.",
+  "source": "EduM8",
+  "version": 1,
+  "root": "main.tex",
+  "files": [
+    "main.tex",
+    "sections/introduction.tex",
+    "sections/methods.tex",
+    "sections/results.tex",
+    "sections/discussion.tex",
+    "sections/conclusion.tex"
+  ]
+}

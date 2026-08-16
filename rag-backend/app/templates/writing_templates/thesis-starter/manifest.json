@@ -1,0 +1,17 @@
+{
+  "id": "thesis-starter",
+  "name": "Thesis / Dissertation Starter",
+  "description": "A multi-chapter thesis/dissertation starter using the standard report class, with separate chapter files (Introduction, Literature Review, Methodology, Conclusion) already wired together.",
+  "category": "Thesis / Dissertation",
+  "license": "EduM8-authored — free to use and redistribute within EduM8; no external attribution required.",
+  "source": "EduM8",
+  "version": 1,
+  "root": "main.tex",
+  "files": [
+    "main.tex",
+    "chapters/introduction.tex",
+    "chapters/literature-review.tex",
+    "chapters/methodology.tex",
+    "chapters/conclusion.tex"
+  ]
+}

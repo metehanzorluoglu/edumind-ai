@@ -35,10 +35,12 @@ from app.db.projects_repository import ProjectsRepository
 from app.db.research_preference_repository import ResearchPreferenceRepository
 from app.db.scopes_repository import ScopesRepository
 from app.db.session import get_db, get_session_factory
+from app.db.writing_import_sessions_repository import WritingImportSessionsRepository
 from app.db.writing_project_files_repository import WritingProjectFilesRepository
 from app.db.writing_projects_repository import WritingProjectsRepository
 from app.services.attachment_storage import AttachmentStorage
 from app.services.document_file_storage import DocumentFileStorage
+from app.services.writing_import_storage import WritingImportStorage
 from app.services.writing_project_file_storage import WritingProjectFileStorage
 from app.services.vision_service import VisionService
 from app.vectorstore.qdrant_client import QdrantVectorStore
@@ -457,6 +459,30 @@ def get_writing_project_files_repository(db: DBSessionDep) -> WritingProjectFile
 WritingProjectFilesRepositoryDep = Annotated[
     WritingProjectFilesRepository, Depends(get_writing_project_files_repository)
 ]
+
+
+def get_writing_import_sessions_repository(db: DBSessionDep) -> WritingImportSessionsRepository:
+    # Same reasoning as get_documents_repository above: fresh per-request,
+    # never cached across requests.
+    return WritingImportSessionsRepository(db)
+
+
+WritingImportSessionsRepositoryDep = Annotated[
+    WritingImportSessionsRepository, Depends(get_writing_import_sessions_repository)
+]
+
+
+@lru_cache
+def get_writing_import_storage() -> WritingImportStorage:
+    # Milestone 5.4 — see app/services/writing_import_storage.py's
+    # module docstring for why this is a separate instance/directory
+    # from get_writing_project_file_storage() above (staged ZIP bytes
+    # are TEMPORARY, unlike a project's own confirmed asset files).
+    settings = get_settings()
+    return WritingImportStorage(root_dir=settings.writing_import_staging_dir)
+
+
+WritingImportStorageDep = Annotated[WritingImportStorage, Depends(get_writing_import_storage)]
 
 
 def get_scopes_repository(db: DBSessionDep) -> ScopesRepository:

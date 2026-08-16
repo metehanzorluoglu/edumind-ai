@@ -1,0 +1,31 @@
+\documentclass[11pt]{report}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1.25in]{geometry}
+\usepackage{amsmath}
+\usepackage{graphicx}
+
+\title{Thesis Title}
+\author{Author Name}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\tableofcontents
+
+\chapter*{Abstract}
+\addcontentsline{toc}{chapter}{Abstract}
+Write a short summary of the thesis here.
+
+\input{chapters/introduction}
+\input{chapters/literature-review}
+\input{chapters/methodology}
+\input{chapters/conclusion}
+
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}

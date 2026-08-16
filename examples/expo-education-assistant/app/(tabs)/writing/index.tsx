@@ -21,6 +21,7 @@ import { IconButton } from '@/components/ui/IconButton';
 import { Notice } from '@/components/ui/Notice';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { TextField } from '@/components/ui/TextField';
+import { CreateWritingProjectModal } from '@/components/writing/CreateWritingProjectModal';
 import { useClient } from '@/lib/ClientProvider';
 import { formatLibraryDate } from '@/lib/libraryItems';
 import { useTheme, type Theme } from '@/lib/Preferences';
@@ -70,10 +71,7 @@ export default function WritingHomeScreen() {
     duplicateProject,
   } = useWritingProjects(client);
 
-  const [formOpen, setFormOpen] = useState(false);
-  const [title, setTitle] = useState('');
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
+  const [createModalOpen, setCreateModalOpen] = useState(false);
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
   const sortButtonRef = useRef<View>(null);
 
@@ -144,21 +142,9 @@ export default function WritingHomeScreen() {
     }
   }
 
-  async function handleCreate(): Promise<void> {
-    const trimmed = title.trim();
-    if (!trimmed || creating) return;
-    setCreating(true);
-    setCreateError(null);
-    try {
-      const project = await createProject({ title: trimmed });
-      setFormOpen(false);
-      setTitle('');
-      router.push(`/writing/${project.id}`);
-    } catch (error) {
-      setCreateError(error instanceof Error ? error.message : 'Could not create project.');
-    } finally {
-      setCreating(false);
-    }
+  function handleProjectCreated(projectId: string): void {
+    setCreateModalOpen(false);
+    router.push(`/writing/${projectId}`);
   }
 
   function handleDelete(project: WritingProjectSummary): void {
@@ -256,7 +242,7 @@ export default function WritingHomeScreen() {
             accessibilityLabel="New writing project"
             variant="primary"
             size="sm"
-            onPress={() => setFormOpen((prev) => !prev)}
+            onPress={() => setCreateModalOpen(true)}
           />
         }
       />
@@ -291,43 +277,6 @@ export default function WritingHomeScreen() {
           </View>
         </View>
 
-        {formOpen && (
-          <View style={styles.newForm}>
-            <TextField
-              label="Project title"
-              value={title}
-              onChangeText={setTitle}
-              placeholder="e.g. Laser Cutting in Design Education"
-              editable={!creating}
-              autoFocus
-              onSubmitEditing={() => void handleCreate()}
-              returnKeyType="done"
-            />
-            {createError && <Notice tone="danger" body={createError} />}
-            <View style={styles.newFormActions}>
-              <Button
-                label="Cancel"
-                variant="ghost"
-                size="sm"
-                disabled={creating}
-                onPress={() => {
-                  setFormOpen(false);
-                  setTitle('');
-                  setCreateError(null);
-                }}
-              />
-              <Button
-                label="Create"
-                variant="primary"
-                size="sm"
-                loading={creating}
-                disabled={!title.trim()}
-                onPress={() => void handleCreate()}
-              />
-            </View>
-          </View>
-        )}
-
         {listState.status === 'loading' && (
           <ActivityIndicator style={styles.spinner} color={theme.accent} />
         )}
@@ -339,7 +288,7 @@ export default function WritingHomeScreen() {
             onAction={() => refresh()}
           />
         )}
-        {listState.status === 'success' && projects.length === 0 && !formOpen && (
+        {listState.status === 'success' && projects.length === 0 && (
           <View style={styles.emptyWrap}>
             {search ? (
               <EmptyState
@@ -354,9 +303,9 @@ export default function WritingHomeScreen() {
             ) : (
               <EmptyState
                 title="No writing projects yet."
-                description="Start a LaTeX manuscript, connect it to your library references, and cite them by their stable key as you write."
+                description="Start from a blank project, an EduM8 template, or upload a LaTeX project's .zip — then connect it to your library references and cite them by their stable key as you write."
                 actionLabel="+ New project"
-                onAction={() => setFormOpen(true)}
+                onAction={() => setCreateModalOpen(true)}
               />
             )}
           </View>
@@ -449,6 +398,13 @@ export default function WritingHomeScreen() {
         onDismiss={() => setSortMenuOpen(false)}
         anchorRef={sortButtonRef}
       />
+
+      <CreateWritingProjectModal
+        visible={createModalOpen}
+        onClose={() => setCreateModalOpen(false)}
+        createBlankProject={createProject}
+        onCreated={handleProjectCreated}
+      />
     </View>
   );
 }
@@ -468,16 +424,6 @@ function buildStyles(theme: Theme) {
     },
     searchWrap: { flex: 1, minWidth: 220, maxWidth: 360 },
     toolbarActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-    newForm: {
-      gap: 10,
-      padding: 14,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: theme.border,
-      borderRadius: theme.radius.md,
-      backgroundColor: theme.card,
-      maxWidth: 420,
-    },
-    newFormActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
     grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
     card: {
       flexGrow: 1,
@@ -498,7 +444,12 @@ function buildStyles(theme: Theme) {
     },
     cardTitlePressable: { flex: 1 },
     cardTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-    cardTitle: { fontSize: 15, fontFamily: theme.fonts.bodySemibold, color: theme.text, flexShrink: 1 },
+    cardTitle: {
+      fontSize: 15,
+      fontFamily: theme.fonts.bodySemibold,
+      color: theme.text,
+      flexShrink: 1,
+    },
     cardDescription: { fontSize: 12.5, fontFamily: theme.fonts.body, color: theme.subtext },
     cardMeta: { fontSize: 12, fontFamily: theme.fonts.body, color: theme.faint },
   });

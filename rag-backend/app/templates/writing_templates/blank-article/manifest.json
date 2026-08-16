@@ -1,0 +1,11 @@
+{
+  "id": "blank-article",
+  "name": "Blank Article",
+  "description": "A minimal single-file article — the same starting point as a brand-new blank project, available from the template gallery for users who prefer picking it there.",
+  "category": "Article",
+  "license": "EduM8-authored — free to use and redistribute within EduM8; no external attribution required.",
+  "source": "EduM8",
+  "version": 1,
+  "root": "main.tex",
+  "files": ["main.tex"]
+}

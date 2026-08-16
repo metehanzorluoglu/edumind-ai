@@ -226,3 +226,81 @@ class WritingProjectFile(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+# ---------------------------------------------------------------------
+# Milestone 5.4 (LaTeX Templates & Project Import)
+# ---------------------------------------------------------------------
+
+#: Part 6 — release critical. Chosen conservatively: a well-formed LaTeX
+#: project rarely has more than a few dozen files; MAX_FILES_PER_PROJECT
+#: (150) is the real, already-established ceiling this must never exceed
+#: anyway (an import that fits inside a project's own file-count budget
+#: cannot itself be the source of a "too many files" DoS).
+MAX_IMPORT_ENTRIES = MAX_FILES_PER_PROJECT
+#: Total uncompressed bytes across every entry combined must fit the
+#: SAME per-project storage envelope any other project obeys (Part 30 —
+#: "import must obey M5.3 quotas... do not allow archive import to
+#: bypass regular upload limits").
+MAX_IMPORT_TOTAL_UNCOMPRESSED_BYTES = MAX_PROJECT_TOTAL_STORAGE_BYTES
+#: A single archive entry's uncompressed size must fit the same per-file
+#: ceiling a directly-uploaded file already faces (kind-dependent, see
+#: writing_project_import.py — this constant is the binary ceiling,
+#: the larger of the two, used as the archive-entry cap before kind is
+#: even known).
+MAX_IMPORT_SINGLE_ENTRY_BYTES = MAX_BINARY_FILE_BYTES
+#: Part 6 — a classic zip-bomb signature is one entry whose uncompressed
+#: size is enormously larger than its compressed size. Real LaTeX
+#: source/figures/PDFs never approach this ratio even in a worst case
+#: (highly repetitive plaintext still rarely exceeds ~20-30x); 100x is
+#: comfortably above any legitimate file while still catching a
+#: deliberately pathological one (e.g. a run of a single repeated byte).
+MAX_IMPORT_COMPRESSION_RATIO = 100
+#: Part 6 — the compressed UPLOAD itself is bounded independently of the
+#: uncompressed-content checks below (Settings.writing_import_max_archive_bytes
+#: — kept there, not here, since it's the one import limit an operator
+#: might reasonably want to tune per-deployment without a code change,
+#: matching every other per-deployment tunable already living in
+#: app/config.py rather than app/db/models_writing.py).
+MAX_IMPORT_DEPTH = MAX_FOLDER_DEPTH
+
+
+class WritingImportSession(Base):
+    """Milestone 5.4 Part 9/31/32 — the short-lived record of an
+    uploaded-but-not-yet-confirmed project ZIP: "upload -> inspect ->
+    preview -> user confirms -> project created", never a partial
+    project created from an unconfirmed upload.
+
+    Deliberately a real DB row (backed by the SAME persistent SQLite
+    file every other table uses), never an in-process dict — the M5.3
+    production rollout found, the hard way, that the backend runs 2
+    uvicorn workers and an in-memory cache (app/core/
+    compile_artifact_cache.py's own documented tradeoff) is invisible
+    across them; a user's `inspect` call and their later `confirm` call
+    have no guarantee of landing on the same worker, so an in-memory
+    session store would silently 404 roughly half the time. The actual
+    uploaded ZIP bytes are similarly staged on the persistent
+    `writing_import_staging_dir` (via WritingImportStorage, mirroring
+    WritingProjectFileStorage's own on-disk convention exactly), never
+    held only in one worker's memory.
+
+    `inspection_json` is the fully-computed ImportInspection result
+    (app/core/writing_project_import.py), serialized once at upload time
+    so `confirm` never needs to re-parse the ZIP from scratch — it reads
+    this column, re-opens the staged archive only to pull the actual
+    file bytes for the entries the inspection already validated."""
+
+    __tablename__ = "writing_import_sessions"
+    __table_args__ = (Index("ix_writing_import_sessions_expires_at", "expires_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(300), nullable=False)
+    inspection_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
