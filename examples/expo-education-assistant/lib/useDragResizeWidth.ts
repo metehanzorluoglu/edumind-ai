@@ -10,6 +10,17 @@ export interface UseDragResizeWidthResult {
    * doesn't declare onMouseDown, but react-native-web forwards it:
    * `{...({ onMouseDown: handleMouseDown } as object)}`. */
   handleMouseDown: (e: { clientX: number }) => void;
+  /** Milestone 5.5.1 Part 10 — keyboard equivalent of the drag gesture,
+   * for a control that already carries WAI-ARIA slider semantics
+   * (role="slider" + aria-valuenow/min/max, wired by callers). Left/Right
+   * arrows step by `step` (default 16px, a deliberately coarse-but-usable
+   * increment — small enough for real control, large enough that it
+   * doesn't take dozens of presses to matter); Home/End jump to min/max.
+   * Commits immediately via onResizeEnd (there's no "in-progress drag"
+   * concept for a single discrete key press) and calls preventDefault
+   * ONLY for the keys it actually handles, so this never interferes with
+   * ordinary Tab/Shift+Tab focus movement through the handle. */
+  handleKeyDown: (e: { key: string; preventDefault: () => void }) => void;
 }
 
 /**
@@ -33,8 +44,10 @@ export function useDragResizeWidth(params: {
   max: number;
   onResizeEnd: (width: number) => void;
   invert?: boolean;
+  /** Milestone 5.5.1 Part 10 — px per arrow-key press. Default 16. */
+  step?: number;
 }): UseDragResizeWidthResult {
-  const { width, min, max, onResizeEnd, invert = false } = params;
+  const { width, min, max, onResizeEnd, invert = false, step = 16 } = params;
   const [dragWidth, setDragWidth] = useState<number | null>(null);
   const draggingRef = useRef(false);
   const startXRef = useRef(0);
@@ -92,5 +105,28 @@ export function useDragResizeWidth(params: {
     startWidthRef.current = effectiveWidth;
   }
 
-  return { effectiveWidth, handleMouseDown };
+  // Milestone 5.5.1 Part 10 — ArrowRight/Up always WIDEN (increase the
+  // value a screen reader hears via aria-valuenow), ArrowLeft/Down always
+  // NARROW, regardless of `invert` — `invert` only flips which physical
+  // drag direction maps to which value change for the mouse gesture; the
+  // value itself (and therefore the natural keyboard convention for it)
+  // doesn't change meaning based on which edge the panel is anchored to.
+  function handleKeyDown(e: { key: string; preventDefault: () => void }): void {
+    let next: number | null = null;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
+      next = Math.min(max, effectiveWidth + step);
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') {
+      next = Math.max(min, effectiveWidth - step);
+    } else if (e.key === 'Home') {
+      next = min;
+    } else if (e.key === 'End') {
+      next = max;
+    } else {
+      return;
+    }
+    e.preventDefault();
+    if (next !== effectiveWidth) onResizeEnd(next);
+  }
+
+  return { effectiveWidth, handleMouseDown, handleKeyDown };
 }

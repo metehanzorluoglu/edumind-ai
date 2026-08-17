@@ -25,32 +25,48 @@ afterAll(() => {
   Platform.OS = originalOS;
 });
 
+type KeyDownFn = (e: { key: string; preventDefault: () => void }) => void;
+
 function Harness({
   onResizeEnd,
   onMouseDownRef,
+  onKeyDownRef,
+  width = 320,
 }: {
   onResizeEnd: (w: number) => void;
   onMouseDownRef: { current: ((e: { clientX: number }) => void) | null };
+  onKeyDownRef?: { current: KeyDownFn | null };
+  width?: number;
 }) {
-  const { handleMouseDown } = useDragResizeWidth({
-    width: 320,
+  const { handleMouseDown, handleKeyDown } = useDragResizeWidth({
+    width,
     min: 240,
     max: 480,
     onResizeEnd,
   });
   useEffect(() => {
     onMouseDownRef.current = handleMouseDown;
+    if (onKeyDownRef) onKeyDownRef.current = handleKeyDown;
   });
   return <View />;
 }
 
 function renderWithAct(
   onResizeEnd: (w: number) => void,
-  onMouseDownRef: { current: ((e: { clientX: number }) => void) | null }
+  onMouseDownRef: { current: ((e: { clientX: number }) => void) | null },
+  onKeyDownRef?: { current: KeyDownFn | null },
+  width?: number
 ): ReactTestRenderer {
   let renderer!: ReactTestRenderer;
   act(() => {
-    renderer = create(<Harness onResizeEnd={onResizeEnd} onMouseDownRef={onMouseDownRef} />);
+    renderer = create(
+      <Harness
+        onResizeEnd={onResizeEnd}
+        onMouseDownRef={onMouseDownRef}
+        onKeyDownRef={onKeyDownRef}
+        width={width}
+      />
+    );
   });
   return renderer;
 }
@@ -125,5 +141,87 @@ describe('useDragResizeWidth', () => {
       window.dispatchEvent(new MouseEvent('mouseup'));
     });
     expect(onResizeEnd).toHaveBeenCalledTimes(1);
+  });
+
+  // Milestone 5.5.1 Part 10 — a role="slider" control needs to actually
+  // be keyboard-operable, not just carry the ARIA attributes.
+  describe('keyboard resize (Part 10)', () => {
+    function fakeKeyEvent(key: string): { key: string; preventDefault: jest.Mock } {
+      return { key, preventDefault: jest.fn() };
+    }
+
+    it('ArrowRight widens by one step and ArrowLeft narrows by one step', () => {
+      // A single stale-width call each — real callers (e.g. [id].tsx) feed
+      // onResizeEnd's result back in as the next `width` prop via
+      // Preferences; this harness's `width` prop is static within one
+      // `renderWithAct` call, so each assertion here starts fresh from the
+      // same committed 320 rather than chaining off the previous result.
+      const onResizeEndA = jest.fn();
+      const keyRefA: { current: KeyDownFn | null } = { current: null };
+      renderWithAct(onResizeEndA, { current: null }, keyRefA, 320);
+      act(() => keyRefA.current!(fakeKeyEvent('ArrowRight')));
+      expect(onResizeEndA).toHaveBeenLastCalledWith(336); // default step 16
+
+      const onResizeEndB = jest.fn();
+      const keyRefB: { current: KeyDownFn | null } = { current: null };
+      renderWithAct(onResizeEndB, { current: null }, keyRefB, 320);
+      act(() => keyRefB.current!(fakeKeyEvent('ArrowLeft')));
+      expect(onResizeEndB).toHaveBeenLastCalledWith(304);
+    });
+
+    it('ArrowUp/ArrowDown behave the same as ArrowRight/ArrowLeft', () => {
+      const onResizeEndA = jest.fn();
+      const keyRefA: { current: KeyDownFn | null } = { current: null };
+      renderWithAct(onResizeEndA, { current: null }, keyRefA, 320);
+      act(() => keyRefA.current!(fakeKeyEvent('ArrowUp')));
+      expect(onResizeEndA).toHaveBeenLastCalledWith(336);
+
+      const onResizeEndB = jest.fn();
+      const keyRefB: { current: KeyDownFn | null } = { current: null };
+      renderWithAct(onResizeEndB, { current: null }, keyRefB, 320);
+      act(() => keyRefB.current!(fakeKeyEvent('ArrowDown')));
+      expect(onResizeEndB).toHaveBeenLastCalledWith(304);
+    });
+
+    it('Home jumps to min, End jumps to max, both clamped', () => {
+      const onResizeEnd = jest.fn();
+      const mouseRef: { current: ((e: { clientX: number }) => void) | null } = { current: null };
+      const keyRef: { current: KeyDownFn | null } = { current: null };
+      renderWithAct(onResizeEnd, mouseRef, keyRef, 320);
+
+      act(() => keyRef.current!(fakeKeyEvent('Home')));
+      expect(onResizeEnd).toHaveBeenLastCalledWith(240);
+      act(() => keyRef.current!(fakeKeyEvent('End')));
+      expect(onResizeEnd).toHaveBeenLastCalledWith(480);
+    });
+
+    it('clamps at the boundary instead of going out of range', () => {
+      const onResizeEnd = jest.fn();
+      const mouseRef: { current: ((e: { clientX: number }) => void) | null } = { current: null };
+      const keyRef: { current: KeyDownFn | null } = { current: null };
+      // Start already at max.
+      renderWithAct(onResizeEnd, mouseRef, keyRef, 480);
+
+      act(() => keyRef.current!(fakeKeyEvent('ArrowRight')));
+      // Already at max and staying there — the hook only calls onResizeEnd
+      // when the value actually changes.
+      expect(onResizeEnd).not.toHaveBeenCalled();
+    });
+
+    it('calls preventDefault only for keys it actually handles', () => {
+      const onResizeEnd = jest.fn();
+      const mouseRef: { current: ((e: { clientX: number }) => void) | null } = { current: null };
+      const keyRef: { current: KeyDownFn | null } = { current: null };
+      renderWithAct(onResizeEnd, mouseRef, keyRef, 320);
+
+      const tabEvent = fakeKeyEvent('Tab');
+      act(() => keyRef.current!(tabEvent));
+      expect(tabEvent.preventDefault).not.toHaveBeenCalled();
+      expect(onResizeEnd).not.toHaveBeenCalled();
+
+      const rightEvent = fakeKeyEvent('ArrowRight');
+      act(() => keyRef.current!(rightEvent));
+      expect(rightEvent.preventDefault).toHaveBeenCalled();
+    });
   });
 });

@@ -879,12 +879,20 @@ export default function WritingProjectEditorScreen() {
           // the correct role="slider" instead, plumbed with the
           // required aria-valuenow/min/max below.
           accessibilityRole="adjustable"
-          accessibilityLabel="Resize Research panel"
+          accessibilityLabel="Resize Research panel (arrow keys to adjust)"
           style={styles.panelResizeHandle}
-          // react-native-web forwards raw mouse events on View for web
-          // targets — same pattern as AppDrawer.tsx's own resize handle.
+          // Milestone 5.5.1 Part 10 — focusable so Tab can reach it (RN's
+          // cross-platform prop; RNW maps it to tabIndex=0), plus a raw
+          // onKeyDown cast for the arrow-key resize — same "RN doesn't
+          // declare this DOM prop but RNW forwards it" cast idiom as
+          // onMouseDown right below.
+          focusable
+          // react-native-web forwards raw mouse/keyboard events on View
+          // for web targets — same pattern as AppDrawer.tsx's own resize
+          // handle.
           {...({
             onMouseDown: researchPanelResize.handleMouseDown,
+            onKeyDown: researchPanelResize.handleKeyDown,
             'aria-valuenow': Math.round(researchPanelResize.effectiveWidth),
             'aria-valuemin': WRITING_RESEARCH_PANEL_WIDTH_MIN,
             'aria-valuemax': WRITING_RESEARCH_PANEL_WIDTH_MAX,
@@ -907,12 +915,15 @@ export default function WritingProjectEditorScreen() {
           // Milestone 5.5 Part 30 — see the Research panel handle's
           // identical comment above.
           accessibilityRole="adjustable"
-          accessibilityLabel="Resize Preview panel"
+          accessibilityLabel="Resize Preview panel (arrow keys to adjust)"
           style={styles.previewResizeHandle}
-          // react-native-web forwards raw mouse events on View for web
-          // targets — same pattern as AppDrawer.tsx's own resize handle.
+          focusable
+          // react-native-web forwards raw mouse/keyboard events on View
+          // for web targets — same pattern as AppDrawer.tsx's own resize
+          // handle.
           {...({
             onMouseDown: previewPanelResize.handleMouseDown,
+            onKeyDown: previewPanelResize.handleKeyDown,
             'aria-valuenow': Math.round(previewPanelResize.effectiveWidth),
             'aria-valuemin': WRITING_PREVIEW_PANEL_WIDTH_MIN,
             'aria-valuemax': WRITING_PREVIEW_PANEL_WIDTH_MAX,
