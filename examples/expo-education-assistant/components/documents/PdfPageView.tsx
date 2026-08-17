@@ -83,10 +83,29 @@ export function PdfPageView({
 
       const canvas = canvasRef.current;
       if (canvas) {
-        canvas.width = vp.width;
-        canvas.height = vp.height;
+        // Milestone 5.5.2 Part 38-40 — real-browser HiDPI root cause:
+        // the canvas's BACKING-STORE resolution (canvas.width/height,
+        // a DOM property) was set to the SAME number as its CSS
+        // display size (`size.width/height`, set via inline style
+        // below), a 1:1 canvas-pixel-to-CSS-pixel ratio. On any
+        // devicePixelRatio > 1 display (virtually all modern laptop/
+        // phone screens), the browser then upscales that lower-
+        // resolution bitmap to fill the same visual space — this is
+        // the actual blur, not a rendering-quality setting anywhere in
+        // pdf.js itself. The fix is pdf.js's own documented HiDPI
+        // recipe: render into a backing store `devicePixelRatio` times
+        // larger than the logical viewport, and scale the 2D context
+        // by the same factor so pdf.js's drawing commands (written in
+        // the viewport's own logical coordinate space) fill it
+        // correctly — the CSS display size (`size`, below) is
+        // deliberately UNCHANGED, so this only adds real pixel density,
+        // never changes layout.
+        const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+        canvas.width = Math.round(vp.width * dpr);
+        canvas.height = Math.round(vp.height * dpr);
         const ctx = canvas.getContext('2d');
         if (ctx) {
+          ctx.scale(dpr, dpr);
           await page.render({ canvasContext: ctx, viewport: vp }).promise;
         }
       }

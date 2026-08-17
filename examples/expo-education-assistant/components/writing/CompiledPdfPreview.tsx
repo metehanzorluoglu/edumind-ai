@@ -233,12 +233,22 @@ function CompiledPdfPage({
       if (cancelled) return;
       const viewport = page.getViewport({ scale });
       const canvas = document.createElement('canvas');
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
+      // Milestone 5.5.2 Part 42-43 — the exact same HiDPI defect as
+      // Reader's PdfPageView (independently implemented, same root
+      // cause: canvas.width/height, the backing-store resolution, was
+      // set 1:1 with the CSS display size, so any devicePixelRatio > 1
+      // display upscaled a lower-resolution bitmap). Same fix: render
+      // into a devicePixelRatio-times-larger backing store, scale the
+      // context to match, keep the CSS size at the logical viewport —
+      // see PdfPageView.tsx's own comment for the full explanation.
+      const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+      canvas.width = Math.round(viewport.width * dpr);
+      canvas.height = Math.round(viewport.height * dpr);
       canvas.style.width = `${viewport.width}px`;
       canvas.style.height = `${viewport.height}px`;
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
+      ctx.scale(dpr, dpr);
       host.innerHTML = '';
       host.appendChild(canvas);
       await page.render({ canvasContext: ctx, viewport }).promise;
