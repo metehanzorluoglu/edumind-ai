@@ -368,6 +368,11 @@ export default function WritingProjectEditorScreen() {
   // end-of-content fallbacks — "go to line" always wins the one time
   // it's actually requested.
   const pendingDiagnosticLineRef = useRef<number | null>(null);
+  // Milestone 5.5.3 — "go to line" full-line flash highlight (see
+  // LatexCodeEditor's own `flashLine` prop docstring). A fresh `token`
+  // on every request (even a repeat of the same line) is what makes
+  // the effect that consumes it re-fire every time, not just the first.
+  const [flashLine, setFlashLine] = useState<{ line: number; token: number } | null>(null);
 
   // Milestone 5.2.1 real-browser finding (Part 7/24), generalized by
   // Milestone 5.3 Part 13 to whichever file is active — `selection`
@@ -397,6 +402,11 @@ export default function WritingProjectEditorScreen() {
       if (pendingLine != null) {
         pendingDiagnosticLineRef.current = null;
         next = offsetForLine(activeFileContent, pendingLine);
+        // Milestone 5.5.3 — the cross-file leg of "go to line": the
+        // same-file leg (handleOpenDiagnostic below) flashes
+        // immediately since no load is needed; this is the other half,
+        // once the target file has actually finished loading.
+        setFlashLine({ line: pendingLine, token: Date.now() });
       } else {
         const remembered = activeFileId ? cursorMemoryRef.current[activeFileId] : undefined;
         const inRange =
@@ -586,6 +596,7 @@ export default function WritingProjectEditorScreen() {
         const next = offsetForLine(activeFileContent, diagnostic.line);
         setSelection(next);
         cursorMemoryRef.current[node.id] = next;
+        setFlashLine({ line: diagnostic.line, token: Date.now() });
       }
     } else {
       if (diagnostic.line != null) pendingDiagnosticLineRef.current = diagnostic.line;
@@ -1439,6 +1450,7 @@ export default function WritingProjectEditorScreen() {
                 theme={theme}
                 placeholder="\\documentclass{article}…"
                 autocompleteData={autocompleteData}
+                flashLine={flashLine}
                 accessibilityLabel="LaTeX source editor"
                 // Milestone 5.5 Part 12 — see handleShortcutKey's own
                 // comment: a raw DOM <textarea> doesn't stop keydown from

@@ -46,6 +46,15 @@ interface LatexCodeEditorProps {
   }) => void;
   autocompleteData: AutocompleteData;
   accessibilityLabel?: string;
+  /** Milestone 5.5.3 — "go to line" (compiler diagnostics, Part 14's
+   * own file/line navigation) previously only moved the caret/scroll —
+   * manual testing found that alone doesn't read as "this is the line
+   * the compiler referred to." Set this (with a freshly-changed
+   * `token` — e.g. `Date.now()` — on every navigation, even to the
+   * SAME line twice in a row) to flash-highlight that whole line for a
+   * few seconds. `line` is 1-indexed, matching every other line number
+   * in this app (diagnostics, offsetForLine). */
+  flashLine?: { line: number; token: number } | null;
 }
 
 const DROPDOWN_WIDTH = 280;
@@ -85,6 +94,7 @@ export const LatexCodeEditor = forwardRef<LatexCodeEditorHandle, LatexCodeEditor
       onShortcutKeyDown,
       autocompleteData,
       accessibilityLabel,
+      flashLine,
     } = props;
 
     const nativeInputRef = useRef<TextInput>(null);
@@ -328,6 +338,54 @@ export const LatexCodeEditor = forwardRef<LatexCodeEditorHandle, LatexCodeEditor
       setDropdownPos({ top, left });
     }, [textareaId, autocompleteOpen, selection.start]);
 
+    // Milestone 5.5.3 — "go to line" full-line flash highlight. A
+    // full-width horizontal band at the target line's Y position (not
+    // an underline of just its text) reads unambiguously as "this
+    // whole line," matching most IDEs' own "current line" convention.
+    // Self-contained: given just a 1-indexed line number, it finds that
+    // line's own start offset from the CURRENT `value` — no
+    // coordination needed with the caller beyond "here's a line
+    // number and a fresh token."
+    const [flashRect, setFlashRect] = useState<{
+      top: number;
+      width: number;
+      height: number;
+    } | null>(null);
+    const [flashVisible, setFlashVisible] = useState(false);
+    useLayoutEffect(() => {
+      if (Platform.OS !== 'web' || !flashLine || typeof document === 'undefined') return;
+      const el = document.getElementById(textareaId) as HTMLTextAreaElement | null;
+      const wrapEl = wrapperRef.current;
+      if (!el || !wrapEl) return;
+      const lines = value.split('\n');
+      const targetIndex = Math.max(0, Math.min(flashLine.line - 1, lines.length - 1));
+      let lineStart = 0;
+      for (let i = 0; i < targetIndex; i += 1) lineStart += lines[i]!.length + 1;
+      const caret = getCaretCoordinates(el, lineStart);
+      const taRect = el.getBoundingClientRect();
+      const wrapRect = wrapEl.getBoundingClientRect();
+      setFlashRect({
+        top: taRect.top - wrapRect.top + caret.top - el.scrollTop,
+        width: wrapRect.width,
+        height: caret.height,
+      });
+      setFlashVisible(true);
+      // Visible long enough to orient ("keep the highlight visible long
+      // enough for the user to orient themselves"), then fades via the
+      // CSS transition on opacity below, then unmounts once fully
+      // transparent.
+      const fadeTimer = setTimeout(() => setFlashVisible(false), 1600);
+      const removeTimer = setTimeout(() => setFlashRect(null), 2200);
+      return () => {
+        clearTimeout(fadeTimer);
+        clearTimeout(removeTimer);
+      };
+      // Deliberately keyed on the token, not `value` — this must fire
+      // exactly once per navigation request, including a re-request of
+      // the SAME line, never re-run on every keystroke.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [flashLine?.token, textareaId]);
+
     if (Platform.OS !== 'web') {
       return (
         <TextInput
@@ -399,6 +457,23 @@ export const LatexCodeEditor = forwardRef<LatexCodeEditorHandle, LatexCodeEditor
           overflow: 'hidden',
         }}
       >
+        {flashRect && (
+          <div
+            aria-hidden="true"
+            style={{
+              position: 'absolute',
+              left: 0,
+              top: flashRect.top,
+              width: flashRect.width,
+              height: flashRect.height,
+              backgroundColor: theme.accentSoft,
+              opacity: flashVisible ? 1 : 0,
+              transition: 'opacity 600ms ease-out',
+              pointerEvents: 'none',
+              zIndex: 0,
+            }}
+          />
+        )}
         <Editor
           value={value}
           onValueChange={onValueChange}
