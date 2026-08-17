@@ -347,6 +347,42 @@ describe('WritingHomeScreen', () => {
     expect(mockPush).toHaveBeenCalledWith('/writing/w-copy');
   });
 
+  it('Milestone 5.5 Part 20 — "Rename" PATCHes the project title and refreshes the list', async () => {
+    const renderer = await renderScreen([
+      listWritingProjectsRoute([PROJECT]),
+      {
+        method: 'PATCH',
+        matches: (u) => u.endsWith('/writing-projects/w-1'),
+        respond: () => jsonResponse({ ...PROJECT, title: 'Renamed Paper' }),
+      },
+    ]);
+
+    act(() => {
+      findPressableByLabel(renderer.root, 'Options for Laser Cutting Paper').props.onPress();
+    });
+    act(() => {
+      findPressableByText(renderer.root, 'Rename').props.onPress();
+    });
+
+    const titleField = renderer.root.find(
+      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'Project title'
+    );
+    act(() => {
+      titleField.props.onChangeText('Renamed Paper');
+    });
+    await act(async () => {
+      findPressableByLabel(renderer.root, 'Save').props.onPress();
+      await flushAsync();
+    });
+
+    const renameCall = (global.fetch as jest.Mock).mock.calls.find(
+      ([url, init]: [string, RequestInit]) =>
+        init?.method === 'PATCH' && String(url).endsWith('/writing-projects/w-1')
+    );
+    expect(renameCall).toBeTruthy();
+    expect(JSON.parse(renameCall![1].body as string)).toMatchObject({ title: 'Renamed Paper' });
+  });
+
   it('Milestone 5.3 Part 30 — "Archive" POSTs to the archive endpoint and removes the project from the active list', async () => {
     const renderer = await renderScreen([
       listWritingProjectsRoute([PROJECT]),

@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -12,7 +13,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { MoreIcon, SortIcon } from '@/components/icons';
+import { CloseIcon, MoreIcon, SortIcon } from '@/components/icons';
 import { ActionSheet, type ActionSheetItem } from '@/components/ui/ActionSheet';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -23,6 +24,10 @@ import { PageHeader } from '@/components/ui/PageHeader';
 import { TextField } from '@/components/ui/TextField';
 import { CreateWritingProjectModal } from '@/components/writing/CreateWritingProjectModal';
 import { useClient } from '@/lib/ClientProvider';
+import {
+  downloadWritingProjectExport,
+  safeWritingProjectExportFilename,
+} from '@/lib/downloadWritingProjectExport';
 import { formatLibraryDate } from '@/lib/libraryItems';
 import { useTheme, type Theme } from '@/lib/Preferences';
 
@@ -78,6 +83,18 @@ export default function WritingHomeScreen() {
   const [menuFor, setMenuFor] = useState<WritingProjectSummary | null>(null);
   const menuAnchorRefs = useRef<Map<string, View>>(new Map());
   const [menuAnchor, setMenuAnchor] = useState<{ current: View | null } | null>(null);
+
+  // Milestone 5.5 Part 20 — Rename/Export used to live only inside the
+  // project editor's own header menu; the dashboard card menu had
+  // open/duplicate/archive/delete but not these two. Both reuse existing
+  // client methods directly (no new endpoint) — the same ones
+  // [id].tsx's own Rename/Export actions call.
+  const [renamingProject, setRenamingProject] = useState<WritingProjectSummary | null>(null);
+  const [renameText, setRenameText] = useState('');
+  const [renaming, setRenaming] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [exportingId, setExportingId] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   // Milestone 5.3 Part 28 — restore the persisted sort preference once
   // on mount, before the first refresh() fires, so the very first list
@@ -177,16 +194,68 @@ export default function WritingHomeScreen() {
     }
   }
 
+  function handleOpenRename(project: WritingProjectSummary): void {
+    setMenuFor(null);
+    setRenameError(null);
+    setRenameText(project.title);
+    setRenamingProject(project);
+  }
+
+  async function handleRenameSave(): Promise<void> {
+    const project = renamingProject;
+    const trimmed = renameText.trim();
+    if (!project || !trimmed || renaming) return;
+    setRenaming(true);
+    setRenameError(null);
+    try {
+      await client.updateWritingProject(project.id, { title: trimmed });
+      setRenamingProject(null);
+      refresh();
+    } catch (error) {
+      setRenameError(error instanceof Error ? error.message : 'Could not rename this project.');
+    } finally {
+      setRenaming(false);
+    }
+  }
+
+  async function handleExport(project: WritingProjectSummary): Promise<void> {
+    setMenuFor(null);
+    setExportError(null);
+    setExportingId(project.id);
+    try {
+      await downloadWritingProjectExport(
+        client,
+        project.id,
+        safeWritingProjectExportFilename(project.title)
+      );
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : 'Could not export this project.');
+    } finally {
+      setExportingId(null);
+    }
+  }
+
   // Milestone 5.3 Part 30 — archive is a real, reversible action; the
   // menu offers "Restore" instead of "Archive" when already viewing the
   // archived list (there is nothing to archive further).
   const menuItems: ActionSheetItem[] = menuFor
     ? [
         {
+          key: 'rename',
+          label: 'Rename',
+          onPress: () => handleOpenRename(menuFor),
+        },
+        {
           key: 'duplicate',
           label: 'Duplicate',
           loading: duplicateStates[menuFor.id]?.status === 'working',
           onPress: () => void handleDuplicate(menuFor),
+        },
+        {
+          key: 'export',
+          label: 'Export',
+          loading: exportingId === menuFor.id,
+          onPress: () => void handleExport(menuFor),
         },
         showArchived
           ? {
@@ -276,6 +345,8 @@ export default function WritingHomeScreen() {
             />
           </View>
         </View>
+
+        {exportError && <Notice tone="danger" body={exportError} />}
 
         {listState.status === 'loading' && (
           <ActivityIndicator style={styles.spinner} color={theme.accent} />
@@ -405,6 +476,60 @@ export default function WritingHomeScreen() {
         createBlankProject={createProject}
         onCreated={handleProjectCreated}
       />
+
+      <Modal
+        visible={renamingProject !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setRenamingProject(null)}
+      >
+        <View style={styles.renameOverlay}>
+          <Pressable
+            style={styles.renameBackdrop}
+            onPress={() => setRenamingProject(null)}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel rename"
+          />
+          <View style={styles.renamePanel}>
+            <View style={styles.renameHeader}>
+              <Text style={styles.renameTitle}>Rename project</Text>
+              <IconButton
+                label="Close"
+                icon={<CloseIcon size={16} color={theme.faint} />}
+                size="sm"
+                onPress={() => setRenamingProject(null)}
+              />
+            </View>
+            <TextField
+              label="Project title"
+              value={renameText}
+              onChangeText={setRenameText}
+              editable={!renaming}
+              autoFocus
+              onSubmitEditing={() => void handleRenameSave()}
+              returnKeyType="done"
+            />
+            {renameError && <Notice tone="danger" body={renameError} />}
+            <View style={styles.renameActions}>
+              <Button
+                label="Cancel"
+                variant="ghost"
+                size="sm"
+                disabled={renaming}
+                onPress={() => setRenamingProject(null)}
+              />
+              <Button
+                label="Save"
+                variant="primary"
+                size="sm"
+                loading={renaming}
+                disabled={!renameText.trim()}
+                onPress={() => void handleRenameSave()}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -452,5 +577,30 @@ function buildStyles(theme: Theme) {
     },
     cardDescription: { fontSize: 12.5, fontFamily: theme.fonts.body, color: theme.subtext },
     cardMeta: { fontSize: 12, fontFamily: theme.fonts.body, color: theme.faint },
+    renameOverlay: {
+      ...StyleSheet.absoluteFillObject,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: 45,
+      elevation: 45,
+    },
+    renameBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: theme.overlay },
+    renamePanel: {
+      width: 420,
+      maxWidth: '92%',
+      backgroundColor: theme.card,
+      borderRadius: theme.radius.lg,
+      padding: 16,
+      gap: 10,
+    },
+    renameHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 8,
+    },
+    renameTitle: { fontSize: 15, fontFamily: theme.fonts.display, color: theme.text },
+    renameActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
   });
 }

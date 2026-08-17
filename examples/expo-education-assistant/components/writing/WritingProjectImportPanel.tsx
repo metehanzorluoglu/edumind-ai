@@ -113,8 +113,7 @@ export function WritingProjectImportPanel({ onCreated, onCancel }: WritingProjec
     return (
       <View style={styles.pickWrap}>
         <Text style={styles.helper}>
-          Have a LaTeX project or template from Overleaf, your university, or a publisher? Upload
-          its .zip here.
+          Import a .zip from your university, publisher, Overleaf, or another LaTeX editor.
         </Text>
         {pickError && <Notice tone="danger" body={pickError} />}
         <Pressable

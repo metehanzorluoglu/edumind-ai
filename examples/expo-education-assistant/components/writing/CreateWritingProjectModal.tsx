@@ -142,7 +142,7 @@ export function CreateWritingProjectModal({
                   theme={theme}
                   icon={<UploadIcon size={22} color={theme.accent} />}
                   title="Upload .zip"
-                  description="Import a LaTeX project or template from Overleaf or elsewhere."
+                  description="Import a .zip from your university, publisher, Overleaf, or another LaTeX editor."
                   onPress={() => setMode('upload')}
                 />
               </View>
