@@ -253,10 +253,26 @@ export default function WritingProjectEditorScreen() {
   // open — the References/Notes panels stay usable to browse even
   // while previewing a figure, but an insert action simply does nothing
   // until the researcher switches back to a text file.
+  //
+  // Milestone 5.5 Part 5 — `selection` doubles as BOTH this function's
+  // insertion point AND, via manuscriptSelectionText below, the passage
+  // Ask EduM8 treats as read-only AI context. Root-cause of the M5.4
+  // production finding ("Add-to-Notebook/evidence actions may not
+  // render consistently when manuscript-selection context is
+  // simultaneously active"): the evidence actions always rendered fine
+  // — what actually broke was Insert citation/note treating a genuine
+  // (non-collapsed) manuscript selection as a range to OVERWRITE,
+  // silently deleting the very passage the researcher selected to keep
+  // in place while asking about it. Insertion therefore always happens
+  // at `selection.end` — the tail of whatever is selected — so a
+  // collapsed cursor (start === end, the ordinary case) behaves exactly
+  // as before, and a real selection is always preserved, never
+  // consumed, by these actions.
   function insertAtCursor(text: string): void {
     if (!isActiveFileEditable) return;
-    const before = content.slice(0, selection.start);
-    const after = content.slice(selection.end);
+    const insertionPoint = selection.end;
+    const before = content.slice(0, insertionPoint);
+    const after = content.slice(insertionPoint);
     const next = before + text + after;
     const nextCursor = before.length + text.length;
     setActiveFileContent(next);

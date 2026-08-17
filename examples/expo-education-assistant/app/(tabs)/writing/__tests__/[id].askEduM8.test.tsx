@@ -643,6 +643,62 @@ describe('Writing workspace — Ask EduM8 (Milestone 5.2)', () => {
     expect(editorAfter.props.value).not.toBe(contentBefore);
   });
 
+  it('Insert citation preserves an active manuscript selection instead of overwriting it (Part 5 regression)', async () => {
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute([REFERENCE]),
+      createConversationRoute(),
+      putDocumentsRoute(),
+      patchScopeRoute(),
+      messagesRoute(),
+      bibtexRoute(),
+      patchProjectRoute(),
+    ]);
+    const editor = renderer.root.find(
+      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
+    );
+    const contentBefore: string = editor.props.value;
+    const selectedText = contentBefore.slice(0, 15);
+    expect(selectedText.length).toBe(15);
+
+    // A genuine (non-collapsed) manuscript selection, exactly like a
+    // researcher highlighting a passage to ask EduM8 about it.
+    act(() => {
+      editor.props.onSelectionChange({ nativeEvent: { selection: { start: 0, end: 15 } } });
+    });
+
+    openAskPanel(renderer);
+    await askQuestion(renderer, 'What evidence supports this claim?');
+
+    // Coexistence (Part 5's literal wording): every evidence action still
+    // renders and is clickable while the manuscript selection is active —
+    // never hidden or disabled by it.
+    expect(findPressableWithText(renderer.root, 'Open source')).toBeTruthy();
+    expect(findPressableWithText(renderer.root, 'Add to notebook')).toBeTruthy();
+    expect(findPressableWithText(renderer.root, 'Insert citation')).toBeTruthy();
+
+    await act(async () => {
+      findPressableWithText(renderer.root, 'Insert citation').props.onPress();
+      await flushAsync();
+    });
+
+    act(() => {
+      findPressableByLabel(renderer.root, 'Editor').props.onPress();
+    });
+    const editorAfter = renderer.root.find(
+      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
+    );
+    // Root cause: insertAtCursor used to slice out [selection.start,
+    // selection.end) and replace it — silently deleting the very passage
+    // selected as AI context. The selection must survive verbatim, and
+    // the citation must land after it, never spliced into the middle.
+    expect(editorAfter.props.value).toContain(selectedText);
+    expect(editorAfter.props.value).toContain('\\cite{Doe2020Laser}');
+    expect(editorAfter.props.value.indexOf('\\cite{Doe2020Laser}')).toBeGreaterThanOrEqual(
+      editorAfter.props.value.indexOf(selectedText) + selectedText.length
+    );
+  });
+
   it('"Add reference" is offered (not "Insert citation") for evidence not yet a project reference, and never auto-adds it', async () => {
     const renderer = await renderScreen([
       getProjectRoute(),
