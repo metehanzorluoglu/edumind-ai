@@ -1,6 +1,16 @@
 import type { WritingProjectFileNode, WritingProjectFileTree } from 'education-assistant-client';
-import { useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+} from 'react-native';
+import { getSessionNavState, setSessionNavState } from '@/lib/sessionNavCache';
 import {
   ChevronIcon,
   FileIcon,
@@ -64,6 +74,13 @@ export interface WritingFileTreeProps {
   onMove: (fileId: string, newParentId: string | null) => Promise<unknown>;
   onDelete: (fileId: string) => Promise<unknown>;
   onSetRoot: (fileId: string) => Promise<unknown>;
+  /** Milestone 5.5.3 — "File tree scroll restoration": a session-scoped
+   * (lib/sessionNavCache.ts — never the database, never long-term
+   * Preferences) key, typically derived from the project id, so
+   * scrolling deep into a large tree and then navigating away and back
+   * doesn't reset it all the way to the top. Omit to disable
+   * restoration entirely (e.g. while the tree hasn't loaded yet). */
+  scrollRestoreKey?: string | null;
 }
 
 type PendingForm =
@@ -95,10 +112,13 @@ export function WritingFileTree({
   onMove,
   onDelete,
   onSetRoot,
+  scrollRestoreKey,
 }: WritingFileTreeProps) {
   const theme = useTheme();
   const styles = useMemo(() => buildStyles(theme), [theme]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const scrollRestoredRef = useRef<string | null>(null);
+  const scrollRef = useRef<ScrollView>(null);
   const [menuFileId, setMenuFileId] = useState<string | null>(null);
   const [pendingForm, setPendingForm] = useState<PendingForm | null>(null);
   const [formValue, setFormValue] = useState('');
@@ -109,11 +129,44 @@ export function WritingFileTree({
 
   const rows = tree ? flatten(tree.files, null, 0, expanded) : [];
 
+  // Milestone 5.5.3 — "File tree scroll restoration": restores this
+  // tree's scroll offset AND which folders were expanded, both from
+  // the session-scoped nav cache (lib/sessionNavCache.ts — never the
+  // database, never Preferences), the first time a tree is available
+  // for a given scrollRestoreKey. Runs once per key (scrollRestoredRef)
+  // so it never fights the user's own subsequent scrolling/expanding.
+  useEffect(() => {
+    if (!scrollRestoreKey || !tree) return;
+    if (scrollRestoredRef.current === scrollRestoreKey) return;
+    scrollRestoredRef.current = scrollRestoreKey;
+    const savedExpanded = getSessionNavState<string[]>(`${scrollRestoreKey}:expanded`);
+    if (savedExpanded && savedExpanded.length > 0) {
+      setExpanded(new Set(savedExpanded));
+    }
+    const savedY = getSessionNavState<number>(`${scrollRestoreKey}:scrollY`);
+    if (typeof savedY === 'number' && savedY > 0) {
+      // Wait a tick so the just-restored (possibly re-expanded) rows
+      // are actually laid out — scrolling to an offset before that
+      // content exists is a no-op.
+      requestAnimationFrame(() => {
+        scrollRef.current?.scrollTo({ y: savedY, animated: false });
+      });
+    }
+  }, [scrollRestoreKey, tree]);
+
+  function handleScroll(event: NativeSyntheticEvent<NativeScrollEvent>): void {
+    if (!scrollRestoreKey) return;
+    setSessionNavState(`${scrollRestoreKey}:scrollY`, event.nativeEvent.contentOffset.y);
+  }
+
   function toggleExpanded(folderId: string): void {
     setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(folderId)) next.delete(folderId);
       else next.add(folderId);
+      if (scrollRestoreKey) {
+        setSessionNavState(`${scrollRestoreKey}:expanded`, Array.from(next));
+      }
       return next;
     });
   }
@@ -345,7 +398,13 @@ export function WritingFileTree({
           scrolls — the toolbar/usage/inline-form/move-picker above stay
           always visible, matching "Research controls / Project Files
           controls / -- scrollable file tree --". */}
-      <ScrollView style={styles.rowsScroll} contentContainerStyle={styles.rowsScrollContent}>
+      <ScrollView
+        ref={scrollRef}
+        style={styles.rowsScroll}
+        contentContainerStyle={styles.rowsScrollContent}
+        onScroll={handleScroll}
+        scrollEventThrottle={200}
+      >
         {rows.map(({ node, depth }) => {
           const isActive = node.id === activeFileId;
           return (

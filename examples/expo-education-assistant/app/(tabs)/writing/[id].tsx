@@ -1019,6 +1019,7 @@ export default function WritingProjectEditorScreen() {
             onMove={moveFile}
             onDelete={deleteFile}
             onSetRoot={setRootFile}
+            scrollRestoreKey={id ? `writing-filetree-scroll:${id}` : null}
           />
         </View>
         <View
