@@ -165,6 +165,31 @@ export const LatexCodeEditor = forwardRef<LatexCodeEditorHandle, LatexCodeEditor
       el?.setAttribute('aria-label', accessibilityLabel);
     }, [textareaId, accessibilityLabel]);
 
+    // Milestone 5.5.3 — real-browser validation (mouse wheel positioned
+    // directly over the textarea, on a document long enough to actually
+    // need scrolling) found react-simple-code-editor's OWN default
+    // textarea style sets `overflow-y: hidden`. That does not disable
+    // scrolling outright — keyboard cursor movement past the fold and
+    // direct `el.scrollTop =` assignment both still worked, confirmed by
+    // testing each independently — but it DOES suppress the browser's
+    // native wheel-to-scroll gesture specifically, which is how most
+    // people actually try to scroll a text area. This is a real,
+    // separate defect from Part 1's highlight-overlay desync (the two
+    // look similar — "the editor doesn't scroll right" — but have
+    // different causes: that one was the highlighted <pre> layer
+    // failing to follow an ALREADY-scrolling textarea; this one is the
+    // textarea itself refusing the wheel gesture in the first place).
+    // The library exposes no prop to override this (its own `style`
+    // prop, per its source, only ever reaches the outer wrapping div —
+    // see the aria-label effect's own comment above for the same
+    // constraint), so it's set directly on the real DOM node here,
+    // matching every other imperative fix in this file.
+    useEffect(() => {
+      if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+      const el = document.getElementById(textareaId) as HTMLTextAreaElement | null;
+      if (el) el.style.overflowY = 'auto';
+    }, [textareaId]);
+
     // Milestone 5.5.2 Part 1 — real-browser validation with a document
     // long enough to actually scroll (M5.5.1's own testing never used
     // one) found the root cause of the reported "typed characters don't
