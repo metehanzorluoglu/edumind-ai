@@ -137,7 +137,15 @@ export function AddToNotebookPicker({
                   {busy ? (
                     <ActivityIndicator size="small" color={theme.accent} />
                   ) : isMember ? (
-                    <CheckIcon size={14} color={theme.accent} />
+                    // Milestone 5.5 Part 27 — "Added ✓", not just a bare
+                    // icon: this picker deliberately stays open after an
+                    // add (Part 27: multi-notebook adds in one sitting),
+                    // so each row needs to read unambiguously as "already
+                    // done" at a glance, not merely "has some icon."
+                    <View style={styles.addedBadge}>
+                      <Text style={styles.addedBadgeText}>Added</Text>
+                      <CheckIcon size={12} color={theme.accent} />
+                    </View>
                   ) : null}
                 </Pressable>
               );
@@ -181,6 +189,19 @@ export function AddToNotebookPicker({
               onPress={() => setNewFormOpen(true)}
             />
           )}
+
+          {/* Milestone 5.5 Part 27 — an explicit, intentional way to
+              finish, alongside (never instead of) the existing backdrop/X
+              close: this picker deliberately never auto-closes on its own
+              after an add, since the whole point is supporting multiple
+              notebooks in one sitting (Part 9/10's own docstring). */}
+          <Button
+            label="Done"
+            variant="primary"
+            size="sm"
+            onPress={onClose}
+            style={styles.doneButton}
+          />
         </View>
       </View>
     </Modal>
@@ -225,7 +246,10 @@ function buildStyles(theme: Theme) {
       borderRadius: theme.radius.sm,
     },
     rowLabel: { fontSize: 13, fontFamily: theme.fonts.body, color: theme.text },
+    addedBadge: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+    addedBadgeText: { fontSize: 11.5, fontFamily: theme.fonts.bodySemibold, color: theme.accent },
     newForm: { gap: 8, marginTop: 4 },
     newFormActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
+    doneButton: { marginTop: 4, alignSelf: 'flex-end' },
   });
 }
