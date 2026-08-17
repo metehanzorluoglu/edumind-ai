@@ -1,7 +1,14 @@
 import type { WritingProjectFileNode, WritingProjectFileTree } from 'education-assistant-client';
 import { useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
-import { ChevronIcon, FileIcon, FolderIcon, MoreIcon, PlusIcon, UploadIcon } from '@/components/icons';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  ChevronIcon,
+  FileIcon,
+  FolderIcon,
+  MoreIcon,
+  PlusIcon,
+  UploadIcon,
+} from '@/components/icons';
 import { ActionSheet, type ActionSheetItem } from '@/components/ui/ActionSheet';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -169,7 +176,9 @@ export function WritingFileTree({
     try {
       await onSetRoot(node.id);
     } catch (error) {
-      setRowError(error instanceof Error ? error.message : 'Could not set this file as the root document.');
+      setRowError(
+        error instanceof Error ? error.message : 'Could not set this file as the root document.'
+      );
     }
   }
 
@@ -263,37 +272,46 @@ export function WritingFileTree({
       {loadError && <Notice tone="danger" body={loadError} />}
       {rowError && <Notice tone="danger" body={rowError} />}
 
-      {pendingForm && (pendingForm.kind === 'create-folder' || pendingForm.kind === 'create-file' || pendingForm.kind === 'rename') && (
-        <View style={styles.inlineForm}>
-          <TextField
-            label={
-              pendingForm.kind === 'create-folder'
-                ? 'New folder name'
-                : pendingForm.kind === 'create-file'
-                  ? 'New file name (.tex)'
-                  : 'New name'
-            }
-            value={formValue}
-            onChangeText={setFormValue}
-            autoFocus
-            editable={!formBusy}
-            onSubmitEditing={() => void submitForm()}
-            returnKeyType="done"
-          />
-          {formError && <Notice tone="danger" body={formError} />}
-          <View style={styles.inlineFormActions}>
-            <Button label="Cancel" variant="ghost" size="sm" disabled={formBusy} onPress={cancelForm} />
-            <Button
-              label={formBusy ? 'Saving…' : 'Save'}
-              variant="primary"
-              size="sm"
-              loading={formBusy}
-              disabled={!formValue.trim()}
-              onPress={() => void submitForm()}
+      {pendingForm &&
+        (pendingForm.kind === 'create-folder' ||
+          pendingForm.kind === 'create-file' ||
+          pendingForm.kind === 'rename') && (
+          <View style={styles.inlineForm}>
+            <TextField
+              label={
+                pendingForm.kind === 'create-folder'
+                  ? 'New folder name'
+                  : pendingForm.kind === 'create-file'
+                    ? 'New file name (.tex)'
+                    : 'New name'
+              }
+              value={formValue}
+              onChangeText={setFormValue}
+              autoFocus
+              editable={!formBusy}
+              onSubmitEditing={() => void submitForm()}
+              returnKeyType="done"
             />
+            {formError && <Notice tone="danger" body={formError} />}
+            <View style={styles.inlineFormActions}>
+              <Button
+                label="Cancel"
+                variant="ghost"
+                size="sm"
+                disabled={formBusy}
+                onPress={cancelForm}
+              />
+              <Button
+                label={formBusy ? 'Saving…' : 'Save'}
+                variant="primary"
+                size="sm"
+                loading={formBusy}
+                disabled={!formValue.trim()}
+                onPress={() => void submitForm()}
+              />
+            </View>
           </View>
-        </View>
-      )}
+        )}
 
       {pendingForm?.kind === 'move' && tree && (
         <MoveFilePicker
@@ -318,7 +336,16 @@ export function WritingFileTree({
         />
       )}
 
-      <View>
+      {/* Milestone 5.5.3 — real-browser testing with the actual UNLV
+          fixture (14 files) found this tree had no scroll boundary of
+          its own at all: `container` below never set `flex: 1`, so the
+          tree just grew to its full content height, pushing everything
+          below it (and eventually the whole workspace) taller than the
+          viewport instead of scrolling internally. Only the ROWS region
+          scrolls — the toolbar/usage/inline-form/move-picker above stay
+          always visible, matching "Research controls / Project Files
+          controls / -- scrollable file tree --". */}
+      <ScrollView style={styles.rowsScroll} contentContainerStyle={styles.rowsScrollContent}>
         {rows.map(({ node, depth }) => {
           const isActive = node.id === activeFileId;
           return (
@@ -389,7 +416,7 @@ export function WritingFileTree({
             </Pressable>
           </View>
         ))}
-      </View>
+      </ScrollView>
 
       <ActionSheet
         visible={menuFileId !== null}
@@ -473,7 +500,18 @@ function MoveFilePicker({
 
 function buildStyles(theme: Theme) {
   return StyleSheet.create({
-    container: { gap: 6 },
+    // Milestone 5.5.3 — `flex: 1, minHeight: 0` is what actually lets
+    // `rowsScroll` below claim "whatever height this component's OWN
+    // parent gives it" instead of growing to fit content — the classic
+    // "flex child + missing minHeight: 0" gap (a flex item's default
+    // min-height is `auto`, i.e. "at least as tall as my content,"
+    // which silently defeats a `flex: 1` sibling's own attempt to
+    // shrink it). WritingFileTree's parent (the Research panel's
+    // "project" tab body in [id].tsx) already has its own `flex: 1`, so
+    // this is the one missing link in that chain.
+    container: { flex: 1, minHeight: 0, gap: 6 },
+    rowsScroll: { flex: 1, minHeight: 0 },
+    rowsScrollContent: { gap: 0 },
     toolbar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
     toolbarActions: { flexDirection: 'row', gap: 2 },
     sectionLabel: {
@@ -494,7 +532,7 @@ function buildStyles(theme: Theme) {
       borderRadius: theme.radius.sm,
     },
     rowMain: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, paddingVertical: 2 },
-    rowMainActive: { },
+    rowMainActive: {},
     rowLabel: { fontSize: 12.5, fontFamily: theme.fonts.mono, color: theme.text, flexShrink: 1 },
     inlineForm: {
       gap: 8,
