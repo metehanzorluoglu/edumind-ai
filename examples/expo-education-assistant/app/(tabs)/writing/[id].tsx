@@ -12,6 +12,7 @@ import {
   Alert,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -1108,7 +1109,20 @@ export default function WritingProjectEditorScreen() {
       )}
 
       {!isWide && (
-        <View style={styles.mobileTabs}>
+        // Milestone 5.5 Part 29 — real-browser validation at 390×844
+        // caught this row squeezing 5-6 equal-width (flex: 1) tabs into
+        // one line: "Ask EduM8" had no room and wrapped onto a second
+        // line inside its own cell while "Preview"/"References" crowded
+        // together, reading as broken rather than just dense. A
+        // horizontally-scrolling strip (same ScrollView-horizontal
+        // idiom as Breadcrumbs.tsx/search.tsx's filter chips) lets each
+        // tab keep its natural, unwrapped width instead.
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.mobileTabsScroll}
+          contentContainerStyle={styles.mobileTabs}
+        >
           <MobileTabButton
             label="Editor"
             active={mobileTab === 'editor'}
@@ -1150,7 +1164,7 @@ export default function WritingProjectEditorScreen() {
             active={mobileTab === 'ask'}
             onPress={() => setMobileTab('ask')}
           />
-        </View>
+        </ScrollView>
       )}
 
       <View style={styles.body}>
@@ -1353,7 +1367,11 @@ const panelTabStyles = StyleSheet.create({
 });
 
 const mobileTabStyles = StyleSheet.create({
-  tab: { flex: 1, alignItems: 'center', paddingVertical: 8, borderRadius: 8 },
+  // Milestone 5.5 Part 29 — no more `flex: 1`: with the strip now
+  // horizontally scrollable, each tab should size to its own label
+  // ("Ask EduM8" needs more room than "Notes") rather than all six
+  // splitting equal width and wrapping the longest ones.
+  tab: { alignItems: 'center', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8 },
   tabText: { fontSize: 12.5 },
 });
 
@@ -1403,8 +1421,17 @@ function buildStyles(theme: Theme) {
     },
     renameField: { flex: 1, maxWidth: 360 },
     errorBar: { paddingHorizontal: 24, paddingTop: 10 },
+    // Milestone 5.5 Part 29 — `mobileTabsScroll` is the ScrollView's own
+    // `style` (flexGrow: 0 stops it stretching to fill the remaining
+    // column height it's now sitting in, which — before this was added —
+    // blew the active tab's background pill up to fill most of the
+    // screen); `mobileTabs` stays its `contentContainerStyle`, with
+    // `alignItems: 'center'` so the row's cross-axis doesn't default to
+    // 'stretch' and re-introduce the same problem.
+    mobileTabsScroll: { flexGrow: 0, flexShrink: 0 },
     mobileTabs: {
       flexDirection: 'row',
+      alignItems: 'center',
       gap: 6,
       paddingHorizontal: 24,
       paddingVertical: 10,
