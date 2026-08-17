@@ -165,6 +165,46 @@ export const LatexCodeEditor = forwardRef<LatexCodeEditorHandle, LatexCodeEditor
       el?.setAttribute('aria-label', accessibilityLabel);
     }, [textareaId, accessibilityLabel]);
 
+    // Milestone 5.5.2 Part 1 — real-browser validation with a document
+    // long enough to actually scroll (M5.5.1's own testing never used
+    // one) found the root cause of the reported "typed characters don't
+    // appear where the caret is shown" / highlighted-vs-editable-text
+    // divergence: react-simple-code-editor overlays a highlighted <pre>
+    // UNDER the real (transparent-text) <textarea>, but never syncs the
+    // <pre>'s scrollTop/scrollLeft to the textarea's own — confirmed by
+    // reading its source (no scroll listener anywhere in the package).
+    // Scrolling the textarea (mouse wheel, arrow keys past the fold,
+    // clicking a line off-screen) leaves the highlighted layer frozen
+    // wherever it last was, so the visible (pre-rendered) text and the
+    // real caret position drift apart by exactly the missed scroll
+    // distance — the textarea itself was never miscomputing anything.
+    // This is the library's own well-known integration requirement for
+    // ANY consumer with scrollable content, not a coordinate offset to
+    // patch around.
+    useEffect(() => {
+      if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+      const el = document.getElementById(textareaId) as HTMLTextAreaElement | null;
+      const wrapEl = wrapperRef.current;
+      if (!el || !wrapEl) return;
+      const pre = wrapEl.querySelector('pre') as HTMLElement | null;
+      if (!pre) return;
+      // The <pre> has no `overflow`/fixed-height of its own — it's a
+      // plain block sized to its FULL content height (confirmed via
+      // real-browser inspection: a long document's <pre> measured
+      // several thousand px tall), simply clipped by this wrapper's own
+      // `overflow: hidden`. It is therefore NOT a scroll container —
+      // setting `pre.scrollTop` is a silent no-op. Shifting it with a
+      // transform achieves the same visual effect (the correct slice of
+      // the tall, pre-rendered highlighted content lines up with
+      // whatever the textarea's real internal scroll position is).
+      const sync = (): void => {
+        pre.style.transform = `translate(${-el.scrollLeft}px, ${-el.scrollTop}px)`;
+      };
+      sync();
+      el.addEventListener('scroll', sync);
+      return () => el.removeEventListener('scroll', sync);
+    }, [textareaId]);
+
     // Real-browser validation (Part 11) caught a genuine race here: the
     // original guard below compared the incoming `selection` PROP
     // against the DOM's CURRENT (real-time) selection, on the
