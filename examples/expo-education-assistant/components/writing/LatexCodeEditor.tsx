@@ -135,6 +135,30 @@ export const LatexCodeEditor = forwardRef<LatexCodeEditorHandle, LatexCodeEditor
     const autocompleteOpen =
       autocompleteMatch !== null && autocompleteMatch.key !== dismissedContextKey;
 
+    // Milestone 5.5.3 — line-number gutter, similar in principle to
+    // Overleaf. Width expands with the actual line count (never a
+    // fixed guess) so it stays correctly sized from a 10-line file up
+    // through 1,000+ lines without ever clipping a digit. ~7.8px is
+    // this editor's own monospace digit width at font-size 13 — a
+    // measured constant, not calculated per-render (avoids a DOM
+    // measurement on every keystroke for what only ever changes when
+    // the digit COUNT changes, i.e. crossing a power of ten).
+    const lineCount = useMemo(() => value.split('\n').length, [value]);
+    const gutterWidth = useMemo(
+      () => Math.max(32, Math.ceil(Math.log10(lineCount + 1)) * 8 + 24),
+      [lineCount]
+    );
+    // A single `white-space: pre` text block (ONE DOM text node) rather
+    // than one element per line — real files run to 1,000+ lines, and
+    // a per-line <div> would mean that many extra DOM nodes recreated
+    // on every keystroke. `textAlign: 'right'` right-aligns each
+    // newline-delimited row within the block on its own, no per-row
+    // markup needed for that either.
+    const gutterText = useMemo(
+      () => Array.from({ length: lineCount }, (_, i) => i + 1).join('\n'),
+      [lineCount]
+    );
+
     useEffect(() => {
       setSelectedSuggestionIndex(0);
     }, [autocompleteMatch?.key]);
@@ -223,6 +247,14 @@ export const LatexCodeEditor = forwardRef<LatexCodeEditorHandle, LatexCodeEditor
       if (!el || !wrapEl) return;
       const pre = wrapEl.querySelector('pre') as HTMLElement | null;
       if (!pre) return;
+      // Milestone 5.5.3 — the line-number gutter (below) is driven by
+      // this SAME scroll-sync mechanism, not an independently
+      // scrolling text copy of its own: one real scroll source (the
+      // textarea), transformed onto every layer that needs to visually
+      // track it. Only the vertical component applies to the gutter —
+      // it's pinned to the wrapper's own left edge and must never
+      // shift when a long line scrolls the textarea horizontally.
+      const gutter = wrapEl.querySelector('[data-latex-gutter-lines]') as HTMLElement | null;
       // The <pre> has no `overflow`/fixed-height of its own — it's a
       // plain block sized to its FULL content height (confirmed via
       // real-browser inspection: a long document's <pre> measured
@@ -234,6 +266,7 @@ export const LatexCodeEditor = forwardRef<LatexCodeEditorHandle, LatexCodeEditor
       // whatever the textarea's real internal scroll position is).
       const sync = (): void => {
         pre.style.transform = `translate(${-el.scrollLeft}px, ${-el.scrollTop}px)`;
+        if (gutter) gutter.style.transform = `translateY(${-el.scrollTop}px)`;
       };
       sync();
       el.addEventListener('scroll', sync);
@@ -474,6 +507,46 @@ export const LatexCodeEditor = forwardRef<LatexCodeEditorHandle, LatexCodeEditor
             }}
           />
         )}
+        {/* Milestone 5.5.3 — the line-number gutter. Opaque (its own
+            background) and a higher z-index than the flash-highlight
+            band above, so a flashed line's tint never bleeds into the
+            gutter's own numbers oddly. Scroll-synced by the SAME
+            effect that syncs the highlighted <pre> layer (see its own
+            comment) via `[data-latex-gutter-lines]` — never an
+            independently scrolling copy. */}
+        <div
+          aria-hidden="true"
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: gutterWidth,
+            overflow: 'hidden',
+            backgroundColor: theme.card,
+            borderRightWidth: 1,
+            borderRightColor: theme.border,
+            borderRightStyle: 'solid',
+            zIndex: 2,
+            pointerEvents: 'none',
+          }}
+        >
+          <div
+            data-latex-gutter-lines
+            style={{
+              paddingTop: 16,
+              paddingRight: 8,
+              whiteSpace: 'pre',
+              fontSize: 13,
+              fontFamily: theme.fonts.mono,
+              lineHeight: '20px',
+              color: theme.faint,
+              textAlign: 'right',
+            }}
+          >
+            {gutterText}
+          </div>
+        </div>
         <Editor
           value={value}
           onValueChange={onValueChange}
@@ -481,7 +554,7 @@ export const LatexCodeEditor = forwardRef<LatexCodeEditorHandle, LatexCodeEditor
           disabled={!editable}
           textareaId={textareaId}
           placeholder={placeholder}
-          padding={16}
+          padding={{ top: 16, right: 16, bottom: 16, left: gutterWidth + 8 }}
           tabSize={2}
           // react-simple-code-editor's Props type extends BOTH
           // HTMLAttributes<HTMLDivElement> (its own wrapping div) AND
