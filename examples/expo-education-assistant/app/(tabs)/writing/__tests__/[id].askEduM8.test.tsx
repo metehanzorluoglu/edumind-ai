@@ -90,7 +90,11 @@ function findPressableWithText(root: ReactTestInstance, text: string): ReactTest
 interface FetchRoute {
   method: string;
   matches: (url: string) => boolean;
-  respond: () => Response;
+  // `init` is optional and unused by almost every route — only the
+  // streaming-cancellation tests (Part 2) need the real request's signal,
+  // to wire a synthetic stream's abort behavior the way a real browser
+  // fetch would (aborting cancels the in-flight body read).
+  respond: (init?: RequestInit) => Response;
 }
 
 function installFetchMock(routes: FetchRoute[]) {
@@ -99,7 +103,7 @@ function installFetchMock(routes: FetchRoute[]) {
     const method = (init?.method ?? 'GET').toUpperCase();
     const route = routes.find((r) => r.method === method && r.matches(url));
     if (!route) throw new Error(`Unhandled ${method} ${url} in this test`);
-    return route.respond();
+    return route.respond(init);
   }) as unknown as typeof fetch;
 }
 
@@ -793,5 +797,191 @@ describe('Writing workspace — Ask EduM8 (Milestone 5.2)', () => {
     const messageBody = bodyOf(findCall('POST', '/conversations/conv-1/messages'));
     expect(String(messageBody.query)).toContain('Regarding this passage from my manuscript');
     expect(String(messageBody.query)).not.toContain('the selected source');
+  });
+
+  // --- Milestone 5.5 Part 2/3/4: streaming ---------------------------
+
+  /** Unlike messagesRoute() above (whose stream closes synchronously, so
+   * flushAsync() always lands past 'done'), this leaves the stream open
+   * so a test can assert genuinely mid-flight UI state (Stop control,
+   * partial answer text, no evidence yet) before choosing when to send
+   * the rest of the events. */
+  function controllableMessagesRoute(conversationId = 'conv-1'): {
+    route: FetchRoute;
+    push: (event: unknown) => void;
+    close: () => void;
+  } {
+    const encoder = new TextEncoder();
+    let controllerRef!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controllerRef = controller;
+      },
+    });
+    return {
+      route: {
+        method: 'POST',
+        matches: (u) => u.endsWith(`/conversations/${conversationId}/messages`),
+        respond: (init) => {
+          // A real browser aborts the in-flight body read when its fetch's
+          // AbortSignal fires — this synthetic stream has no such wiring
+          // on its own (it isn't a real network response), so this
+          // reproduces that one platform behavior explicitly, the same
+          // way it would really happen in production. A plain Error (not
+          // DOMException) deliberately: real browsers'/Node's AbortError
+          // DOMException extends Error (confirmed against both), but the
+          // jest-expo test environment's own DOMException polyfill does
+          // not — an Error with name 'AbortError' is what stream.ts's
+          // isAbortError() actually checks for (`instanceof Error &&
+          // name === 'AbortError'`) and is the realistic shape in every
+          // runtime this app actually ships to.
+          init?.signal?.addEventListener('abort', () => {
+            try {
+              controllerRef.error(Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' }));
+            } catch {
+              // already closed/errored — fine, nothing left to cancel
+            }
+          });
+          return new Response(stream, {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' },
+          });
+        },
+      },
+      push: (event) => controllerRef.enqueue(encoder.encode(sseEvent(event))),
+      close: () => controllerRef.close(),
+    };
+  }
+
+  function cancelMessageRoute(conversationId = 'conv-1'): FetchRoute {
+    return {
+      method: 'POST',
+      matches: (u) => u.includes(`/conversations/${conversationId}/messages/`) && u.endsWith('/cancel'),
+      respond: () => new Response(null, { status: 204 }),
+    };
+  }
+
+  it('streams the answer progressively, showing Stop while live and no evidence until sources arrive (Part 2/3/4)', async () => {
+    const stream = controllableMessagesRoute();
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute([REFERENCE]),
+      createConversationRoute(),
+      putDocumentsRoute(),
+      patchScopeRoute(),
+      stream.route,
+    ]);
+    openAskPanel(renderer);
+
+    const input = renderer.root.find(
+      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'Ask a question'
+    );
+    act(() => {
+      input.props.onChangeText('What evidence supports this claim?');
+    });
+    act(() => {
+      findPressableByLabel(renderer.root, 'Ask').props.onPress();
+    });
+    await act(async () => {
+      await flushAsync();
+    });
+
+    // Request in flight, nothing back yet: Stop is already available
+    // (Part 2: cancellation), no answer/evidence text rendered.
+    expect(findPressableWithText(renderer.root, 'Stop')).toBeTruthy();
+    expect(queryByTextIncluding(renderer.root, 'Evidence')).toBeNull();
+
+    await act(async () => {
+      stream.push({ type: 'token', content: 'Teachers reported increased autonomy [S1].' });
+      await flushAsync();
+    });
+
+    // Partial answer text is visible (Part 2: "partial answer rendering")
+    // while Stop remains available and evidence is still absent — sources
+    // haven't arrived yet, so nothing evidence-shaped may render (Part 3).
+    expect(findByTextIncluding(renderer.root, 'Teachers reported increased autonomy')).toBeTruthy();
+    expect(findPressableWithText(renderer.root, 'Stop')).toBeTruthy();
+    expect(queryByTextIncluding(renderer.root, 'Evidence')).toBeNull();
+
+    await act(async () => {
+      stream.push({ type: 'sources', sources: [CHUNK] });
+      stream.push({
+        type: 'done',
+        citations: [CITATION],
+        citation_warnings: [],
+        insufficient_evidence: false,
+      });
+      stream.close();
+      await flushAsync();
+    });
+
+    // Finalized: Stop is gone, evidence now renders from the authoritative
+    // sources/citations that just arrived (Part 3), and a latency caption
+    // records real client timings (Part 4) — never a fabricated percentage.
+    expect(queryByTextIncluding(renderer.root, 'Stop')).toBeNull();
+    expect(findByTextIncluding(renderer.root, 'Evidence')).toBeTruthy();
+    expect(findByTextIncluding(renderer.root, 'Answered in')).toBeTruthy();
+  });
+
+  it('Stop cancels the in-flight stream both locally and on the backend (Part 2)', async () => {
+    const stream = controllableMessagesRoute();
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute([REFERENCE]),
+      createConversationRoute(),
+      putDocumentsRoute(),
+      patchScopeRoute(),
+      stream.route,
+      cancelMessageRoute(),
+    ]);
+    openAskPanel(renderer);
+
+    const input = renderer.root.find(
+      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'Ask a question'
+    );
+    act(() => {
+      input.props.onChangeText('What evidence supports this claim?');
+    });
+    act(() => {
+      findPressableByLabel(renderer.root, 'Ask').props.onPress();
+    });
+    await act(async () => {
+      await flushAsync();
+    });
+
+    await act(async () => {
+      stream.push({ type: 'token', content: 'Teachers reported' });
+      await flushAsync();
+    });
+
+    await act(async () => {
+      findPressableWithText(renderer.root, 'Stop').props.onPress();
+      await flushAsync();
+    });
+
+    // The turn reads as explicitly stopped, not as a fabricated failure —
+    // WritingAskTurnStatus keeps 'cancelled' distinct from 'error' for
+    // exactly this. The Stop *button* itself disappears (no longer live)
+    // — checked as a Pressable, not a text substring, since "Stopped."
+    // itself starts with "Stop".
+    expect(findByTextIncluding(renderer.root, 'Stopped.')).toBeTruthy();
+    expect(() => findPressableWithText(renderer.root, 'Stop')).toThrow();
+
+    // The backend was actually told to stop generating (best-effort
+    // server-side cancel), not just the local read loop.
+    const cancelCall = (global.fetch as jest.Mock).mock.calls.find(
+      ([url, init]: [string, RequestInit]) =>
+        String(url).includes('/conversations/conv-1/messages/') &&
+        String(url).endsWith('/cancel') &&
+        init?.method === 'POST'
+    );
+    expect(cancelCall).toBeTruthy();
+
+    // The composer is usable again immediately — cancelling never leaves
+    // the panel stuck in a permanent "Asking…"/busy state.
+    expect(findPressableByLabel(renderer.root, 'Ask').props.accessibilityState.busy).toBe(false);
+
+    // The abort above already errored the stream (see
+    // controllableMessagesRoute) — nothing left to close.
   });
 });

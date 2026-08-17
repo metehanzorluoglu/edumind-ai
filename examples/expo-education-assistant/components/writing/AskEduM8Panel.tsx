@@ -2,14 +2,16 @@ import {
   displaySourceFromRetrievedChunk,
   mapSourcesToCitations,
   splitAnswerIntoSegments,
+  thinkingContextForRequest,
   type DisplaySource,
   type NotebookEntry,
   type RetrievedChunk,
 } from 'education-assistant-client';
-import { useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { CloseIcon } from '@/components/icons';
 import { MarkdownAnswer } from '@/components/MarkdownAnswer';
+import { ThinkingPlaceholder } from '@/components/ThinkingPlaceholder';
 import { Button } from '@/components/ui/Button';
 import { IconButton } from '@/components/ui/IconButton';
 import { Notice } from '@/components/ui/Notice';
@@ -22,6 +24,11 @@ import { useTheme, type Theme } from '@/lib/Preferences';
 import { type TransientAIContextEntry } from '@/lib/transientAIContext';
 import { type WritingAskScopeKind, type WritingAskTurn, useWritingAsk } from '@/lib/useWritingAsk';
 
+// Writing's requests are always text-only (no attachments) and always
+// retrieval-backed (a scope with zero documents is refused up front by
+// useWritingAsk's own canAsk) — so this is a fixed, not per-turn, context.
+const WRITING_THINKING_CONTEXT = thinkingContextForRequest({});
+
 const SCOPE_TABS: { kind: WritingAskScopeKind; label: string }[] = [
   { kind: 'project-references', label: 'Project references' },
   { kind: 'selected-sources', label: 'Selected sources' },
@@ -30,6 +37,38 @@ const SCOPE_TABS: { kind: WritingAskScopeKind; label: string }[] = [
 
 function toRetrievedChunk(source: DisplaySource): RetrievedChunk {
   return { ...source, document_id: source.document_id ?? '' };
+}
+
+/** Milestone 5.5 Part 4 — a truthful "Generating… Ns" line: a real
+ * client-side clock ticking against a real start time, never a fabricated
+ * percentage. Its own small component so the 1s tick only re-renders this
+ * one line, not the whole turn (and its answer text mid-stream). */
+function ElapsedIndicator({ startedAt }: { startedAt: number }) {
+  const theme = useTheme();
+  const styles = useMemo(() => buildStyles(theme), [theme]);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const seconds = Math.max(0, (now - startedAt) / 1000);
+  return <Text style={styles.elapsedLabel}>Generating… {seconds.toFixed(0)}s</Text>;
+}
+
+/** A short, honest "answered in Ns" caption — Part 4's "record time to
+ * first token / time to completed answer" surfaced as a small transparency
+ * note, not a prominent metric. */
+function latencyCaption(
+  startedAt: number,
+  firstTokenAt: number | null,
+  completedAt: number
+): string {
+  const totalSeconds = (completedAt - startedAt) / 1000;
+  if (firstTokenAt === null) return `Answered in ${totalSeconds.toFixed(1)}s`;
+  const firstTokenSeconds = (firstTokenAt - startedAt) / 1000;
+  return `Answered in ${totalSeconds.toFixed(1)}s · first token ${firstTokenSeconds.toFixed(1)}s`;
 }
 
 export interface AskEduM8PanelProps {
@@ -153,7 +192,7 @@ export function AskEduM8Panel({
       </View>
 
       <ScrollView style={styles.turns} contentContainerStyle={styles.turnsContent}>
-        {ask.turns.map((turn) => (
+        {ask.turns.map((turn, index) => (
           <AskTurnView
             key={turn.id}
             turn={turn}
@@ -161,6 +200,11 @@ export function AskEduM8Panel({
             onOpenSource={onOpenSource}
             onAddReference={onAddReference}
             onInsertCitation={onInsertCitation}
+            // Only the most recent turn can still be live — every earlier
+            // one is necessarily already 'success'/'error'/'cancelled' by
+            // construction (useWritingAsk.ask() is single-flight via its
+            // own `asking` guard), so Stop only ever needs to target it.
+            onStop={index === ask.turns.length - 1 ? ask.cancel : undefined}
           />
         ))}
       </ScrollView>
@@ -228,12 +272,16 @@ function AskTurnView({
   onOpenSource,
   onAddReference,
   onInsertCitation,
+  onStop,
 }: {
   turn: WritingAskTurn;
   referenceIdSet: Set<string>;
   onOpenSource: (source: DisplaySource) => void;
   onAddReference: (documentId: string) => Promise<void>;
   onInsertCitation: (documentId: string) => Promise<void>;
+  /** Undefined for any turn that isn't the current live one — see the
+   * caller's own comment on why only the last turn ever needs this. */
+  onStop?: () => void;
 }) {
   const theme = useTheme();
   const styles = useMemo(() => buildStyles(theme), [theme]);
@@ -246,14 +294,32 @@ function AskTurnView({
   );
   const citedSources = mapped.filter((source) => citedSourceIds.has(source.sourceId));
 
+  // Part 4: no fabricated progress percentage — just whether generation
+  // is genuinely still live, and for how long.
+  const isLive = turn.status === 'sending' || turn.status === 'streaming';
+  // The placeholder shows until the first real token lands, exactly like
+  // Chat's own thinking-preview lifecycle (ThinkingPlaceholder's docs).
+  const showThinking = turn.status === 'sending' || (turn.status === 'streaming' && !turn.answer);
+
   return (
     <View style={styles.turn}>
       <Text style={styles.question}>{turn.question}</Text>
       <Text style={styles.turnScope}>Asked using: {turn.scopeLabel}</Text>
 
-      {turn.status === 'sending' && (
-        <ActivityIndicator color={theme.accent} style={styles.spinner} />
+      <ThinkingPlaceholder
+        context={WRITING_THINKING_CONTEXT}
+        visible={showThinking}
+        progressDetail={turn.progressDetail}
+      />
+      {isLive && onStop && (
+        <View style={styles.liveRow}>
+          <ElapsedIndicator startedAt={turn.firstTokenAt ?? turn.startedAt} />
+          <Pressable onPress={onStop} accessibilityRole="button" style={styles.stopButton}>
+            <Text style={styles.stopButtonLabel}>Stop</Text>
+          </Pressable>
+        </View>
       )}
+      {turn.status === 'cancelled' && <Notice tone="neutral" body="Stopped." />}
       {turn.status === 'error' && turn.errorMessage && (
         <Notice tone="danger" body={turn.errorMessage} />
       )}
@@ -263,12 +329,19 @@ function AskTurnView({
           body={`I couldn't find strong support for this in ${turn.scopeLabel}. Try selecting different sources, or add more project references.`}
         />
       )}
-      {turn.status === 'success' && !turn.insufficientEvidence && turn.answer && (
-        <MarkdownAnswer
-          answer={turn.answer}
-          citations={turn.citations}
-          onCitationPress={() => {}}
-        />
+      {(turn.status === 'streaming' || turn.status === 'success') &&
+        !turn.insufficientEvidence &&
+        turn.answer && (
+          <MarkdownAnswer
+            answer={turn.answer}
+            citations={turn.citations}
+            onCitationPress={() => {}}
+          />
+        )}
+      {turn.status === 'success' && turn.completedAt && (
+        <Text style={styles.latencyCaption}>
+          {latencyCaption(turn.startedAt, turn.firstTokenAt, turn.completedAt)}
+        </Text>
       )}
 
       {citedSources.length > 0 && (
@@ -354,6 +427,27 @@ function buildStyles(theme: Theme) {
     question: { fontSize: 13.5, fontFamily: theme.fonts.bodySemibold, color: theme.text },
     turnScope: { fontSize: 11, fontFamily: theme.fonts.body, color: theme.faint },
     spinner: { marginVertical: 12 },
+    liveRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginVertical: 8,
+    },
+    elapsedLabel: { fontSize: 11.5, fontFamily: theme.fonts.body, color: theme.faint },
+    stopButton: {
+      paddingHorizontal: 10,
+      paddingVertical: 4,
+      borderRadius: theme.radius.sm,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.border,
+    },
+    stopButtonLabel: { fontSize: 11.5, fontFamily: theme.fonts.bodySemibold, color: theme.danger },
+    latencyCaption: {
+      fontSize: 10.5,
+      fontFamily: theme.fonts.body,
+      color: theme.faint,
+      marginTop: 2,
+    },
     evidenceSection: { marginTop: 6, gap: 4 },
     evidenceHeading: {
       fontSize: 11,

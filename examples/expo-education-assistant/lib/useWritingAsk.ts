@@ -1,4 +1,7 @@
 import {
+  BackendError,
+  RequestCancelledError,
+  StreamingUnsupportedError,
   displaySourceFromRetrievedChunk,
   type Citation,
   type DisplaySource,
@@ -43,6 +46,16 @@ export function writingAskScopeLabel(
   }
 }
 
+/**
+ * Milestone 5.5 Part 2 — 'sending' is pre-first-event (the request is in
+ * flight, nothing has come back yet); 'streaming' is anything after the
+ * first SSE event but before 'done' (progress pings and/or growing answer
+ * text, but not yet finalized); 'cancelled' is a genuine user Stop, kept
+ * distinct from 'error' so the turn history reads as "you stopped this,"
+ * never "something went wrong."
+ */
+export type WritingAskTurnStatus = 'sending' | 'streaming' | 'success' | 'error' | 'cancelled';
+
 export interface WritingAskTurn {
   id: string;
   question: string;
@@ -52,13 +65,32 @@ export interface WritingAskTurn {
    * turn history, not just the composer). */
   transientEntries: TransientAIContextEntry[];
   scopeLabel: string;
-  status: 'sending' | 'success' | 'error';
+  status: WritingAskTurnStatus;
+  /** Grows token-by-token while status === 'streaming' (Part 2: "partial
+   * answer rendering"). Citation markers embedded in this text (e.g.
+   * "[S1]") only resolve to a highlighted/clickable segment once
+   * `citations` itself is populated at 'done' — see AskEduM8Panel's
+   * splitAnswerIntoSegments call. */
   answer: string;
+  /** Only ever populated from the backend's `sources` SSE event, which
+   * today arrives after all tokens but before `done` — i.e. evidence
+   * metadata is authoritative the moment it's non-empty (Part 3: "do not
+   * show false or temporary evidence"). Empty for the entire 'sending'
+   * and most of the 'streaming' lifetime, by construction. */
   sources: DisplaySource[];
   citations: Citation[];
   citationWarnings: string[];
   insufficientEvidence: boolean;
   errorMessage: string | null;
+  /** A truthful backend-reported status line (batched-PDF pipeline only,
+   * same field Chat's ThinkingContext/progressDetail already surfaces) —
+   * null for every ordinary turn. */
+  progressDetail: string | null;
+  /** Milestone 5.5 Part 4 latency instrumentation — client timestamps
+   * (ms since epoch), never a fabricated progress percentage. */
+  startedAt: number;
+  firstTokenAt: number | null;
+  completedAt: number | null;
 }
 
 function sameIds(a: readonly string[], b: readonly string[]): boolean {
@@ -93,6 +125,12 @@ export interface UseWritingAskResult {
   turns: WritingAskTurn[];
   asking: boolean;
   ask: (question: string, manuscriptSelection?: TransientAIContextEntry | null) => Promise<void>;
+  /** Aborts the in-flight stream (if any) both locally (stops rendering
+   * further tokens) and on the backend (POST .../cancel, best-effort —
+   * mirrors Chat's cancelPersistedGeneration) so the generation thread
+   * itself stops rather than finishing unseen. A no-op when nothing is
+   * currently asking. */
+  cancel: () => void;
   /** Clears the turn history and lets the next ask() lazily create a
    * fresh conversation — never reuses stale evidence across an
    * unrelated line of inquiry the researcher explicitly restarts. */
@@ -100,10 +138,10 @@ export interface UseWritingAskResult {
 }
 
 /**
- * Milestone 5.2 — the Writing workspace's "Ask EduM8" orchestration.
- * Deliberately composes the EXISTING conversation primitives
- * (createConversation / replaceConversationDocuments /
- * updateConversationScope(zoomInMode) / postConversationMessage) rather
+ * Milestone 5.2, streaming added in 5.5 Part 2 — the Writing workspace's
+ * "Ask EduM8" orchestration. Deliberately composes the EXISTING
+ * conversation primitives (createConversation / replaceConversationDocuments
+ * / updateConversationScope(zoomInMode) / streamConversationMessage) rather
  * than a new endpoint (Part 1: "DO NOT create another RAG system") —
  * these are the exact same calls chat/new.tsx's runFirstMessage already
  * makes, in the exact same order (documents PUT, then scope PATCH,
@@ -111,13 +149,17 @@ export interface UseWritingAskResult {
  * comments for why: zoom_in_mode=true reads the CURRENTLY persisted
  * document selection, so it must land second).
  *
- * Uses the buffered postConversationMessage (not the SSE streaming
- * path) rather than useConversationMessages: Writing's evidence-first
- * UI (Part 5) renders a finished answer + Evidence block together, not
- * a token-by-token typing effect, so there is nothing streaming buys
- * here — and staying off that hook avoids ever mounting it against a
- * not-yet-created conversation id (which would fire a doomed GET on
- * every Ask EduM8 panel open). One conversation is created lazily on
+ * Streams via client.streamConversationMessage() — the exact same SSE
+ * endpoint/event schema Chat uses (token/sources/done/error) — rather
+ * than adopting useConversationMessages wholesale: that hook's shape
+ * (a persisted message list, GET-on-mount, one thinking placeholder per
+ * bubble) is chat-history-shaped, whereas Writing's turns are session-
+ * local with their own evidence-card mapping and transient-context
+ * prefixing. Consuming the raw async generator directly keeps that
+ * bespoke turn model while getting first-token feedback (5.5 Part 2) —
+ * the buffered fetchAllChatEvents/postConversationMessage path is kept
+ * only as the StreamingUnsupportedError fallback below, never the
+ * primary path anymore. One conversation is created lazily on
  * the FIRST question and reused for the rest of the Writing session
  * (Part 16: avoid N+1 — a fresh conversation per question would mean a
  * fresh create+scope round-trip every time).
@@ -149,6 +191,13 @@ export function useWritingAsk(
   // requests (Part 16's "avoid N+1" applied to scope sync, not just
   // reference loading).
   const lastSyncedRef = useRef<{ documentIds: string[]; zoomIn: boolean } | null>(null);
+  // The in-flight stream's abort controller + which turn it belongs to —
+  // both null whenever nothing is asking. cancel() reads both: the
+  // controller stops the local read loop, the turn id (== the real
+  // backend message id, since it's minted as client_message_id — see
+  // ask() below) lets the backend actually be told to stop generating.
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const activeTurnIdRef = useRef<string | null>(null);
 
   const activeDocumentIds = useMemo(() => {
     switch (scopeKind) {
@@ -190,10 +239,27 @@ export function useWritingAsk(
     scopeKind === 'research-notes' ? selectedNoteEntries.length > 0 : activeDocumentIds.length > 0;
 
   const resetThread = useCallback((): void => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    activeTurnIdRef.current = null;
     conversationIdRef.current = null;
     lastSyncedRef.current = null;
     setTurns([]);
   }, []);
+
+  const cancel = useCallback((): void => {
+    const conversationId = conversationIdRef.current;
+    const turnId = activeTurnIdRef.current;
+    abortControllerRef.current?.abort();
+    // Best-effort server-side stop (mirrors Chat's cancelPersistedGeneration)
+    // — turnId doubles as the real backend message id, since it was minted
+    // as client_message_id below. A failure here just means the backend
+    // worker keeps running unseen until it finishes on its own; the local
+    // abort above already stopped the UI from waiting on it.
+    if (conversationId && turnId) {
+      client.cancelMessage(conversationId, turnId).catch(() => {});
+    }
+  }, [client]);
 
   const ask = useCallback(
     async (
@@ -214,6 +280,7 @@ export function useWritingAsk(
       const fullQuery = `${prefix}${trimmed}`;
 
       const turnId = generateClientMessageId();
+      const startedAt = Date.now();
       setTurns((prev) => [
         ...prev,
         {
@@ -228,20 +295,30 @@ export function useWritingAsk(
           citationWarnings: [],
           insufficientEvidence: false,
           errorMessage: null,
+          progressDetail: null,
+          startedAt,
+          firstTokenAt: null,
+          completedAt: null,
         },
       ]);
       setAsking(true);
 
-      function fail(message: string): void {
-        setTurns((prev) =>
-          prev.map((t) => (t.id === turnId ? { ...t, status: 'error', errorMessage: message } : t))
-        );
+      function patch(fn: (t: WritingAskTurn) => WritingAskTurn): void {
+        setTurns((prev) => prev.map((t) => (t.id === turnId ? fn(t) : t)));
       }
+
+      function fail(message: string): void {
+        patch((t) => ({ ...t, status: 'error', errorMessage: message }));
+      }
+
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      activeTurnIdRef.current = turnId;
 
       try {
         let conversationId = conversationIdRef.current;
         if (!conversationId) {
-          const created = await client.createConversation();
+          const created = await client.createConversation({ signal: controller.signal });
           conversationId = created.id;
           conversationIdRef.current = conversationId;
         }
@@ -259,37 +336,105 @@ export function useWritingAsk(
 
         if (scopeChanged) {
           if (activeDocumentIds.length > 0) {
-            await client.replaceConversationDocuments(conversationId, activeDocumentIds);
+            await client.replaceConversationDocuments(conversationId, activeDocumentIds, {
+              signal: controller.signal,
+            });
           }
           if (zoomIn) {
-            await client.updateConversationScope(conversationId, { zoomInMode: true });
+            await client.updateConversationScope(
+              conversationId,
+              { zoomInMode: true },
+              { signal: controller.signal }
+            );
           }
           lastSyncedRef.current = { documentIds: activeDocumentIds, zoomIn };
         }
 
-        const result = await client.postConversationMessage(conversationId, {
-          query: fullQuery,
-          client_message_id: turnId,
-        });
+        const request = { query: fullQuery, client_message_id: turnId };
+        let sawDone = false;
 
-        setTurns((prev) =>
-          prev.map((t) =>
-            t.id === turnId
-              ? {
+        try {
+          for await (const event of client.streamConversationMessage(conversationId, request, {
+            signal: controller.signal,
+          })) {
+            switch (event.type) {
+              case 'progress':
+                patch((t) => ({
+                  ...t,
+                  status: t.answer ? t.status : 'streaming',
+                  progressDetail: event.detail ?? null,
+                }));
+                break;
+              case 'token':
+                patch((t) => ({
+                  ...t,
+                  status: 'streaming',
+                  answer: t.answer + event.content,
+                  firstTokenAt: t.firstTokenAt ?? Date.now(),
+                  progressDetail: null,
+                }));
+                break;
+              case 'sources':
+                // Only ever populated from this event — see WritingAskTurn's
+                // own doc comment on why this already satisfies Part 3.
+                patch((t) => ({
+                  ...t,
+                  sources: event.sources.map(displaySourceFromRetrievedChunk),
+                }));
+                break;
+              case 'done':
+                sawDone = true;
+                patch((t) => ({
                   ...t,
                   status: 'success',
-                  answer: result.answer,
-                  sources: result.sources.map(displaySourceFromRetrievedChunk),
-                  citations: result.citations,
-                  citationWarnings: result.citationWarnings,
-                  insufficientEvidence: result.insufficientEvidence,
-                }
-              : t
-          )
-        );
+                  citations: event.citations,
+                  citationWarnings: event.citation_warnings,
+                  insufficientEvidence: event.insufficient_evidence,
+                  completedAt: Date.now(),
+                }));
+                break;
+              case 'error':
+                fail(event.message);
+                return;
+            }
+          }
+          if (!sawDone) fail('The answer stream ended unexpectedly. Please try again.');
+        } catch (streamError) {
+          if (streamError instanceof StreamingUnsupportedError) {
+            // Same buffered fallback Writing used before 5.5 — only
+            // reached in a runtime without incremental streaming support.
+            const result = await client.postConversationMessage(conversationId, request, {
+              signal: controller.signal,
+            });
+            patch((t) => ({
+              ...t,
+              status: 'success',
+              answer: result.answer,
+              sources: result.sources.map(displaySourceFromRetrievedChunk),
+              citations: result.citations,
+              citationWarnings: result.citationWarnings,
+              insufficientEvidence: result.insufficientEvidence,
+              completedAt: Date.now(),
+            }));
+          } else if (streamError instanceof RequestCancelledError) {
+            patch((t) => ({ ...t, status: 'cancelled' }));
+          } else {
+            throw streamError;
+          }
+        }
       } catch (error) {
-        fail(error instanceof Error ? error.message : 'Could not get an answer.');
+        if (error instanceof RequestCancelledError) {
+          patch((t) => ({ ...t, status: 'cancelled' }));
+        } else {
+          fail(
+            error instanceof BackendError || error instanceof Error
+              ? error.message
+              : 'Could not get an answer.'
+          );
+        }
       } finally {
+        if (abortControllerRef.current === controller) abortControllerRef.current = null;
+        if (activeTurnIdRef.current === turnId) activeTurnIdRef.current = null;
         setAsking(false);
       }
     },
@@ -309,6 +454,7 @@ export function useWritingAsk(
     turns,
     asking,
     ask,
+    cancel,
     resetThread,
   };
 }
