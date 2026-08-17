@@ -718,21 +718,22 @@ class TestCompile:
 
     @pytest.fixture
     def compile_harness(self, harness):
-        from app.core.compile_artifact_cache import CompileArtifactCache
-        from app.core.rate_limiter import RateLimiter
-        from app.deps import (
-            get_compile_artifact_cache,
-            get_compile_rate_limiter,
-            get_latex_compiler_client,
-        )
+        from app.deps import get_compile_artifact_storage, get_latex_compiler_client
+        from app.services.compile_artifact_storage import CompileArtifactStorage
 
         client, app, owner, other = harness
         fake_compiler = _FakeCompilerClient(outcome=_success_outcome())
-        rate_limiter = RateLimiter(max_requests=100, window_seconds=60)
-        artifact_cache = CompileArtifactCache(ttl_seconds=600)
         app.dependency_overrides[get_latex_compiler_client] = lambda: fake_compiler
-        app.dependency_overrides[get_compile_rate_limiter] = lambda: rate_limiter
-        app.dependency_overrides[get_compile_artifact_cache] = lambda: artifact_cache
+        # Milestone 5.5 Part 22 — real DB-backed artifact tracking now
+        # (CompileArtifactsRepository, no override needed: it already
+        # derives from get_db, which _make_app already overrides to the
+        # test DB); only the on-disk PDF bytes need a tmp-path override,
+        # same pattern as writing_file_storage below get_compile_artifact_storage
+        # is @lru_cache'd like get_writing_project_file_storage — a fresh
+        # instance INSIDE the override lambda would mint a new temp
+        # directory per request, so it's resolved once here instead.
+        artifact_storage = CompileArtifactStorage(root_dir=tempfile.mkdtemp())
+        app.dependency_overrides[get_compile_artifact_storage] = lambda: artifact_storage
         # Compile is off by default (Settings.latex_compilation_enabled) —
         # this harness explicitly opts in, matching a deployment where a
         # human operator has deliberately flipped the kill switch (see
@@ -945,16 +946,15 @@ class TestCompile:
         assert resp.json()["status"] == "unavailable"
 
     def test_oversized_main_tex_rejected_with_413(self, harness) -> None:
-        from app.core.rate_limiter import RateLimiter
-        from app.deps import get_compile_rate_limiter, get_latex_compiler_client
+        from app.deps import get_latex_compiler_client
 
         client, app, _owner, _other = harness
         app.dependency_overrides[get_latex_compiler_client] = lambda: _FakeCompilerClient(
             outcome=_success_outcome()
         )
-        app.dependency_overrides[get_compile_rate_limiter] = lambda: RateLimiter(
-            max_requests=100, window_seconds=60
-        )
+        # The default compile_rate_limit_max_requests (6) is plenty for
+        # this test's single request — no override needed, unlike the old
+        # in-process-RateLimiter-injection version of this test.
         app.dependency_overrides[get_settings] = lambda: _build_settings(
             compile_max_main_tex_bytes=1000, latex_compilation_enabled=True
         )
@@ -966,17 +966,19 @@ class TestCompile:
         assert resp.status_code == 413
 
     def test_compile_rate_limit_returns_429(self, harness) -> None:
-        from app.core.rate_limiter import RateLimiter
-        from app.deps import get_compile_rate_limiter, get_latex_compiler_client
+        from app.deps import get_latex_compiler_client
 
         client, app, _owner, _other = harness
-        rate_limiter = RateLimiter(max_requests=1, window_seconds=60)
         app.dependency_overrides[get_latex_compiler_client] = lambda: _FakeCompilerClient(
             outcome=_success_outcome()
         )
-        app.dependency_overrides[get_compile_rate_limiter] = lambda: rate_limiter
+        # Milestone 5.5 Part 23 — the limiter itself is now DB-backed
+        # (app/core/compile_rate_limiter.py) and reads its thresholds
+        # straight from Settings, so tightening the limit for this test
+        # is just a settings override, no separate limiter object to
+        # inject.
         app.dependency_overrides[get_settings] = lambda: _build_settings(
-            latex_compilation_enabled=True
+            latex_compilation_enabled=True, compile_rate_limit_max_requests=1
         )
         project = _create_project(client, title="Thesis")
         first = client.post(f"/writing-projects/{project['id']}/compile")
@@ -985,17 +987,72 @@ class TestCompile:
         assert second.status_code == 429
         assert "Retry-After" in second.headers
 
-    def test_single_flight_per_project_returns_409(self, compile_harness) -> None:
-        from app.api.routes_writing import _compiling_projects
+    def test_single_flight_per_project_returns_409(self, compile_harness, db_engine) -> None:
+        """Milestone 5.5 Part 23 — the lock is now a DB column
+        (writing_projects.compiling_since), claimed/released via
+        WritingProjectsRepository.try_claim_compile_lock/
+        release_compile_lock rather than an in-process set; this test
+        simulates "another worker's compile is already running" by
+        setting that column directly, the same state either worker would
+        actually observe."""
+        from datetime import datetime, timezone
+
+        from app.db.models_writing import WritingProject
 
         client, *_rest = compile_harness
         project = _create_project(client, title="Thesis")
-        _compiling_projects.add(project["id"])
+        project_uuid = uuid.UUID(project["id"])
+
+        factory = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
+        db = factory()
+        try:
+            row = db.get(WritingProject, project_uuid)
+            row.compiling_since = datetime.now(timezone.utc)
+            db.commit()
+        finally:
+            db.close()
+
         try:
             resp = client.post(f"/writing-projects/{project['id']}/compile")
             assert resp.status_code == 409
         finally:
-            _compiling_projects.discard(project["id"])
+            db = factory()
+            try:
+                row = db.get(WritingProject, project_uuid)
+                row.compiling_since = None
+                db.commit()
+            finally:
+                db.close()
+
+    def test_single_flight_lock_self_heals_after_stale_threshold(
+        self, compile_harness, db_engine
+    ) -> None:
+        """A lock claimed long enough ago (e.g. the worker that claimed
+        it crashed mid-compile, so release_compile_lock's own `finally`
+        never ran) is treated as free rather than wedging that project's
+        compile ability shut forever."""
+        from datetime import datetime, timedelta, timezone
+
+        from app.api.routes_writing import COMPILE_LOCK_STALE_AFTER_SECONDS
+        from app.db.models_writing import WritingProject
+
+        client, *_rest = compile_harness
+        project = _create_project(client, title="Thesis")
+        project_uuid = uuid.UUID(project["id"])
+
+        factory = sessionmaker(bind=db_engine, autoflush=False, expire_on_commit=False)
+        db = factory()
+        try:
+            row = db.get(WritingProject, project_uuid)
+            row.compiling_since = datetime.now(timezone.utc) - timedelta(
+                seconds=COMPILE_LOCK_STALE_AFTER_SECONDS + 5
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        resp = client.post(f"/writing-projects/{project['id']}/compile")
+        assert resp.status_code == 200, resp.text
 
     def test_compile_never_calls_llm_or_embedding_or_qdrant(self, compile_harness) -> None:
         """Milestone 5.1 Part 47 — deterministic build infrastructure

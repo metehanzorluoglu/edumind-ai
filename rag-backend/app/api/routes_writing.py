@@ -8,17 +8,16 @@ table."""
 
 import io
 import logging
-import threading
 import uuid
 import zipfile
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-
-from typing import Literal
 
 from app.core.bibliographic_enrichment_service import has_usable_doi
 from app.core.bibtex import export_bibtex
 from app.core.citation_item import CitationItem, document_to_citation_item
+from app.core.compile_rate_limiter import enforce_compile_rate_limit
 from app.core.latex_citations import parse_cite_keys
 from app.core.latex_compiler_client import Diagnostic as ClientDiagnostic
 from app.core.latex_source_hash import compute_source_hash
@@ -26,15 +25,15 @@ from app.core.security import CurrentUserDep, get_current_user
 from app.db.documents_repository import DocumentRecord, DocumentsRepository
 from app.db.models_writing import MAX_PROJECT_TOTAL_STORAGE_BYTES
 from app.db.writing_project_files_repository import WritingProjectFilesRepository
-from app.services.writing_project_file_storage import WritingProjectFileStorage
 from app.db.writing_projects_repository import (
     WritingProjectRecord,
     WritingProjectsRepository,
     WritingProjectSummary,
 )
 from app.deps import (
-    CompileArtifactCacheDep,
-    CompileRateLimiterDep,
+    CompileArtifactsRepositoryDep,
+    CompileArtifactStorageDep,
+    DBSessionDep,
     DocumentsRepositoryDep,
     LatexCompilerClientDep,
     SettingsDep,
@@ -59,18 +58,18 @@ from app.schemas.writing import (
     WritingProjectResponse,
     WritingProjectSummaryResponse,
 )
+from app.services.writing_project_file_storage import WritingProjectFileStorage
 
-#: Milestone 5.1 Part 39 — "only one active compile per project" — a
-#: tiny in-process set of project_ids currently mid-compile. Matches
-#: app/core/rate_limiter.py's own "in-memory, single-process, no extra
-#: infra" posture: this resets on restart and isn't shared across the
-#: backend's 2 uvicorn workers, an accepted limitation for the same
-#: reason chat's own rate limiter accepts it (see that module's
-#: docstring) — worst case under a restart or cross-worker race is one
-#: extra concurrent compile for the same project, still bounded by the
-#: compiler service's own admission queue (Part 11), never unbounded.
-_compiling_projects: set[str] = set()
-_compiling_projects_lock = threading.Lock()
+#: Milestone 5.1 Part 39, made cross-worker by 5.5 Part 23 — "only one
+#: active compile per project", now a DB-backed lock (see
+#: WritingProjectsRepository.try_claim_compile_lock) rather than an
+#: in-process set invisible across this deployment's 2 uvicorn workers.
+#: A claim older than this is treated as free — self-heals a worker that
+#: crashed mid-compile without ever releasing it. Comfortably above the
+#: compiler client's own timeout (latex_compiler_timeout_seconds, default
+#: 55s) plus this route's own pre/post-compile work, so a legitimately
+#: slow-but-still-running compile is never mistaken for an abandoned one.
+COMPILE_LOCK_STALE_AFTER_SECONDS = 180.0
 
 logger = logging.getLogger(__name__)
 
@@ -613,13 +612,14 @@ def _diagnostics_to_response(
 def compile_writing_project(
     project_id: str,
     user: CurrentUserDep,
+    db: DBSessionDep,
     writing_projects_repository: WritingProjectsRepositoryDep,
     documents_repository: DocumentsRepositoryDep,
     files_repository: WritingProjectFilesRepositoryDep,
     files_storage: WritingProjectFileStorageDep,
     latex_compiler_client: LatexCompilerClientDep,
-    compile_rate_limiter: CompileRateLimiterDep,
-    compile_artifact_cache: CompileArtifactCacheDep,
+    compile_artifacts_repository: CompileArtifactsRepositoryDep,
+    compile_artifact_storage: CompileArtifactStorageDep,
     settings: SettingsDep,
 ) -> CompileWritingProjectResponse:
     """Milestone 5.1 Part 14 — compiles the project's CURRENT saved
@@ -654,15 +654,20 @@ def compile_writing_project(
             detail="This project has no root document set. Choose a root .tex file before compiling.",
         )
 
-    # Part 39 — cheapest possible rejection first, mirroring
-    # POST /conversations/{id}/messages's own rate-limit-before-any-work
-    # ordering (routes_conversations.py).
-    if not compile_rate_limiter.allow(str(user.id)):
-        retry_after = compile_rate_limiter.seconds_until_next_slot(str(user.id))
+    # Part 39, cross-worker since 5.5 Part 23 — cheapest possible
+    # rejection first, mirroring POST /conversations/{id}/messages's own
+    # rate-limit-before-any-work ordering (routes_conversations.py).
+    rate_limit_result = enforce_compile_rate_limit(
+        db,
+        user_id=user.id,
+        max_requests=settings.compile_rate_limit_max_requests,
+        window_seconds=settings.compile_rate_limit_window_seconds,
+    )
+    if not rate_limit_result.allowed:
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many compile requests recently. Please wait a moment and try again.",
-            headers={"Retry-After": str(max(1, round(retry_after)))},
+            headers={"Retry-After": str(max(1, round(rate_limit_result.retry_after_seconds)))},
         )
 
     # Part 9/12 — reject an oversized manuscript before ever contacting
@@ -674,17 +679,19 @@ def compile_writing_project(
             detail=f"main.tex exceeds {settings.compile_max_main_tex_bytes} bytes",
         )
 
-    # Part 39 — only one active compile per project at a time.
-    with _compiling_projects_lock:
-        if project_id in _compiling_projects:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                detail=(
-                    "A compile is already running for this project. "
-                    "Please wait for it to finish."
-                ),
-            )
-        _compiling_projects.add(project_id)
+    # Part 39, cross-worker since 5.5 Part 23 — only one active compile
+    # per project at a time.
+    claimed = writing_projects_repository.try_claim_compile_lock(
+        project_id_uuid, stale_after_seconds=COMPILE_LOCK_STALE_AFTER_SECONDS
+    )
+    if not claimed:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail=(
+                "A compile is already running for this project. "
+                "Please wait for it to finish."
+            ),
+        )
 
     try:
         bibtex_text, _count = _generate_bibliography(
@@ -769,9 +776,25 @@ def compile_writing_project(
             )
 
         if outcome.status == "success" and outcome.pdf_bytes:
-            compile_id = compile_artifact_cache.store(
-                user_id=user.id, project_id=project_id_uuid, pdf_bytes=outcome.pdf_bytes
+            # Milestone 5.5 Part 22 — sweep-then-write, same convention as
+            # routes_writing_import.py's own "every route starts by
+            # sweeping expired sessions" (no scheduled job, no unbounded
+            # accumulation regardless of request volume).
+            expired_keys = compile_artifacts_repository.sweep_expired()
+            for key in expired_keys:
+                compile_artifact_storage.delete(key)
+            compile_id_uuid = uuid.uuid4()
+            storage_key = compile_artifact_storage.save(
+                user_id=user.id, compile_id=compile_id_uuid, pdf_bytes=outcome.pdf_bytes
             )
+            compile_artifacts_repository.create(
+                compile_id=compile_id_uuid,
+                user_id=user.id,
+                project_id=project_id_uuid,
+                storage_key=storage_key,
+                ttl_seconds=settings.compile_artifact_ttl_seconds,
+            )
+            compile_id = compile_id_uuid.hex
             return CompileWritingProjectResponse(
                 status="success",
                 diagnostics=_diagnostics_to_response(outcome.diagnostics),
@@ -791,8 +814,7 @@ def compile_writing_project(
             source_hash=source_hash,
         )
     finally:
-        with _compiling_projects_lock:
-            _compiling_projects.discard(project_id)
+        writing_projects_repository.release_compile_lock(project_id_uuid)
 
 
 @router.get("/{project_id}/compile/{compile_id}/pdf")
@@ -801,13 +823,17 @@ def get_compiled_pdf(
     compile_id: str,
     user: CurrentUserDep,
     writing_projects_repository: WritingProjectsRepositoryDep,
-    compile_artifact_cache: CompileArtifactCacheDep,
+    compile_artifacts_repository: CompileArtifactsRepositoryDep,
+    compile_artifact_storage: CompileArtifactStorageDep,
     settings: SettingsDep,
 ) -> Response:
-    """Milestone 5.1 Part 16/17/42 — a short-lived, ownership-checked
-    fetch of one compile's PDF bytes. A guessed/expired/wrong-owner
-    compile_id 404s identically to a nonexistent one (Part 42: never
-    leak whether a compile_id exists for someone else's project)."""
+    """Milestone 5.1 Part 16/17/42, made cross-worker by 5.5 Part 22 — a
+    short-lived, ownership-checked fetch of one compile's PDF bytes. A
+    guessed/expired/wrong-owner compile_id 404s identically to a
+    nonexistent one (Part 42: never leak whether a compile_id exists for
+    someone else's project) — and, since the DB row (not process memory)
+    is now the source of truth, identically regardless of which of the 2
+    uvicorn workers produced the compile vs. is serving this GET."""
     if not settings.latex_compilation_enabled:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="LaTeX compilation is disabled")
 
@@ -816,10 +842,34 @@ def get_compiled_pdf(
     if project is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Writing project not found")
 
-    pdf_bytes = compile_artifact_cache.get(
-        user_id=user.id, project_id=project_id_uuid, compile_id=compile_id
+    # Same sweep-before-read convention as the store path above — a
+    # request for an artifact that just expired gets an honest 404
+    # instead of a race against the next sweep.
+    expired_keys = compile_artifacts_repository.sweep_expired()
+    for key in expired_keys:
+        compile_artifact_storage.delete(key)
+
+    try:
+        compile_id_uuid = uuid.UUID(compile_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, detail="Compiled PDF not found or expired"
+        ) from exc
+
+    artifact = compile_artifacts_repository.get(
+        user_id=user.id, project_id=project_id_uuid, compile_id=compile_id_uuid
     )
-    if pdf_bytes is None:
+    if artifact is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Compiled PDF not found or expired")
+
+    try:
+        pdf_bytes = compile_artifact_storage.read(artifact.storage_key)
+    except OSError as exc:
+        # The DB row survived but the file didn't (e.g. a manual /data
+        # cleanup) — same honest 404, never a raw 500 for a resource this
+        # route already documents as short-lived/best-effort.
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, detail="Compiled PDF not found or expired"
+        ) from exc
 
     return Response(content=pdf_bytes, media_type="application/pdf")

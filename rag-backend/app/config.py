@@ -679,10 +679,26 @@ class Settings(BaseSettings):
     # 413 before ever reaching the compiler service (defense in depth,
     # not a substitute for that service's own independent check).
     compile_max_main_tex_bytes: int = Field(default=200_000, ge=1_000)
-    # Part 17 — how long a successfully-compiled PDF stays retrievable
-    # via GET .../compile/{compile_id}/pdf before this process's
-    # in-memory cache evicts it (app/core/compile_artifact_cache.py).
+    # Part 17, made cross-worker by Milestone 5.5 Part 22 — how long a
+    # successfully-compiled PDF stays retrievable via
+    # GET .../compile/{compile_id}/pdf before CompileArtifactsRepository.
+    # sweep_expired() deletes its DB row (and CompileArtifactStorage
+    # deletes the bytes).
     compile_artifact_ttl_seconds: float = Field(default=600.0, ge=30.0, le=3600.0)
+
+    # --- Compile artifact storage (Milestone 5.5 Part 22) ---
+    # Deliberately the SAME `/data`-mounted volume + "already covered by
+    # oracle-backup.sh with zero script changes" reasoning as
+    # writing_project_files_dir/writing_import_staging_dir above —
+    # replaces app/core/compile_artifact_cache.py's in-process dict,
+    # which was invisible across this deployment's 2 uvicorn workers (a
+    # compile POST on worker A, PDF GET on worker B, ~50% silent 404 —
+    # see WritingImportSession's own docstring, which called out this
+    # exact class of bug first). Compiled PDFs are TEMPORARY
+    # (compile_artifact_ttl_seconds above) exactly like staged imports,
+    # so backup coverage matters here for the same "don't have to get
+    # the ephemeral-vs-persistent call right twice" reason.
+    compile_artifact_dir: str = "./data/compile-artifacts"
 
     # --- Writing Project file workspace (Milestone 5.3) ---
     # Deliberately under the same `/data`-mounted `backend-data` volume

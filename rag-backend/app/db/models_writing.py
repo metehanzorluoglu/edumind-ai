@@ -2,7 +2,17 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, Uuid, func
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -84,6 +94,19 @@ class WritingProject(Base):
     # WritingProjectsRepository.archive/restore). NULL = active (the
     # overwhelmingly common case, and every pre-M5.3 project's state).
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Milestone 5.5 Part 23 — a DB-backed single-flight lock for "only one
+    # active compile per project", replacing routes_writing.py's old
+    # in-process `_compiling_projects` set (invisible across this
+    # deployment's 2 uvicorn workers, same class of gap
+    # WritingImportSession's own docstring already called out for
+    # compile_artifact_cache.py). NULL = no compile in flight. Claimed via
+    # an atomic conditional UPDATE (WritingProjectsRepository.
+    # try_claim_compile_lock) — never read-then-write, which would race
+    # across workers exactly like the set did. A claim older than the
+    # stale threshold is treated as free (self-heals a worker that
+    # crashed mid-compile without ever clearing it), so this can never
+    # wedge a project's compile ability shut forever.
+    compiling_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -304,3 +327,63 @@ class WritingImportSession(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CompileArtifact(Base):
+    """Milestone 5.5 Part 22 — the short-lived record of one successfully
+    compiled PDF, replacing app/core/compile_artifact_cache.py's
+    in-process dict (that module's own docstring already documents the
+    exact gap this fixes: not shared across this deployment's 2 uvicorn
+    workers, so a compile POST landing on worker A and the follow-up PDF
+    GET landing on worker B would 404 roughly half the time). Deliberately
+    the SAME shape as WritingImportSession above (a DB row carrying
+    `expires_at`, the actual bytes staged on the shared `/data`-mounted
+    volume via CompileArtifactStorage, `sweep_expired()` called at the
+    top of both the compile POST and PDF GET routes) — this codebase's
+    established pattern for "temporary, cross-worker-visible artifact",
+    not a new one invented for this milestone.
+
+    `user_id` and `project_id` are both stored (denormalized from the
+    writing_projects row) so ownership can be checked with zero extra
+    joins, exactly mirroring compile_artifact_cache.CompileArtifact's own
+    fields — a guessed/expired/wrong-owner compile_id still 404s
+    identically to a nonexistent one (Part 42, unchanged by this
+    migration)."""
+
+    __tablename__ = "compile_artifacts"
+    __table_args__ = (Index("ix_compile_artifacts_expires_at", "expires_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("writing_projects.id", ondelete="CASCADE"), nullable=False
+    )
+    storage_key: Mapped[str] = mapped_column(String(300), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CompileRateLimitHit(Base):
+    """Milestone 5.5 Part 23 — one row per compile request that counted
+    against the per-user rate limit, backing a DB-shared sliding-window
+    limiter (app/core/compile_rate_limiter.py). Structurally identical to
+    AuthRateLimitHit (app/db/models_auth.py) — a separate table rather
+    than reusing that one, to keep the security-sensitive auth module
+    untouched by an unrelated feature. `bucket_key` is a SHA-256 hash of
+    ("compile", user_id) — same "never store the raw identifier" posture
+    as the auth limiter, though the practical exposure here is lower
+    (user_id is already an opaque UUID, not a human-readable email/IP).
+    Rows are deleted lazily by the same bucket the next time it's
+    touched — no separate cleanup job, matching AuthRateLimitHit."""
+
+    __tablename__ = "compile_rate_limit_hits"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    bucket_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

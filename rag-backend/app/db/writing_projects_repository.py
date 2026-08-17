@@ -5,10 +5,10 @@ projects_repository.py."""
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.db.models_documents import Document
@@ -239,6 +239,53 @@ class WritingProjectsRepository:
             self._db.commit()
             self._db.refresh(row)
         return _to_record(row)
+
+    # Milestone 5.5 Part 23 — DB-backed single-flight compile lock,
+    # replacing routes_writing.py's old in-process `_compiling_projects`
+    # set (invisible across this deployment's 2 uvicorn workers). An
+    # ATOMIC conditional UPDATE, not read-then-write — the same race the
+    # in-process set was itself immune to (thanks to its own lock) but a
+    # naive "read compiling_since, then write it" replacement would
+    # reintroduce across two DB connections/workers.
+    def try_claim_compile_lock(
+        self, project_id: uuid.UUID, *, stale_after_seconds: float
+    ) -> bool:
+        """Returns True iff THIS call claimed the lock — either it was
+        free (NULL) or held past the stale threshold (a worker that
+        crashed mid-compile without ever releasing it, self-healing
+        rather than wedging the project's compile ability shut forever).
+        A single UPDATE ... WHERE, so two concurrent callers can never
+        both see success for the same project regardless of which
+        worker/thread/connection each runs on."""
+        now = datetime.now(UTC)
+        stale_before = now - timedelta(seconds=stale_after_seconds)
+        result = self._db.execute(
+            update(WritingProject)
+            .where(
+                WritingProject.id == project_id,
+                or_(
+                    WritingProject.compiling_since.is_(None),
+                    WritingProject.compiling_since < stale_before,
+                ),
+            )
+            .values(compiling_since=now)
+        )
+        self._db.commit()
+        return result.rowcount > 0
+
+    def release_compile_lock(self, project_id: uuid.UUID) -> None:
+        """Always clears the lock regardless of who currently holds it —
+        called from the compile route's own `finally`, so a request that
+        itself failed to claim the lock (another compile was already
+        running) never accidentally releases that OTHER compile's still-
+        legitimate claim: routes_writing.py only calls this when its own
+        try_claim_compile_lock call above returned True."""
+        self._db.execute(
+            update(WritingProject)
+            .where(WritingProject.id == project_id)
+            .values(compiling_since=None)
+        )
+        self._db.commit()
 
     def duplicate_metadata(
         self, user_id: uuid.UUID, source_project_id: uuid.UUID, *, new_title: str

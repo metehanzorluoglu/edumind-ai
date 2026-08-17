@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings, get_settings
 from app.core.bibliographic_enrichment import CrossrefProvider
-from app.core.compile_artifact_cache import CompileArtifactCache
 from app.core.email_provider import ConsoleEmailProvider, EmailProvider, SmtpEmailProvider
 from app.core.embedding_provider import (
     MXBAI_EMBED_LARGE_DIMENSIONS,
@@ -22,6 +21,7 @@ from app.core.rag_service import RagService
 from app.core.rate_limiter import RateLimiter
 from app.core.request_timing import DISABLED_TIMER, RequestTimer, bind_timer, unbind_timer
 from app.core.retriever import Retriever
+from app.db.compile_artifacts_repository import CompileArtifactsRepository
 from app.db.conversation_scope_repository import ConversationScopeRepository
 from app.db.conversations_repository import ConversationsRepository
 from app.db.document_highlights_repository import DocumentHighlightsRepository
@@ -39,10 +39,11 @@ from app.db.writing_import_sessions_repository import WritingImportSessionsRepos
 from app.db.writing_project_files_repository import WritingProjectFilesRepository
 from app.db.writing_projects_repository import WritingProjectsRepository
 from app.services.attachment_storage import AttachmentStorage
+from app.services.compile_artifact_storage import CompileArtifactStorage
 from app.services.document_file_storage import DocumentFileStorage
+from app.services.vision_service import VisionService
 from app.services.writing_import_storage import WritingImportStorage
 from app.services.writing_project_file_storage import WritingProjectFileStorage
-from app.services.vision_service import VisionService
 from app.vectorstore.qdrant_client import QdrantVectorStore
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -344,25 +345,31 @@ def get_latex_compiler_client() -> LatexCompilerClient:
 LatexCompilerClientDep = Annotated[LatexCompilerClient, Depends(get_latex_compiler_client)]
 
 
+def get_compile_artifacts_repository(db: DBSessionDep) -> CompileArtifactsRepository:
+    # Same reasoning as get_documents_repository below: fresh per-request,
+    # never cached across requests.
+    return CompileArtifactsRepository(db)
+
+
+CompileArtifactsRepositoryDep = Annotated[
+    CompileArtifactsRepository, Depends(get_compile_artifacts_repository)
+]
+
+
 @lru_cache
-def get_compile_rate_limiter() -> RateLimiter:
+def get_compile_artifact_storage() -> CompileArtifactStorage:
+    # Milestone 5.5 Part 22 — replaces get_compile_artifact_cache()'s old
+    # in-process dict (app/core/compile_artifact_cache.py, now retired):
+    # the actual PDF bytes live on the shared `/data`-mounted volume, the
+    # DB row (CompileArtifactsRepository) is the cross-worker-visible
+    # source of truth for existence/ownership/TTL.
     settings = get_settings()
-    return RateLimiter(
-        max_requests=settings.compile_rate_limit_max_requests,
-        window_seconds=settings.compile_rate_limit_window_seconds,
-    )
+    return CompileArtifactStorage(root_dir=settings.compile_artifact_dir)
 
 
-CompileRateLimiterDep = Annotated[RateLimiter, Depends(get_compile_rate_limiter)]
-
-
-@lru_cache
-def get_compile_artifact_cache() -> CompileArtifactCache:
-    settings = get_settings()
-    return CompileArtifactCache(ttl_seconds=settings.compile_artifact_ttl_seconds)
-
-
-CompileArtifactCacheDep = Annotated[CompileArtifactCache, Depends(get_compile_artifact_cache)]
+CompileArtifactStorageDep = Annotated[
+    CompileArtifactStorage, Depends(get_compile_artifact_storage)
+]
 
 
 def get_documents_repository(db: DBSessionDep) -> DocumentsRepository:
