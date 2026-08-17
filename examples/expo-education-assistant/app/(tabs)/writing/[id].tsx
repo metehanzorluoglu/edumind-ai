@@ -487,6 +487,13 @@ export default function WritingProjectEditorScreen() {
     setMobileTab('editor');
   }
 
+  // Milestone 5.5 Part 15 — References panel's own "Open source" (a
+  // whole-document reference has no specific page/chunk to anchor to,
+  // unlike Ask EduM8 evidence — see handleOpenEvidenceSource above).
+  function handleOpenReferenceSource(documentId: string): void {
+    router.push({ pathname: '/documents/[id]', params: { id: documentId } });
+  }
+
   function handleOpenRename(): void {
     setHeaderMenuOpen(false);
     setRenameText(project?.title ?? '');
@@ -816,6 +823,7 @@ export default function WritingProjectEditorScreen() {
               onInsertMultipleCitations={handleInsertMultipleCitations}
               onRemoveReference={removeReference}
               onViewBibliography={handleOpenBibliography}
+              onOpenSource={handleOpenReferenceSource}
             />
           </View>
         )}

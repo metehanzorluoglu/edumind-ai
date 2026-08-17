@@ -129,14 +129,19 @@ function rootFileNode(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function filesTreeRoute(files: unknown[] = [rootFileNode()], rootFileId: string | null = ROOT_FILE_ID): FetchRoute {
+function filesTreeRoute(
+  files: unknown[] = [rootFileNode()],
+  rootFileId: string | null = ROOT_FILE_ID
+): FetchRoute {
   return {
     method: 'GET',
     matches: (u) => u.endsWith('/writing-projects/w-1/files'),
     respond: () =>
       jsonResponse({
         files,
-        generated: [{ name: 'references.bib', path: 'references.bib', read_only: true, reference_count: 0 }],
+        generated: [
+          { name: 'references.bib', path: 'references.bib', read_only: true, reference_count: 0 },
+        ],
         root_file_id: rootFileId,
         total_size_bytes: PROJECT.main_tex_content.length,
         file_count: files.length,
@@ -278,11 +283,7 @@ describe('WritingProjectEditorScreen', () => {
   });
 
   it('editing the source shows "Editing…" immediately, without an immediate PATCH', async () => {
-    const renderer = await renderScreen([
-      getProjectRoute(),
-      referencesRoute(),
-      patchFileRoute(),
-    ]);
+    const renderer = await renderScreen([getProjectRoute(), referencesRoute(), patchFileRoute()]);
     const patchCallsBefore = (global.fetch as jest.Mock).mock.calls.filter(
       ([, init]: [string, RequestInit]) => init?.method === 'PATCH'
     ).length;
@@ -305,11 +306,7 @@ describe('WritingProjectEditorScreen', () => {
     // Render with REAL timers first — renderScreen's own flushAsync()
     // relies on a real setTimeout(0), which would otherwise hang forever
     // once fake timers freeze the clock.
-    const renderer = await renderScreen([
-      getProjectRoute(),
-      referencesRoute(),
-      patchFileRoute(),
-    ]);
+    const renderer = await renderScreen([getProjectRoute(), referencesRoute(), patchFileRoute()]);
 
     jest.useFakeTimers();
     try {
@@ -470,6 +467,45 @@ describe('WritingProjectEditorScreen', () => {
       (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
     );
     expect(editorAfter.props.value).toContain('\\cite{Doe2020Laser}');
+  });
+
+  it('References search filters the list, and "Open source" navigates to the Reader (Milestone 5.5 Part 15)', async () => {
+    const SECOND_REFERENCE = {
+      ...REFERENCE,
+      document_id: 'd-2',
+      title: 'A Different Paper Entirely',
+      authors: ['Someone Else'],
+      publication_year: 2021,
+      citation_key: 'Else2021Other',
+    };
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute([REFERENCE, SECOND_REFERENCE]),
+    ]);
+
+    act(() => {
+      findPressableByLabel(renderer.root, 'References').props.onPress();
+    });
+    expect(findByTextIncluding(renderer.root, 'Doe (2020)')).toBeTruthy();
+    expect(findByTextIncluding(renderer.root, 'Else (2021)')).toBeTruthy();
+
+    const searchField = renderer.root.find(
+      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'Search references'
+    );
+    act(() => {
+      searchField.props.onChangeText('Different Paper');
+    });
+
+    expect(findByTextIncluding(renderer.root, 'Else (2021)')).toBeTruthy();
+    expect(() => findByTextIncluding(renderer.root, 'Doe (2020)')).toThrow();
+
+    act(() => {
+      findPressableByLabel(renderer.root, 'Open source for Else (2021)').props.onPress();
+    });
+    expect(mockPush).toHaveBeenCalledWith({
+      pathname: '/documents/[id]',
+      params: { id: 'd-2' },
+    });
   });
 
   it('regression: inserting a citation before the user ever clicks the editor lands at the END of the content, never before \\documentclass (Milestone 5.2.1)', async () => {

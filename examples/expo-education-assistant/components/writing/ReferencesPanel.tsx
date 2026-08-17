@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Notice } from '@/components/ui/Notice';
+import { TextField } from '@/components/ui/TextField';
 import { formatSourceIdentity } from '@/lib/format';
 import { useTheme, type Theme } from '@/lib/Preferences';
 
@@ -21,14 +22,19 @@ export interface ReferencesPanelProps {
   onInsertMultipleCitations: (citationKeys: string[]) => void;
   onRemoveReference: (documentId: string) => Promise<void>;
   onViewBibliography: () => void;
+  /** Milestone 5.5 Part 15 — opens the Reader for this reference's
+   * document (the Reader remains canonical — never a second document
+   * viewer here). */
+  onOpenSource: (documentId: string) => void;
 }
 
 /**
- * Milestone 5 (Academic Writing & LaTeX Foundation) Parts 4/5/9/10/12/27 —
- * the References panel: current project references with a compact
- * identity, single/multi "Insert citation", "Remove" (association only —
- * Part 5), a missing-citation-key warning (Part 26), and "View BibTeX"
- * (Part 13).
+ * Milestone 5 (Academic Writing & LaTeX Foundation) Parts 4/5/9/10/12/27,
+ * extended by 5.5 Part 15 — the References panel: current project
+ * references with a compact identity, search, single/multi
+ * "Insert citation", "Open source", "Remove" (association only — Part
+ * 5), a missing-citation-key warning (Part 26), and "View BibTeX" (Part
+ * 13).
  */
 export function ReferencesPanel({
   references,
@@ -40,6 +46,7 @@ export function ReferencesPanel({
   onInsertMultipleCitations,
   onRemoveReference,
   onViewBibliography,
+  onOpenSource,
 }: ReferencesPanelProps) {
   const theme = useTheme();
   const styles = useMemo(() => buildStyles(theme), [theme]);
@@ -49,6 +56,19 @@ export function ReferencesPanel({
   const [selectedOrder, setSelectedOrder] = useState<string[]>([]);
   const [removingIds, setRemovingIds] = useState<Set<string>>(new Set());
   const [removeError, setRemoveError] = useState<string | null>(null);
+  const [searchText, setSearchText] = useState('');
+
+  const visibleReferences = useMemo(() => {
+    const needle = searchText.trim().toLowerCase();
+    if (!needle) return references;
+    return references.filter((ref) => {
+      const haystack = [ref.title, ref.source_filename, ref.citation_key, ...(ref.authors ?? [])]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(needle);
+    });
+  }, [references, searchText]);
 
   function exitSelectMode(): void {
     setSelectMode(false);
@@ -105,6 +125,15 @@ export function ReferencesPanel({
       </View>
 
       {references.length > 0 && (
+        <TextField
+          label="Search references"
+          value={searchText}
+          onChangeText={setSearchText}
+          placeholder="Search title, author, or filename…"
+        />
+      )}
+
+      {references.length > 0 && (
         <Button
           label="View BibTeX"
           variant="ghost"
@@ -149,9 +178,12 @@ export function ReferencesPanel({
             onAction={onAddReferences}
           />
         )}
+        {!loading && !loadError && references.length > 0 && visibleReferences.length === 0 && (
+          <Text style={styles.emptyText}>No references match “{searchText.trim()}”.</Text>
+        )}
         {!loading &&
           !loadError &&
-          references.map((ref) => {
+          visibleReferences.map((ref) => {
             const selected = selectedOrder.includes(ref.document_id);
             const identity = formatSourceIdentity(ref.authors, ref.publication_year, ref.title);
             return (
@@ -195,6 +227,14 @@ export function ReferencesPanel({
                         </Text>
                       </Pressable>
                       <Pressable
+                        onPress={() => onOpenSource(ref.document_id)}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Open source for ${identity}`}
+                        hitSlop={6}
+                      >
+                        <Text style={styles.actionText}>Open source</Text>
+                      </Pressable>
+                      <Pressable
                         onPress={() => void handleRemove(ref.document_id)}
                         disabled={removingIds.has(ref.document_id)}
                         accessibilityRole="button"
@@ -236,6 +276,13 @@ function buildStyles(theme: Theme) {
     selectionText: { fontSize: 12, fontFamily: theme.fonts.bodySemibold, color: theme.accent },
     list: { flex: 1 },
     listContent: { gap: 2, paddingBottom: 12 },
+    emptyText: {
+      fontSize: 13,
+      color: theme.subtext,
+      fontFamily: theme.fonts.body,
+      paddingVertical: 20,
+      textAlign: 'center',
+    },
     spinner: { marginTop: 20 },
     row: {
       flexDirection: 'row',

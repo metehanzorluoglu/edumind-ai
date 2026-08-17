@@ -166,27 +166,25 @@ export function WritingEvidenceCard({
       {insertCitationError && <Notice tone="danger" body={insertCitationError} />}
       {saveHighlightError && <Notice tone="danger" body={saveHighlightError} />}
 
+      {/* Milestone 5.5 Part 17 — a clear action hierarchy instead of a row
+          of equal-weight text links: Open source (primary, filled) leads;
+          Add to notebook / Add reference / Insert citation are real but
+          secondary (outlined); Copy excerpt is utility-tier (small, plain
+          text, last) — same actions and conditions as before, restyled
+          only. */}
       <View style={styles.actionsRow}>
         <Pressable
           onPress={() => onOpenSource(source)}
-          style={styles.actionButton}
+          style={[styles.actionButton, styles.actionPrimary]}
           accessibilityRole="button"
           hitSlop={8}
         >
-          <Text style={styles.actionText}>Open source</Text>
-        </Pressable>
-        <Pressable
-          onPress={() => void handleCopyExcerpt()}
-          style={styles.actionButton}
-          accessibilityRole="button"
-          hitSlop={8}
-        >
-          <Text style={styles.actionText}>{copied ? 'Copied!' : 'Copy excerpt'}</Text>
+          <Text style={styles.actionPrimaryText}>Open source</Text>
         </Pressable>
         {citation.document_id && (
           <Pressable
             onPress={() => void handleAddToNotebook()}
-            style={styles.actionButton}
+            style={[styles.actionButton, styles.actionSecondary]}
             accessibilityRole="button"
             hitSlop={8}
             disabled={savingHighlight}
@@ -194,14 +192,14 @@ export function WritingEvidenceCard({
             {savingHighlight ? (
               <ActivityIndicator size="small" color={theme.accent} />
             ) : (
-              <Text style={styles.actionText}>Add to notebook</Text>
+              <Text style={styles.actionSecondaryText}>Add to notebook</Text>
             )}
           </Pressable>
         )}
         {citation.document_id && !isProjectReference && (
           <Pressable
             onPress={() => void handleAddReference()}
-            style={styles.actionButton}
+            style={[styles.actionButton, styles.actionSecondary]}
             accessibilityRole="button"
             hitSlop={8}
             disabled={addingReference}
@@ -209,14 +207,14 @@ export function WritingEvidenceCard({
             {addingReference ? (
               <ActivityIndicator size="small" color={theme.accent} />
             ) : (
-              <Text style={styles.actionText}>Add reference</Text>
+              <Text style={styles.actionSecondaryText}>Add reference</Text>
             )}
           </Pressable>
         )}
         {citation.document_id && isProjectReference && (
           <Pressable
             onPress={() => void handleInsertCitation()}
-            style={styles.actionButton}
+            style={[styles.actionButton, styles.actionSecondary]}
             accessibilityRole="button"
             hitSlop={8}
             disabled={insertingCitation}
@@ -224,10 +222,18 @@ export function WritingEvidenceCard({
             {insertingCitation ? (
               <ActivityIndicator size="small" color={theme.accent} />
             ) : (
-              <Text style={styles.actionText}>Insert citation</Text>
+              <Text style={styles.actionSecondaryText}>Insert citation</Text>
             )}
           </Pressable>
         )}
+        <Pressable
+          onPress={() => void handleCopyExcerpt()}
+          style={styles.actionButton}
+          accessibilityRole="button"
+          hitSlop={8}
+        >
+          <Text style={styles.actionUtilityText}>{copied ? 'Copied!' : 'Copy excerpt'}</Text>
+        </Pressable>
       </View>
 
       {notebookHighlight && citation.document_id && (
@@ -282,10 +288,37 @@ function buildStyles(theme: Theme) {
       flexDirection: 'row',
       flexWrap: 'wrap',
       alignItems: 'center',
-      gap: 14,
-      marginTop: 4,
+      gap: 8,
+      marginTop: 6,
     },
     actionButton: { paddingVertical: 2 },
-    actionText: { fontSize: 12.5, color: theme.accent, fontFamily: theme.fonts.bodySemibold },
+    // Primary — Open source, the one action researchers reach for most.
+    actionPrimary: {
+      backgroundColor: theme.accent,
+      borderRadius: theme.radius.sm,
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+    },
+    actionPrimaryText: {
+      fontSize: 12.5,
+      color: theme.accentContrast,
+      fontFamily: theme.fonts.bodySemibold,
+    },
+    // Secondary — Add to notebook / Add reference / Insert citation:
+    // real manuscript-affecting actions, just not the default one.
+    actionSecondary: {
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.border,
+      borderRadius: theme.radius.sm,
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+    },
+    actionSecondaryText: {
+      fontSize: 12.5,
+      color: theme.accent,
+      fontFamily: theme.fonts.bodySemibold,
+    },
+    // Utility — Copy excerpt: plain, small, last in reading order.
+    actionUtilityText: { fontSize: 11.5, color: theme.faint, fontFamily: theme.fonts.body },
   });
 }
