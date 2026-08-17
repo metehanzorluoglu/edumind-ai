@@ -86,7 +86,19 @@ export function CreateWritingProjectModal({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={handleClose}>
+    // Milestone 5.5 Part 30 — axe-core flagged this as a serious
+    // aria-dialog-name violation: react-native-web's <Modal> always
+    // emits role="dialog" on web (see its ModalContent.js) but has no
+    // built-in accessible name; any extra prop passed to <Modal> is
+    // forwarded straight down to that role="dialog" element, so
+    // accessibilityLabel here becomes its aria-label.
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={handleClose}
+      accessibilityLabel={titleForMode[mode]}
+    >
       <View style={[styles.backdrop, { backgroundColor: theme.overlay }]}>
         <View
           style={[

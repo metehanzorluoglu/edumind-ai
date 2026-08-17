@@ -35,6 +35,16 @@ export function AppDrawer({ width, onResizeEnd, ...sidebarProps }: AppDrawerProp
   const draggingRef = useRef(false);
   const startXRef = useRef(0);
   const startWidthRef = useRef(width);
+  // Mirrors `dragWidth` for handleMouseUp to read synchronously.
+  // Milestone 5.5 Part 30 — useDragResizeWidth.ts (generalized FROM this
+  // component, see its own header comment) hit React's "Cannot update a
+  // component while rendering a different component" warning from this
+  // exact shape: calling onResizeEnd(current) — which calls a caller's
+  // setState — from INSIDE the functional updater passed to
+  // setDragWidth, which React can invoke during another component's
+  // render. Applying the same fix here rather than leaving the
+  // now-diagnosed original copy of the bug in place.
+  const dragWidthRef = useRef<number | null>(null);
   const effectiveWidth = dragWidth ?? width;
 
   useEffect(() => {
@@ -46,15 +56,16 @@ export function AppDrawer({ width, onResizeEnd, ...sidebarProps }: AppDrawerProp
         SIDEBAR_WIDTH_MAX,
         Math.max(SIDEBAR_WIDTH_MIN, startWidthRef.current + delta)
       );
+      dragWidthRef.current = next;
       setDragWidth(next);
     }
     function handleMouseUp(): void {
       if (!draggingRef.current) return;
       draggingRef.current = false;
-      setDragWidth((current) => {
-        if (current != null) onResizeEnd(current);
-        return null;
-      });
+      const finalWidth = dragWidthRef.current;
+      dragWidthRef.current = null;
+      setDragWidth(null);
+      if (finalWidth != null) onResizeEnd(finalWidth);
     }
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
@@ -77,14 +88,30 @@ export function AppDrawer({ width, onResizeEnd, ...sidebarProps }: AppDrawerProp
       </View>
       {Platform.OS === 'web' && (
         <View
-          accessibilityRole="none"
+          // Milestone 5.5 Part 30 — axe-core flagged accessibilityRole=
+          // "none" + accessibilityLabel together as an aria-prohibited-
+          // attr violation: role="none"/"presentation" strips ALL
+          // semantics, including accessible-name computation, so
+          // aria-label is meaningless there. "adjustable" (RNW maps it
+          // to role="slider", the correct ARIA role for a drag handle)
+          // both fixes that and makes the handle's current/min/max width
+          // available to assistive tech — role="slider" requires
+          // aria-valuenow, which RNW only reads from flat props, not a
+          // nested accessibilityValue object (same "no nested object"
+          // rule as accessibilityState — see PanelTabButton's own note).
+          accessibilityRole="adjustable"
           accessibilityLabel="Resize conversation list"
           style={styles.handle}
           // react-native-web forwards raw mouse events on View for web
           // targets; RN's own ViewProps type doesn't declare them, hence
           // the cast — same pattern as Button.tsx's web-only transition
           // style cast.
-          {...({ onMouseDown: handleMouseDown } as object)}
+          {...({
+            onMouseDown: handleMouseDown,
+            'aria-valuenow': Math.round(effectiveWidth),
+            'aria-valuemin': SIDEBAR_WIDTH_MIN,
+            'aria-valuemax': SIDEBAR_WIDTH_MAX,
+          } as object)}
         >
           <View style={[styles.handleGrip, { backgroundColor: dark.borderStrong }]} />
         </View>

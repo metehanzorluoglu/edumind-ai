@@ -785,7 +785,12 @@ export default function WritingProjectEditorScreen() {
       <View style={styles.panelInner}>
         <Text style={styles.panelSectionLabel}>Research</Text>
         {isWide && (
-          <View style={styles.panelTabs}>
+          // Milestone 5.5 Part 30 — axe-core flagged this as a CRITICAL
+          // aria-required-parent violation: each PanelTabButton has
+          // accessibilityRole="tab" (role="tab" on web), which WAI-ARIA
+          // requires to live inside a role="tablist" container. Nothing
+          // upstream of the milestone provided one.
+          <View style={styles.panelTabs} accessibilityRole="tablist">
             <PanelTabButton
               label="Files"
               active={panelTab === 'project'}
@@ -867,12 +872,23 @@ export default function WritingProjectEditorScreen() {
       </View>
       {isWide && Platform.OS === 'web' && (
         <View
-          accessibilityRole="none"
+          // Milestone 5.5 Part 30 — see AppDrawer.tsx's identical
+          // resize-handle comment: role="none" + accessibilityLabel is
+          // an aria-prohibited-attr violation (role="none" strips
+          // accessible-name computation entirely); "adjustable" maps to
+          // the correct role="slider" instead, plumbed with the
+          // required aria-valuenow/min/max below.
+          accessibilityRole="adjustable"
           accessibilityLabel="Resize Research panel"
           style={styles.panelResizeHandle}
           // react-native-web forwards raw mouse events on View for web
           // targets — same pattern as AppDrawer.tsx's own resize handle.
-          {...({ onMouseDown: researchPanelResize.handleMouseDown } as object)}
+          {...({
+            onMouseDown: researchPanelResize.handleMouseDown,
+            'aria-valuenow': Math.round(researchPanelResize.effectiveWidth),
+            'aria-valuemin': WRITING_RESEARCH_PANEL_WIDTH_MIN,
+            'aria-valuemax': WRITING_RESEARCH_PANEL_WIDTH_MAX,
+          } as object)}
         >
           <View style={styles.panelResizeHandleGrip} />
         </View>
@@ -888,12 +904,19 @@ export default function WritingProjectEditorScreen() {
     <View style={[styles.previewPanel, isWide && { width: previewPanelResize.effectiveWidth }]}>
       {isWide && Platform.OS === 'web' && (
         <View
-          accessibilityRole="none"
+          // Milestone 5.5 Part 30 — see the Research panel handle's
+          // identical comment above.
+          accessibilityRole="adjustable"
           accessibilityLabel="Resize Preview panel"
           style={styles.previewResizeHandle}
           // react-native-web forwards raw mouse events on View for web
           // targets — same pattern as AppDrawer.tsx's own resize handle.
-          {...({ onMouseDown: previewPanelResize.handleMouseDown } as object)}
+          {...({
+            onMouseDown: previewPanelResize.handleMouseDown,
+            'aria-valuenow': Math.round(previewPanelResize.effectiveWidth),
+            'aria-valuemin': WRITING_PREVIEW_PANEL_WIDTH_MIN,
+            'aria-valuemax': WRITING_PREVIEW_PANEL_WIDTH_MAX,
+          } as object)}
         >
           <View style={styles.panelResizeHandleGrip} />
         </View>
@@ -1122,6 +1145,7 @@ export default function WritingProjectEditorScreen() {
           showsHorizontalScrollIndicator={false}
           style={styles.mobileTabsScroll}
           contentContainerStyle={styles.mobileTabs}
+          accessibilityRole="tablist"
         >
           <MobileTabButton
             label="Editor"
