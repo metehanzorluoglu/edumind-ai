@@ -43,6 +43,19 @@ class User(Base):
     # OAuth provider path. Lets an admin/report distinguish real users from
     # local test accounts without inferring it from the linked provider.
     is_dev_test_user: Mapped[bool] = mapped_column(default=False, nullable=False)
+    # Milestone 5.5 Part 24 — marks a REAL production account (real OAuth/
+    # local login, real email) that a human on the team is using for QA/
+    # validation work, replacing the previous informal convention of
+    # recognizing a QA account by its email address. Purely informational:
+    # never read by any authorization/permission check (a QA account is an
+    # ordinary account in every functional respect), and deliberately NOT
+    # exposed on UserResponse (see app/schemas/auth.py) — this exists only
+    # to make cleanup scripts/reports able to say "this row is test data
+    # from a known QA account" without pattern-matching an email string.
+    # Settable only via cli/qa_accounts.py — there is no API endpoint that
+    # writes this column, since no ordinary user action should ever be able
+    # to flip it (on themselves or anyone else).
+    is_qa_account: Mapped[bool] = mapped_column(default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
