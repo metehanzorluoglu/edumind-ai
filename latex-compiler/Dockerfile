@@ -5,16 +5,25 @@
 # OWN image (Part 1) — never folded into rag-backend, frontend, Ollama,
 # Qdrant, or evidence-service.
 #
-# Package set is the conservative minimum that compiles EduM8's default
-# Writing template (article class, utf8/fontenc/lmodern, plain-style
-# BibTeX) — NOT texlive-full (which the Debian archive ships at several
-# GB). See the Milestone 5.1 report's "Disk/Image Impact" section for
-# the real measured size this produced, and Part 2's "only packages
-# required by EduM8's default Writing template need to compile" — a
-# manuscript that needs a package outside this set fails with a clear
-# "File `X.sty' not found" diagnostic (Part 22) rather than silently
+# Package set is curated for real-world academic template compatibility
+# — NOT texlive-full (which the Debian archive ships at several GB).
+# See the Milestone 5.1 report's "Disk/Image Impact" section for the
+# original measured size and Part 2's original "only packages required
+# by EduM8's default Writing template" scope; Milestone 5.5.2 Part
+# 18-21 re-evaluated that scope against two REAL, unmodified templates
+# (a Springer Nature journal package and a UNLV thesis template) once
+# EduM8 started supporting arbitrary uploaded LaTeX projects, not just
+# its own default template — both failed to compile on packages that
+# are genuinely common in real academic writing (multirow, cuted,
+# algorithm/algorithmic), not exotic ones. A manuscript that still
+# needs a package outside this expanded set fails with a clear
+# "File `X.sty' not found" diagnostic (Part 22/24) rather than silently
 # installing more packages at runtime (which the read-only root
 # filesystem — see docker-compose.oracle.yml — would refuse anyway).
+# texlive-full was deliberately NOT used — measured impact of this
+# expansion is ~99MB installed (texlive-latex-extra ~82MB +
+# texlive-science ~19MB via `apt-cache show`), not the several-GB
+# texlive-full would add.
 #
 # Built for native arm64 (Oracle host — see evidence-service/Dockerfile's
 # identical reasoning for why this repo's service images target arm64
@@ -39,11 +48,20 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
 #                            Limitations" — that would call for xelatex/lualatex + fontspec
 #                            and a materially larger image, deferred until there's a real
 #                            product need for it).
+# texlive-latex-extra:      Milestone 5.5.2 — verified (via `kpsewhich`, not assumed) to
+#                            provide multirow.sty and cuted.sty, both required by the two
+#                            real fixture templates above and both common in real academic
+#                            writing (multi-row tables; two-column "strut" figures/text).
+# texlive-science:          Milestone 5.5.2 — verified to provide algorithm.sty/
+#                            algorithmic.sty, required by the journal fixture (pseudocode
+#                            listings are a common need in CS/engineering papers).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         texlive-latex-base \
         texlive-latex-recommended \
         texlive-fonts-recommended \
+        texlive-latex-extra \
+        texlive-science \
         lmodern \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
