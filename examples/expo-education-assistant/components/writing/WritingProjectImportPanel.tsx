@@ -284,13 +284,27 @@ function buildStyles(theme: Theme) {
     },
     radioInner: { width: 8, height: 8, borderRadius: 4 },
     rootRowText: { fontSize: 13, fontFamily: theme.fonts.mono, color: theme.text },
+    // Milestone 5.5.3 — real-browser testing with the actual UNLV
+    // fixture (14 files, but the same defect scales far worse toward
+    // the 150-file ceiling) found this box's `maxHeight` alone did
+    // nothing useful without an explicit overflow behavior: React
+    // Native's View (and the DOM `<div>` it compiles to on web) does
+    // NOT clip content to maxHeight by default — content taller than
+    // the box simply renders past it, visually. With no `overflow`
+    // set, a file list longer than 160px spilled straight down,
+    // overlapping the "Project title" field and the Cancel/Create
+    // project buttons that follow it in the layout. `overflowY: 'auto'`
+    // is what actually makes maxHeight mean "scroll, don't spill" —
+    // the same idiom already established elsewhere in this codebase
+    // for a bounded list (see PdfReader.tsx's own scrollArea).
     fileList: {
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: theme.border,
       borderRadius: theme.radius.sm,
       padding: 10,
       gap: 2,
-      maxHeight: 160,
+      maxHeight: 220,
+      overflowY: 'auto',
     },
     fileRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
     fileRowText: { fontSize: 12, fontFamily: theme.fonts.mono, color: theme.subtext },
