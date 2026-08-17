@@ -1461,7 +1461,13 @@ function buildStyles(theme: Theme) {
       paddingVertical: 10,
     },
     body: { flex: 1, flexDirection: 'row' },
-    editorWrap: { flex: 1, padding: 24 },
+    // Milestone 5.5.1 Part 8 — minWidth guards the one column that's
+    // ALWAYS meant to flex (fills whatever the fixed-width Research/
+    // Preview columns don't take): with both of those now correctly
+    // fixed-width instead of fighting for flex space, the editor could
+    // otherwise be squeezed to near-zero if a user drags both siblings
+    // to their max on a narrower "wide" viewport.
+    editorWrap: { flex: 1, minWidth: 320, padding: 24 },
     editor: {
       flex: 1,
       fontFamily: theme.fonts.mono,
@@ -1477,13 +1483,27 @@ function buildStyles(theme: Theme) {
     // "Ask EduM8" tab needs full-bleed width the same way it always had
     // as its own drawer (panelBodyPadded below carries the padding the
     // other three tabs still want).
+    // Milestone 5.5.1 Part 7 — root cause of the "resize does nothing"
+    // report: this column previously had BOTH an explicit `width` AND
+    // `flex: 1`. In real CSS flexbox (which react-native-web compiles
+    // to), `flex: 1` expands to `flex-grow:1; flex-shrink:1;
+    // flex-basis:0%` — and flex-basis, even at 0%, takes priority over
+    // `width` for sizing a flex item. Confirmed live: dragging the
+    // handle correctly updated React state and the DOM's inline
+    // `style="width: ...px"` attribute every step, but
+    // getComputedStyle/getBoundingClientRect never moved off the
+    // flex-distributed value — the width was being set, just always
+    // ignored for layout. `flexGrow: 0, flexShrink: 0` (no flex-basis
+    // override) makes `width` authoritative again, matching the two
+    // fixed-width flex-row siblings this column was always meant to be.
     panel: {
       width: 320,
       maxWidth: '100%',
       borderRightWidth: StyleSheet.hairlineWidth,
       borderRightColor: theme.border,
       flexDirection: 'row',
-      flex: 1,
+      flexGrow: 0,
+      flexShrink: 0,
     },
     panelInner: { flex: 1, minWidth: 0 },
     panelBodyPadded: { flex: 1, padding: 20 },
@@ -1512,13 +1532,15 @@ function buildStyles(theme: Theme) {
     // ROW (resize handle + content column, in that order since this
     // panel is anchored to the right edge — Part 8) rather than a single
     // padded column.
+    // Milestone 5.5.1 Part 7 — same fix, same root cause as `panel` above.
     previewPanel: {
       width: 420,
       maxWidth: '100%',
       borderLeftWidth: StyleSheet.hairlineWidth,
       borderLeftColor: theme.border,
       flexDirection: 'row',
-      flex: 1,
+      flexGrow: 0,
+      flexShrink: 0,
     },
     previewInner: { flex: 1, minWidth: 0 },
     previewResizeHandle: {
