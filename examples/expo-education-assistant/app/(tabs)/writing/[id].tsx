@@ -43,6 +43,8 @@ import {
 } from '@/lib/downloadWritingProjectExport';
 import { useDragResizeWidth } from '@/lib/useDragResizeWidth';
 import { useFeatureFlags } from '@/lib/FeatureFlags';
+import { registerNavigationFlush } from '@/lib/navigationFlushGuard';
+import { getSessionNavState, setSessionNavState } from '@/lib/sessionNavCache';
 import {
   useTheme,
   usePreferences,
@@ -64,6 +66,17 @@ const WIDE_BREAKPOINT_PX = 860;
 // drawer (see the panel/askOpen removal below).
 type PanelTab = 'project' | 'references' | 'notes' | 'ask';
 type MobileTab = 'editor' | 'preview' | 'files' | 'references' | 'notes' | 'ask';
+
+/** Milestone 5.5.1 Part 25 — what this screen remembers about itself
+ * across an in-session navigate-away-and-back, via lib/sessionNavCache.ts.
+ * Deliberately narrow: NOT the manuscript content itself (that's the
+ * server's job, guaranteed current by the navigation-flush-guard —
+ * see registerNavigationFlush below — never a second source of truth
+ * for content), just enough UI position to feel like nothing moved. */
+interface WritingSessionState {
+  activeFileId: string | null;
+  cursorByFile: Record<string, { start: number; end: number }>;
+}
 
 const SAVE_STATUS_LABEL: Record<string, string> = {
   idle: '',
@@ -144,14 +157,34 @@ export default function WritingProjectEditorScreen() {
     fetchCompiledPdf,
   } = useWritingProject(client, id ?? '');
 
+  // Milestone 5.5.1 Part 25 (CORE REQUIREMENT) — cross-navigation
+  // continuity: which file was open and where the cursor sat in each
+  // one, restored from lib/sessionNavCache.ts's session-lived (not
+  // Preferences-persisted — see that module's own docstring for why
+  // this is a deliberately different durability tier) cache. Read via
+  // a lazy useState initializer, not a plain variable, so this is only
+  // ever evaluated ONCE at this component's own mount — a later
+  // unrelated re-render must never re-read a since-changed cache entry
+  // out from under an already-open editing session.
+  const sessionCacheKey = `writing:${id ?? ''}`;
+  const [initialSessionState] = useState<WritingSessionState | undefined>(() =>
+    getSessionNavState<WritingSessionState>(sessionCacheKey)
+  );
+
   // Milestone 5.3 (LaTeX Project Workspace & File Management) — the
   // project's file tree plus whichever ONE text file is currently open
   // in the editor buffer (the "selected-file model", Part 14's own
   // explicitly-reported decision over a full tab strip). Defaults to
   // the project's root file on load — the exact same file the pre-M5.3
   // single-file editor always showed, so a project with no extra files
-  // behaves identically to before.
-  const filesHook = useWritingProjectFiles(client, id ?? '');
+  // behaves identically to before — UNLESS Part 25's session cache
+  // remembers a different file from a previous visit THIS session, in
+  // which case that one opens first instead (see useWritingProjectFiles'
+  // own initialFileId option and its "falls back to root if that file no
+  // longer exists" guard).
+  const filesHook = useWritingProjectFiles(client, id ?? '', {
+    initialFileId: initialSessionState?.activeFileId ?? null,
+  });
   const {
     treeState,
     refreshTree,
@@ -303,7 +336,28 @@ export default function WritingProjectEditorScreen() {
   // resetting to the end. Session-only (an in-memory ref, not
   // Preferences — Part 9 explicitly excludes transient/content-shaped
   // state from persistence), keyed by fileId.
-  const cursorMemoryRef = useRef<Record<string, { start: number; end: number }>>({});
+  //
+  // Milestone 5.5.1 Part 25 extends this across a full navigate-away-
+  // and-back (not just switching files WITHIN one mounted session):
+  // seeded from the same sessionNavCache read as initialSessionState
+  // above, so a cursor position remembered from before the user left
+  // for Documents is still here when they come back — this ref would
+  // otherwise have been destroyed along with the rest of this
+  // component's state on unmount.
+  const cursorMemoryRef = useRef<Record<string, { start: number; end: number }>>(
+    initialSessionState?.cursorByFile ?? {}
+  );
+  // Milestone 5.5.1 Part 25 — a "latest value" ref for the unmount-time
+  // session-cache write below (see that effect's own comment): a plain
+  // `useEffect(..., [id])` cleanup closes over whatever `activeFileId`
+  // was AT THE TIME THIS EFFECT LAST RAN, not whatever it actually is
+  // the moment the component unmounts — those differ the instant the
+  // user switches files even once. Kept current every render via the
+  // effect right below, cheaply (no re-render of its own).
+  const activeFileIdRef = useRef(activeFileId);
+  useEffect(() => {
+    activeFileIdRef.current = activeFileId;
+  }, [activeFileId]);
   function handleSelectionChange(next: { start: number; end: number }): void {
     setSelection(next);
     if (activeFileId) cursorMemoryRef.current[activeFileId] = next;
@@ -387,9 +441,43 @@ export default function WritingProjectEditorScreen() {
     return () => {
       void flush();
       void flushActiveFile();
+      // Milestone 5.5.1 Part 25 — captures exactly what
+      // initialSessionState/cursorMemoryRef above read back on the NEXT
+      // mount of this same project: which file was open, and the cursor
+      // remembered for every file visited this session (cursorMemoryRef
+      // is already kept live by handleSelectionChange/the load-effect
+      // below — nothing further to do for it here beyond reading it).
+      // Reading cursorMemoryRef.current AT cleanup time is exactly the
+      // point (the freshest known cursor for every file), not a stale
+      // snapshot; the lint rule's "may have changed by the time this
+      // runs" caution is written for DOM-node refs that can be nulled
+      // out by React itself, which doesn't apply to this plain mutable
+      // object ref.
+      setSessionNavState<WritingSessionState>(sessionCacheKey, {
+        activeFileId: activeFileIdRef.current,
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        cursorByFile: cursorMemoryRef.current,
+      });
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  // Milestone 5.5.1 Part 25 (CORE REQUIREMENT) — "autosave must flush/
+  // queue before navigation." Registers this screen's flush with the
+  // app's single navigation choke point (app/(tabs)/_layout.tsx's
+  // handleNavigate) — see lib/navigationFlushGuard.ts's own docstring
+  // for the exact race this closes ("type -> immediately click
+  // Documents -> return Writing" must never lose the edit): the
+  // unmount-cleanup flush above is fire-and-forget and can't be
+  // guaranteed to land before a fast round-trip back re-fetches from
+  // the server; this one is AWAITED by the navigation itself, before
+  // the route (and this component) ever changes.
+  useEffect(() => {
+    return registerNavigationFlush(async () => {
+      await flushActiveFile();
+      await flush();
+    });
+  }, [flush, flushActiveFile]);
 
   // Milestone 5.3 Part 24/25 — Insert citation/Insert note always
   // target whichever `.tex`/text file is currently active, never

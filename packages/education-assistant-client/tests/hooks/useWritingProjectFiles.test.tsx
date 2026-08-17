@@ -57,6 +57,49 @@ describe('useWritingProjectFiles', () => {
     expect(getWritingProjectFileContent).toHaveBeenCalledWith('w1', 'root-file');
   });
 
+  it('Milestone 5.5.1 Part 25 — initialFileId opens that file instead of root, when it is a real text file in the tree', async () => {
+    const listWritingProjectFiles = vi.fn().mockResolvedValue(
+      makeTree({
+        files: [makeNode(), makeNode({ id: 'other', name: 'notes.tex', path: 'notes.tex', is_root: false })],
+      })
+    );
+    const getWritingProjectFileContent = vi.fn().mockResolvedValue({
+      file: makeNode({ id: 'other', name: 'notes.tex' }),
+      content_text: 'remembered file content',
+    });
+    const client = {
+      listWritingProjectFiles,
+      getWritingProjectFileContent,
+    } as unknown as EducationAssistantClient;
+    const { result } = renderHook(() =>
+      useWritingProjectFiles(client, 'w1', { initialFileId: 'other' })
+    );
+
+    await waitFor(() => expect(result.current.treeState.status).toBe('success'));
+    await waitFor(() => expect(result.current.activeFileLoadState.status).toBe('success'));
+    expect(result.current.activeFileId).toBe('other');
+    expect(getWritingProjectFileContent).toHaveBeenCalledWith('w1', 'other');
+  });
+
+  it('Milestone 5.5.1 Part 25 — an initialFileId that no longer exists in the tree falls back to root, exactly like having none', async () => {
+    const listWritingProjectFiles = vi.fn().mockResolvedValue(makeTree());
+    const getWritingProjectFileContent = vi.fn().mockResolvedValue({
+      file: makeNode(),
+      content_text: '\\documentclass{article}',
+    });
+    const client = {
+      listWritingProjectFiles,
+      getWritingProjectFileContent,
+    } as unknown as EducationAssistantClient;
+    const { result } = renderHook(() =>
+      useWritingProjectFiles(client, 'w1', { initialFileId: 'deleted-file-id' })
+    );
+
+    await waitFor(() => expect(result.current.treeState.status).toBe('success'));
+    await waitFor(() => expect(result.current.activeFileLoadState.status).toBe('success'));
+    expect(result.current.activeFileId).toBe('root-file');
+  });
+
   it('openFile() flushes the current file before loading the new one', async () => {
     const listWritingProjectFiles = vi.fn().mockResolvedValue(
       makeTree({

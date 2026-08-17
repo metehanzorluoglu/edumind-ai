@@ -106,9 +106,18 @@ function findNode(tree: WritingProjectFileTree | null, fileId: string | null): W
 export function useWritingProjectFiles(
   client: EducationAssistantClient,
   projectId: string,
-  options: { autosaveDelayMs?: number } = {}
+  options: { autosaveDelayMs?: number; initialFileId?: string | null } = {}
 ): UseWritingProjectFilesResult {
   const autosaveDelayMs = options.autosaveDelayMs ?? DEFAULT_AUTOSAVE_DELAY_MS;
+  // Milestone 5.5.1 Part 25 — a caller (Writing's own screen, restoring
+  // from its cross-navigation session cache — see lib/sessionNavCache.ts
+  // there) can request a specific file to open first, instead of always
+  // defaulting to the root file. Read once, at the identity this hook
+  // instance was created with — like projectId itself, this isn't meant
+  // to react to later prop changes within the same mount (there's no
+  // "switch the initial file mid-session" use case), matching the
+  // effect below's own "never re-fires" contract.
+  const initialFileIdRef = useRef(options.initialFileId ?? null);
 
   const [treeState, setTreeState] = useState<WritingFileTreeState>({ status: 'idle' });
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
@@ -268,9 +277,21 @@ export function useWritingProjectFiles(
   // time the tree loads successfully, mirroring the pre-M5.3 editor's
   // own "always shows main.tex" behavior. Never re-fires after the
   // user has explicitly opened something (activeFileId already set).
+  //
+  // Milestone 5.5.1 Part 25 — a requested initialFileId takes priority
+  // over the root file, but only if it's still a real TEXT file in this
+  // exact tree (a file remembered from a previous session may since
+  // have been deleted/moved/converted — falling back to root rather
+  // than silently doing nothing keeps this exactly as safe as the
+  // pre-Part-25 default behavior in that edge case).
   useEffect(() => {
-    if (treeState.status === 'success' && activeFileIdRef.current === null && treeState.data.root_file_id) {
-      void openFile(treeState.data.root_file_id);
+    if (treeState.status === 'success' && activeFileIdRef.current === null) {
+      const remembered = initialFileIdRef.current;
+      const rememberedIsValid =
+        remembered !== null &&
+        treeState.data.files.some((f) => f.id === remembered && f.kind === 'text');
+      const toOpen = rememberedIsValid ? remembered : treeState.data.root_file_id;
+      if (toOpen) void openFile(toOpen);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [treeState]);

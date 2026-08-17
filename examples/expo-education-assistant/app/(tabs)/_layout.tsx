@@ -19,6 +19,7 @@ import { IconButton } from '@/components/ui/IconButton';
 import { useAuth } from '@/lib/AuthProvider';
 import { ChatConversationsProvider } from '@/lib/ChatConversationsContext';
 import { useClient } from '@/lib/ClientProvider';
+import { flushBeforeNavigate } from '@/lib/navigationFlushGuard';
 import { DARK_PALETTE, usePreferences, useTheme } from '@/lib/Preferences';
 
 const WIDE_PANEL_BREAKPOINT_PX = 900;
@@ -97,17 +98,30 @@ export default function TabsLayout() {
     return <Redirect href="/login" />;
   }
 
-  function handleSelect(id: string): void {
+  // Milestone 5.5.1 Part 25 — every in-app navigation in this app funnels
+  // through one of the three functions below (this layout is the single
+  // <Slot/> choke point every route change passes through — see the
+  // module docstring). Awaiting flushBeforeNavigate() first means a
+  // screen with debounced unsaved work (currently only the Writing
+  // editor — see [id].tsx's registerNavigationFlush call) always gets a
+  // real chance to actually save before its own unmount tears its state
+  // down, closing the race the unmount-cleanup effect alone couldn't:
+  // "type -> immediately click Documents -> return Writing" must never
+  // lose the edit. A no-op, effectively instant await for every other
+  // screen (nothing registered).
+  async function handleSelect(id: string): Promise<void> {
+    await flushBeforeNavigate();
     router.push(`/chat/${id}`);
     setDrawerOpen(false);
   }
 
-  function handleNewChat(): void {
+  async function handleNewChat(): Promise<void> {
+    await flushBeforeNavigate();
     router.push('/chat/new');
     setDrawerOpen(false);
   }
 
-  function handleNavigate(section: NavSection): void {
+  async function handleNavigate(section: NavSection): Promise<void> {
     // Frontend/Platform Milestone 3.2.2 Part A — desktop-only: the Chat
     // nav icon becomes the Chat drawer's toggle once already inside Chat,
     // reusing `preferences.sidebarCollapsed` (the SAME state the lower
@@ -119,6 +133,7 @@ export default function TabsLayout() {
     // gates this entirely off on mobile/narrow web, which keeps
     // BottomNav's own "Chat" press exactly as it was before this
     // milestone (mobile has no persistent drawer to toggle).
+    await flushBeforeNavigate();
     if (isWide && section === 'chat') {
       if (activeSection === 'chat') {
         update('sidebarCollapsed', !preferences.sidebarCollapsed);
@@ -130,7 +145,23 @@ export default function TabsLayout() {
       if (preferences.sidebarCollapsed) update('sidebarCollapsed', false);
       return;
     }
-    router.push(ROUTE_BY_SECTION[section] as never);
+    // Milestone 5.5.1 Part 25 — real-browser validation (checking
+    // window.history.length before/after repeated same-icon clicks)
+    // caught a genuine duplicate-history bug here: clicking a nav icon
+    // while ALREADY on that exact section's own top-level route (e.g.
+    // pressing "Writing" twice in a row while sitting on /writing)
+    // pushed a SECOND, identical history entry every time — so the
+    // browser's Back button, faced with two adjacent identical entries,
+    // appeared to do nothing (landing on the same URL again) instead of
+    // actually leaving the section, exactly the "broken loops or
+    // duplicate history" Part 25 explicitly rules out. A route that
+    // ADDS a path segment (e.g. /documents/abc123 -> pressing
+    // "Documents" to return to the /documents list) is still a real,
+    // intentional navigation and must still push — only the exact-match
+    // case is the no-op.
+    if (pathname !== ROUTE_BY_SECTION[section]) {
+      router.push(ROUTE_BY_SECTION[section] as never);
+    }
     setDrawerOpen(false);
   }
 
