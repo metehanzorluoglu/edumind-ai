@@ -21,7 +21,7 @@ from __future__ import annotations
 import io
 import unicodedata
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from app.core.writing_file_validation import (
     InvalidFileNameError,
@@ -422,7 +422,18 @@ def inspect_archive(data: bytes, *, max_archive_bytes: int) -> ImportInspection:
 
         kind = kind_for_extension(name)
         if kind is None:
-            warnings.append(ImportWarning(path=rel_path, reason="Unsupported file type — not imported"))
+            # Milestone 5.5.2 Part 17 — `.gitignore` stays unsupported
+            # (repository tooling metadata, not a project document —
+            # deliberately NOT treated as equivalent to README's own
+            # Part 16 support), but gets its own truthful reason instead
+            # of the generic catch-all, matching Part 24's "meaningful
+            # diagnostics, not just a blanket message" requirement.
+            reason = (
+                "Repository metadata is not imported by EduM8."
+                if name.lower() == ".gitignore"
+                else "Unsupported file type — not imported"
+            )
+            warnings.append(ImportWarning(path=rel_path, reason=reason))
             continue
 
         # Bounded read — Part 6's real defense, independent of whatever
@@ -467,6 +478,20 @@ def inspect_archive(data: bytes, *, max_archive_bytes: int) -> ImportInspection:
     if not files:
         raise ArchiveRejected("No supported files remained after filtering — nothing to import")
 
+    # Milestone 5.5.2 Part 14/15 — real-world finding: publisher/
+    # university templates (the UNLV thesis fixture is the exact real
+    # case) are conventionally distributed as a single ZIP-relative
+    # wrapper folder (e.g. "UNLV_Thesis_Template_Clean/thesis.tex",
+    # "UNLV_Thesis_Template_Clean/Chapter1.tex", ...) — a packaging
+    # convention, not a meaningful part of the project's own structure.
+    # Preserving it verbatim left every such project permanently nested
+    # one level deeper than any project a user builds by hand. Stripped
+    # here — the ONE call site for both the import preview and the
+    # actual create endpoint (routes_writing_import.py) — so both stay
+    # consistent by construction, and root detection right below
+    # already operates on the normalized paths.
+    files = _normalize_common_wrapper_prefix(files)
+
     root_candidates, preselected = _detect_root_candidates(files)
 
     suggested_title = "Imported Project"
@@ -481,6 +506,33 @@ def inspect_archive(data: bytes, *, max_archive_bytes: int) -> ImportInspection:
         warnings=warnings,
         total_size_bytes=running_total,
     )
+
+
+def _normalize_common_wrapper_prefix(files: list[ImportFileEntry]) -> list[ImportFileEntry]:
+    """Milestone 5.5.2 Part 14 — strips exactly one common top-level
+    directory when EVERY accepted file lives under it, e.g.
+    "UNLV_Thesis_Template_Clean/thesis.tex" -> "thesis.tex". A no-op
+    (returns `files` unchanged) whenever that isn't unambiguously true:
+    any file already at top level, or files split across more than one
+    top-level directory, both leave `files` untouched — genuinely
+    multiple top-level roots are preserved exactly as-is, never merged
+    or guessed at. No new path-safety validation is needed here: every
+    segment being stripped or kept was already fully validated by
+    `_normalize_entry_segments` during the original parse, and
+    stripping the SAME leading segment from every one of a set of
+    already-unique paths cannot introduce a new collision (a bijection
+    on the remaining suffixes)."""
+    if not files:
+        return files
+    first_parts = files[0].path.split("/", 1)
+    if len(first_parts) < 2:
+        return files  # the very first file is already at top level
+    prefix = first_parts[0]
+    for f in files:
+        parts = f.path.split("/", 1)
+        if len(parts) < 2 or parts[0] != prefix:
+            return files
+    return [replace(f, path=f.path.split("/", 1)[1]) for f in files]
 
 
 def _detect_root_candidates(files: list[ImportFileEntry]) -> tuple[list[str], str | None]:

@@ -58,6 +58,101 @@ class TestHappyPath:
         assert inspection.suggested_title == "My Paper"
 
 
+class TestWrapperFolderNormalization:
+    """Milestone 5.5.2 Part 14 — real-world finding: publisher/
+    university templates (the UNLV fixture is the exact real case) are
+    conventionally shipped as one common top-level wrapper directory."""
+
+    def test_common_wrapper_directory_is_stripped(self) -> None:
+        data = _zip_bytes(
+            {
+                "UNLV_Thesis_Template_Clean/thesis.tex": b"\\documentclass{book}",
+                "UNLV_Thesis_Template_Clean/Chapter1.tex": b"Chapter one.",
+                "UNLV_Thesis_Template_Clean/UNLVthesis.sty": b"\\ProvidesPackage{UNLVthesis}",
+            }
+        )
+        inspection = inspect_archive(data, max_archive_bytes=30_000_000)
+        paths = sorted(f.path for f in inspection.files)
+        assert paths == ["Chapter1.tex", "UNLVthesis.sty", "thesis.tex"]
+        # Root detection (Part 15) operates on the NORMALIZED paths.
+        assert inspection.preselected_root == "thesis.tex"
+
+    def test_nested_subfolders_under_the_wrapper_are_preserved_relative_to_it(self) -> None:
+        data = _zip_bytes(
+            {
+                "Template/main.tex": b"\\documentclass{article}",
+                "Template/sections/intro.tex": b"Intro.",
+            }
+        )
+        inspection = inspect_archive(data, max_archive_bytes=30_000_000)
+        paths = sorted(f.path for f in inspection.files)
+        assert paths == ["main.tex", "sections/intro.tex"]
+
+    def test_no_normalization_when_a_file_is_already_at_top_level(self) -> None:
+        data = _zip_bytes(
+            {
+                "Template/main.tex": b"\\documentclass{article}",
+                "notes.txt": b"top-level notes",
+            }
+        )
+        inspection = inspect_archive(data, max_archive_bytes=30_000_000)
+        paths = sorted(f.path for f in inspection.files)
+        assert "Template/main.tex" in paths
+        assert "notes.txt" in paths
+
+    def test_no_normalization_across_two_genuinely_independent_top_level_directories(self) -> None:
+        data = _zip_bytes(
+            {
+                "ProjectA/main.tex": b"\\documentclass{article}",
+                "ProjectB/other.tex": b"Some text.",
+            }
+        )
+        inspection = inspect_archive(data, max_archive_bytes=30_000_000)
+        paths = sorted(f.path for f in inspection.files)
+        assert paths == ["ProjectA/main.tex", "ProjectB/other.tex"]
+
+    def test_already_flat_project_is_unaffected(self) -> None:
+        data = _zip_bytes({"main.tex": b"\\documentclass{article}", "notes.tex": b"Notes."})
+        inspection = inspect_archive(data, max_archive_bytes=30_000_000)
+        paths = sorted(f.path for f in inspection.files)
+        assert paths == ["main.tex", "notes.tex"]
+
+
+class TestDocumentationFileSupport:
+    """Milestone 5.5.2 Part 16/17 — real-world finding: the UNLV fixture
+    ships a README.md with setup/thesis-requirement instructions;
+    silently dropping it was not acceptable. .gitignore stays
+    unsupported but gets a specific, honest reason."""
+
+    def test_readme_md_is_imported_as_a_readable_text_file(self) -> None:
+        data = _zip_bytes(
+            {"main.tex": b"\\documentclass{article}", "README.md": b"# Setup\nRead this first."}
+        )
+        inspection = inspect_archive(data, max_archive_bytes=30_000_000)
+        readme = next(f for f in inspection.files if f.path == "README.md")
+        assert readme.kind == "text"
+        assert readme.content_text == "# Setup\nRead this first."
+        assert inspection.warnings == []
+
+    def test_readme_is_never_a_root_candidate(self) -> None:
+        data = _zip_bytes(
+            {
+                "main.tex": b"\\documentclass{article}",
+                "README.md": b"# Not LaTeX, even though this line mentions \\documentclass",
+            }
+        )
+        inspection = inspect_archive(data, max_archive_bytes=30_000_000)
+        assert inspection.root_candidates == ["main.tex"]
+        assert inspection.preselected_root == "main.tex"
+
+    def test_gitignore_gets_a_specific_reason_not_the_generic_message(self) -> None:
+        data = _zip_bytes({"main.tex": b"\\documentclass{article}", ".gitignore": b"*.aux\n*.log"})
+        inspection = inspect_archive(data, max_archive_bytes=30_000_000)
+        assert [f.path for f in inspection.files] == ["main.tex"]
+        assert len(inspection.warnings) == 1
+        assert inspection.warnings[0].reason == "Repository metadata is not imported by EduM8."
+
+
 class TestZipSlipAndPathTraversal:
     """Part 7 — RELEASE CRITICAL."""
 

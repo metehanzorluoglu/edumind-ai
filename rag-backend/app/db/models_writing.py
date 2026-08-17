@@ -170,7 +170,19 @@ WritingProjectFileKind = Literal["folder", "text", "binary"]
 #: compiler-security review did not extend to auditing that surface, so
 #: it stays out until a dedicated review, same posture as ZIP import
 #: being deferred to M5.4 rather than rushed in).
-TEXT_FILE_EXTENSIONS = frozenset({".tex", ".cls", ".sty", ".txt"})
+#: Milestone 5.5.2 Part 16 — real-world finding: serious academic
+#: templates ship a README with setup/publisher/thesis-requirement
+#: instructions (the UNLV fixture is the exact real case), and
+#: silently dropping it on import is not acceptable. `.md` support is
+#: deliberately inert: plain source view only (no HTML/script
+#: execution — see WritingAssetPreview/the file-tree "open" path,
+#: neither of which render Markdown as HTML), never a compile root
+#: (routes_writing.py's root-file endpoint independently requires a
+#: literal ".tex" name regardless of what's in this set — see its own
+#: docstring), and never embedded/indexed anywhere (writing-project
+#: files were never part of the RAG/vector pipeline to begin with,
+#: which only ever indexes Document Library uploads).
+TEXT_FILE_EXTENSIONS = frozenset({".tex", ".cls", ".sty", ".txt", ".md"})
 BINARY_FILE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".pdf"})
 ALL_ALLOWED_EXTENSIONS = TEXT_FILE_EXTENSIONS | BINARY_FILE_EXTENSIONS
 
