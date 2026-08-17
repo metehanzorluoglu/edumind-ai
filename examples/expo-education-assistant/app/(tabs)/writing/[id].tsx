@@ -15,7 +15,6 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
   useWindowDimensions,
 } from 'react-native';
@@ -30,6 +29,7 @@ import { AskEduM8Panel } from '@/components/writing/AskEduM8Panel';
 import { BibliographyModal } from '@/components/writing/BibliographyModal';
 import { CompileDiagnostics } from '@/components/writing/CompileDiagnostics';
 import { CompiledPdfPreview } from '@/components/writing/CompiledPdfPreview';
+import { LatexCodeEditor, type LatexCodeEditorHandle } from '@/components/writing/LatexCodeEditor';
 import { NotesPanel } from '@/components/writing/NotesPanel';
 import { ReferencePickerModal } from '@/components/writing/ReferencePickerModal';
 import { ReferencesPanel } from '@/components/writing/ReferencesPanel';
@@ -199,7 +199,14 @@ export default function WritingProjectEditorScreen() {
   );
   const [mobileTab, setMobileTab] = useState<MobileTab>('editor');
   const [selection, setSelection] = useState({ start: 0, end: 0 });
-  const editorRef = useRef<TextInput>(null);
+  // Milestone 5.5.1 Part 11 — the plain TextInput this ref used to point
+  // to is now LatexCodeEditor (web: real syntax highlighting/autocomplete
+  // over react-simple-code-editor; native: the exact same TextInput as
+  // before, unchanged). LatexCodeEditorHandle keeps the one thing this
+  // screen actually needs from it — `.focus()` — the same shape a plain
+  // TextInput ref already exposed, so insertAtCursor's own call site
+  // below needed no changes.
+  const editorRef = useRef<LatexCodeEditorHandle>(null);
 
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameText, setRenameText] = useState('');
@@ -672,6 +679,35 @@ export default function WritingProjectEditorScreen() {
   // transient context prefix (see AskEduM8Panel/useWritingAsk).
   const manuscriptSelectionText = content.slice(selection.start, selection.end);
 
+  // Milestone 5.5.1 Part 15-19 — real completion data for the editor's
+  // autocomplete: citation keys from the project's ACTUAL added
+  // references (never invented) and .tex file paths (extension
+  // stripped, matching how \input/\include arguments are conventionally
+  // written) from the real file tree. Recomputed only when those
+  // underlying lists actually change, not on every keystroke.
+  const autocompleteData = useMemo(() => {
+    // Depends on referencesState/treeState directly (not the `references`
+    // local above) so this only recomputes when the underlying fetched
+    // data actually changes — `references` itself is a fresh `[]`
+    // literal every render while referencesState.status !== 'success',
+    // by the same deliberate "reads fresh every render" design as
+    // referenceDocumentIds above (see its own comment); that's fine for
+    // a plain render-time read, but would defeat this memo's purpose.
+    const currentReferences =
+      referencesState.status === 'success' ? referencesState.data.references : [];
+    return {
+      citationKeys: currentReferences
+        .filter((r): r is typeof r & { citation_key: string } => !!r.citation_key)
+        .map((r) => ({ key: r.citation_key, title: r.title })),
+      filePaths:
+        treeState.status === 'success'
+          ? treeState.data.files
+              .filter((f) => f.kind === 'text' && f.path.endsWith('.tex'))
+              .map((f) => f.path.replace(/\.tex$/, ''))
+          : [],
+    };
+  }, [referencesState, treeState]);
+
   // Milestone 5.1 Part 34/35 — "Preview is current" vs "Source changed
   // since last compile", derived from comparing the CURRENT
   // source_hash (references panel's own always-fresh state — refetched
@@ -867,7 +903,9 @@ export default function WritingProjectEditorScreen() {
             this whole tree via the same technique rather than unmounting
             it — closing and reopening the drawer must not lose any of
             this either. */}
-        <View style={[styles.panelBodyPadded, { display: panelTab === 'project' ? 'flex' : 'none' }]}>
+        <View
+          style={[styles.panelBodyPadded, { display: panelTab === 'project' ? 'flex' : 'none' }]}
+        >
           <WritingFileTree
             tree={treeState.status === 'success' ? treeState.data : null}
             loading={treeState.status === 'loading'}
@@ -1303,35 +1341,27 @@ export default function WritingProjectEditorScreen() {
             ) : activeFileLoadState.status === 'loading' && !isActiveFileEditable ? (
               <ActivityIndicator style={styles.spinner} color={theme.accent} />
             ) : (
-              <TextInput
+              <LatexCodeEditor
                 ref={editorRef}
                 value={content}
-                onChangeText={setActiveFileContent}
+                onValueChange={setActiveFileContent}
                 selection={selection}
-                onSelectionChange={(e) => handleSelectionChange(e.nativeEvent.selection)}
+                onSelectionChange={handleSelectionChange}
+                editable={isActiveFileEditable}
+                theme={theme}
+                placeholder="\\documentclass{article}…"
+                autocompleteData={autocompleteData}
+                accessibilityLabel="LaTeX source editor"
                 // Milestone 5.5 Part 12 — see handleShortcutKey's own
-                // comment: react-native-web's TextInput stops keydown
-                // from ever reaching the document-level listener above,
-                // so the same handler is wired here too for when the
-                // cursor is inside the editor (the common case). RN's
-                // official TextInputKeyPressEventData only types `key`,
-                // but react-native-web forwards the real DOM
-                // KeyboardEvent underneath (ctrlKey/metaKey/
-                // preventDefault included) — a web-only enrichment
-                // handleShortcutKey's own param type documents.
-                onKeyPress={(e) =>
+                // comment: a raw DOM <textarea> doesn't stop keydown from
+                // reaching the document-level listener above the way
+                // react-native-web's old TextInput did, but this is wired
+                // explicitly anyway — see LatexCodeEditor's own comment on
+                // never depending on unforced event bubbling for a
+                // release-critical shortcut path.
+                onShortcutKeyDown={(e) =>
                   handleShortcutKey(e as unknown as Parameters<typeof handleShortcutKey>[0])
                 }
-                multiline
-                editable={isActiveFileEditable}
-                style={styles.editor}
-                placeholder="\\documentclass{article}…"
-                placeholderTextColor={theme.faint}
-                autoCapitalize="none"
-                autoCorrect={false}
-                spellCheck={false}
-                textAlignVertical="top"
-                accessibilityLabel="LaTeX source editor"
               />
             )}
           </View>
@@ -1562,16 +1592,6 @@ function buildStyles(theme: Theme) {
     // otherwise be squeezed to near-zero if a user drags both siblings
     // to their max on a narrower "wide" viewport.
     editorWrap: { flex: 1, minWidth: 320, padding: 24 },
-    editor: {
-      flex: 1,
-      fontFamily: theme.fonts.mono,
-      fontSize: 13,
-      lineHeight: 20,
-      color: theme.text,
-      backgroundColor: theme.cardPressed,
-      borderRadius: theme.radius.md,
-      padding: 16,
-    },
     // Milestone 5.5 Part 6/8 — the unified Research panel is now a ROW
     // (content column + resize handle), not a padded column, since the
     // "Ask EduM8" tab needs full-bleed width the same way it always had

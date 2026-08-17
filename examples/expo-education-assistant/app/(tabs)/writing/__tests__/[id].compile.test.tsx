@@ -1,5 +1,6 @@
 import { Platform } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
+import { LatexCodeEditor } from '@/components/writing/LatexCodeEditor';
 import { AuthProvider } from '@/lib/AuthProvider';
 import { ClientProvider } from '@/lib/ClientProvider';
 import { FeatureFlagsProvider } from '@/lib/FeatureFlags';
@@ -320,9 +321,7 @@ describe('WritingProjectEditorScreen — Compile (Milestone 5.1)', () => {
       await flushAsync();
     });
 
-    const editor = renderer.root.find(
-      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
-    );
+    const editor = renderer.root.find((n) => n.type === LatexCodeEditor);
     const expectedOffset = PROJECT.main_tex_content.split('\n')[0]!.length + 1; // start of line 2
     expect(editor.props.selection).toEqual({ start: expectedOffset, end: expectedOffset });
   });

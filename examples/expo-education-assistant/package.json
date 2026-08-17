@@ -22,6 +22,7 @@
     "expo-system-ui": "~6.0.9",
     "expo-web-browser": "~15.0.11",
     "pdfjs-dist": "3.11.174",
+    "prismjs": "^1.30.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-native": "0.81.5",
@@ -32,12 +33,16 @@
     "react-native-screens": "~4.16.0",
     "react-native-svg": "15.12.1",
     "react-native-web": "^0.21.2",
-    "react-native-worklets": "0.5.1"
+    "react-native-worklets": "0.5.1",
+    "react-simple-code-editor": "^0.14.1",
+    "textarea-caret": "^3.1.0"
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",
+    "@types/prismjs": "^1.26.6",
     "@types/react": "~19.1.10",
     "@types/react-test-renderer": "19.1.0",
+    "@types/textarea-caret": "^3.0.4",
     "eslint": "^9.39.5",
     "eslint-config-expo": "~10.0.0",
     "eslint-config-prettier": "^10.1.8",

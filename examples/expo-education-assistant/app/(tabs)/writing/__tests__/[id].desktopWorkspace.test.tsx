@@ -12,6 +12,7 @@
  */
 import { Dimensions, Platform } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
+import { LatexCodeEditor } from '@/components/writing/LatexCodeEditor';
 import { AuthProvider } from '@/lib/AuthProvider';
 import { ClientProvider } from '@/lib/ClientProvider';
 import { FeatureFlagsProvider } from '@/lib/FeatureFlags';
@@ -233,12 +234,7 @@ describe('WritingProjectEditorScreen — desktop Research panel (Milestone 5.5)'
     // References panel on first open of any project — Files is the
     // primary content and belongs first).
     expect(findByTextIncluding(renderer.root, 'Research')).toBeTruthy();
-    expect(
-      renderer.root.find(
-        (n) =>
-          String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
-      )
-    ).toBeTruthy();
+    expect(renderer.root.find((n) => n.type === LatexCodeEditor)).toBeTruthy();
     expect(findByTextIncluding(renderer.root, 'main.tex')).toBeTruthy();
 
     act(() => {
@@ -367,21 +363,21 @@ describe('WritingProjectEditorScreen — desktop Research panel (Milestone 5.5)'
   // real browser instead (Milestone 5.5 Part 32/33 real browser
   // validation), where the DOM is genuine rather than approximated.
   //
-  // The editor's own onKeyPress wiring below IS covered here, without
-  // jsdom, by calling the prop directly — real-browser validation is
-  // what actually found the bug this closes: react-native-web's
-  // <TextInput> calls e.stopPropagation() on every keydown while
-  // focused, so the document-level listener above never sees a
-  // Cmd/Ctrl+S/Enter/K pressed while the cursor is in the editor (i.e.
-  // almost all the time a user would reach for one of these). Wiring
-  // the SAME handler to the TextInput's own onKeyPress closes that gap.
+  // The editor's own onShortcutKeyDown wiring below IS covered here,
+  // without jsdom, by calling the prop directly — real-browser
+  // validation is what actually found the bug this closes:
+  // react-native-web's OLD <TextInput> called e.stopPropagation() on
+  // every keydown while focused, so the document-level listener above
+  // never saw a Cmd/Ctrl+S/Enter/K pressed while the cursor was in the
+  // editor (i.e. almost all the time a user would reach for one of
+  // these). Milestone 5.5.1 Part 11 replaced that TextInput with
+  // LatexCodeEditor (see its own comment: a raw <textarea> doesn't
+  // actually stop propagation the way RNW's TextInput did, but the
+  // explicit onShortcutKeyDown wiring is kept anyway, so this coverage
+  // stays exactly as meaningful as it always was).
   describe('keyboard shortcuts while focus is inside the editor (Part 12 regression)', () => {
     function findEditor(root: ReactTestInstance): ReactTestInstance {
-      const match = root.find(
-        (n) =>
-          String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
-      );
-      return match;
+      return root.find((n) => n.type === LatexCodeEditor);
     }
 
     it('Ctrl+S saves without also falling through to a plain keystroke', async () => {
@@ -390,7 +386,7 @@ describe('WritingProjectEditorScreen — desktop Research panel (Milestone 5.5)'
       const preventDefault = jest.fn();
 
       await act(async () => {
-        editor.props.onKeyPress({ key: 's', ctrlKey: true, metaKey: false, preventDefault });
+        editor.props.onShortcutKeyDown({ key: 's', ctrlKey: true, metaKey: false, preventDefault });
         await flushAsync();
       });
 
@@ -403,7 +399,7 @@ describe('WritingProjectEditorScreen — desktop Research panel (Milestone 5.5)'
       const preventDefault = jest.fn();
 
       await act(async () => {
-        editor.props.onKeyPress({ key: 's', ctrlKey: false, metaKey: false, preventDefault });
+        editor.props.onShortcutKeyDown({ key: 's', ctrlKey: false, metaKey: false, preventDefault });
         await flushAsync();
       });
 
@@ -416,7 +412,7 @@ describe('WritingProjectEditorScreen — desktop Research panel (Milestone 5.5)'
       const preventDefault = jest.fn();
 
       await act(async () => {
-        editor.props.onKeyPress({ key: 'k', ctrlKey: true, metaKey: false, preventDefault });
+        editor.props.onShortcutKeyDown({ key: 'k', ctrlKey: true, metaKey: false, preventDefault });
         await flushAsync();
       });
 

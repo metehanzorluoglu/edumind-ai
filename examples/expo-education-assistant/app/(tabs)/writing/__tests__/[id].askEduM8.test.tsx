@@ -20,6 +20,7 @@
  */
 import { Platform } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
+import { LatexCodeEditor } from '@/components/writing/LatexCodeEditor';
 import { AuthProvider } from '@/lib/AuthProvider';
 import { ClientProvider } from '@/lib/ClientProvider';
 import { FeatureFlagsProvider } from '@/lib/FeatureFlags';
@@ -579,9 +580,7 @@ describe('Writing workspace — Ask EduM8 (Milestone 5.2)', () => {
       patchScopeRoute(),
       messagesRoute(),
     ]);
-    const editorBefore = renderer.root.find(
-      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
-    );
+    const editorBefore = renderer.root.find((n) => n.type === LatexCodeEditor);
     const contentBefore = editorBefore.props.value;
 
     openAskPanel(renderer);
@@ -597,9 +596,7 @@ describe('Writing workspace — Ask EduM8 (Milestone 5.2)', () => {
     act(() => {
       findPressableByLabel(renderer.root, 'Editor').props.onPress();
     });
-    const editorAfter = renderer.root.find(
-      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
-    );
+    const editorAfter = renderer.root.find((n) => n.type === LatexCodeEditor);
     expect(editorAfter.props.value).toBe(contentBefore);
   });
 
@@ -620,9 +617,7 @@ describe('Writing workspace — Ask EduM8 (Milestone 5.2)', () => {
       // test for the exact same reason).
       patchProjectRoute(),
     ]);
-    const editorBefore = renderer.root.find(
-      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
-    );
+    const editorBefore = renderer.root.find((n) => n.type === LatexCodeEditor);
     const contentBefore = editorBefore.props.value;
 
     openAskPanel(renderer);
@@ -636,9 +631,7 @@ describe('Writing workspace — Ask EduM8 (Milestone 5.2)', () => {
     act(() => {
       findPressableByLabel(renderer.root, 'Editor').props.onPress();
     });
-    const editorAfter = renderer.root.find(
-      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
-    );
+    const editorAfter = renderer.root.find((n) => n.type === LatexCodeEditor);
     expect(editorAfter.props.value).toContain('\\cite{Doe2020Laser}');
     expect(editorAfter.props.value).not.toBe(contentBefore);
   });
@@ -654,9 +647,7 @@ describe('Writing workspace — Ask EduM8 (Milestone 5.2)', () => {
       bibtexRoute(),
       patchProjectRoute(),
     ]);
-    const editor = renderer.root.find(
-      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
-    );
+    const editor = renderer.root.find((n) => n.type === LatexCodeEditor);
     const contentBefore: string = editor.props.value;
     const selectedText = contentBefore.slice(0, 15);
     expect(selectedText.length).toBe(15);
@@ -664,7 +655,7 @@ describe('Writing workspace — Ask EduM8 (Milestone 5.2)', () => {
     // A genuine (non-collapsed) manuscript selection, exactly like a
     // researcher highlighting a passage to ask EduM8 about it.
     act(() => {
-      editor.props.onSelectionChange({ nativeEvent: { selection: { start: 0, end: 15 } } });
+      editor.props.onSelectionChange({ start: 0, end: 15 });
     });
 
     openAskPanel(renderer);
@@ -685,9 +676,7 @@ describe('Writing workspace — Ask EduM8 (Milestone 5.2)', () => {
     act(() => {
       findPressableByLabel(renderer.root, 'Editor').props.onPress();
     });
-    const editorAfter = renderer.root.find(
-      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
-    );
+    const editorAfter = renderer.root.find((n) => n.type === LatexCodeEditor);
     // Root cause: insertAtCursor used to slice out [selection.start,
     // selection.end) and replace it — silently deleting the very passage
     // selected as AI context. The selection must survive verbatim, and
@@ -838,11 +827,9 @@ describe('Writing workspace — Ask EduM8 (Milestone 5.2)', () => {
       messagesRoute(),
     ]);
 
-    const editor = renderer.root.find(
-      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
-    );
+    const editor = renderer.root.find((n) => n.type === LatexCodeEditor);
     act(() => {
-      editor.props.onSelectionChange({ nativeEvent: { selection: { start: 0, end: 15 } } });
+      editor.props.onSelectionChange({ start: 0, end: 15 });
     });
 
     openAskPanel(renderer);

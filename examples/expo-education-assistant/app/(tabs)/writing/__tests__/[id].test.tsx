@@ -1,5 +1,6 @@
 import { Platform } from 'react-native';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
+import { LatexCodeEditor } from '@/components/writing/LatexCodeEditor';
 import { AuthProvider } from '@/lib/AuthProvider';
 import { ClientProvider } from '@/lib/ClientProvider';
 import { FeatureFlagsProvider } from '@/lib/FeatureFlags';
@@ -47,6 +48,22 @@ function findPressableByLabel(root: ReactTestInstance, label: string): ReactTest
   return root.find(
     (node) => typeof node.props.onPress === 'function' && node.props.accessibilityLabel === label
   );
+}
+
+// Milestone 5.5.1 Part 11 — the editor is now LatexCodeEditor (see that
+// component's own comment for why: web gets real syntax highlighting/
+// autocomplete via react-simple-code-editor, whose actual rendered
+// <textarea> react-test-renderer never mounts into a real DOM anyway,
+// so there's nothing meaningful to query there). Finding it by
+// COMPONENT IDENTITY and driving it through its own documented props
+// contract (value/onValueChange/selection/onSelectionChange) is more
+// robust than the old "type === 'TextInput'" query ever was, and tests
+// exactly the boundary this screen owns — that it wires the editor
+// correctly — rather than react-simple-code-editor's own internals
+// (covered separately by real-browser validation, per this milestone's
+// own established methodology).
+function findLatexEditor(root: ReactTestInstance): ReactTestInstance {
+  return root.find((n) => n.type === LatexCodeEditor);
 }
 
 interface FetchRoute {
@@ -265,9 +282,7 @@ describe('WritingProjectEditorScreen', () => {
   it('loads the project and seeds the editor with its exact saved source', async () => {
     const renderer = await renderScreen([getProjectRoute(), referencesRoute()]);
     expect(findByTextIncluding(renderer.root, 'Laser Cutting Paper')).toBeTruthy();
-    const editor = renderer.root.find(
-      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
-    );
+    const editor = findLatexEditor(renderer.root);
     expect(editor.props.value).toBe(PROJECT.main_tex_content);
   });
 
@@ -288,11 +303,9 @@ describe('WritingProjectEditorScreen', () => {
       ([, init]: [string, RequestInit]) => init?.method === 'PATCH'
     ).length;
 
-    const editor = renderer.root.find(
-      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
-    );
+    const editor = findLatexEditor(renderer.root);
     act(() => {
-      editor.props.onChangeText('\\section{Introduction}');
+      editor.props.onValueChange('\\section{Introduction}');
     });
 
     expect(findByTextIncluding(renderer.root, 'Editing…')).toBeTruthy();
@@ -310,12 +323,9 @@ describe('WritingProjectEditorScreen', () => {
 
     jest.useFakeTimers();
     try {
-      const editor = renderer.root.find(
-        (n) =>
-          String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
-      );
+      const editor = findLatexEditor(renderer.root);
       act(() => {
-        editor.props.onChangeText('\\section{Introduction}');
+        editor.props.onValueChange('\\section{Introduction}');
       });
 
       await act(async () => {
@@ -395,12 +405,9 @@ describe('WritingProjectEditorScreen', () => {
       act(() => {
         findPressableByLabel(renderer.root, 'Editor').props.onPress();
       });
-      const editor = renderer.root.find(
-        (n) =>
-          String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
-      );
+      const editor = findLatexEditor(renderer.root);
       act(() => {
-        editor.props.onChangeText('\\cite{FreshlyTypedKey}');
+        editor.props.onValueChange('\\cite{FreshlyTypedKey}');
       });
       await act(async () => {
         await jest.advanceTimersByTimeAsync(2000);
@@ -439,17 +446,11 @@ describe('WritingProjectEditorScreen', () => {
     act(() => {
       findPressableByLabel(renderer.root, 'Editor').props.onPress();
     });
-    const editorBefore = renderer.root.find(
-      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
-    );
+    const editorBefore = findLatexEditor(renderer.root);
     act(() => {
       editorBefore.props.onSelectionChange({
-        nativeEvent: {
-          selection: {
-            start: editorBefore.props.value.length,
-            end: editorBefore.props.value.length,
-          },
-        },
+        start: editorBefore.props.value.length,
+        end: editorBefore.props.value.length,
       });
     });
 
@@ -463,9 +464,7 @@ describe('WritingProjectEditorScreen', () => {
     act(() => {
       findPressableByLabel(renderer.root, 'Editor').props.onPress();
     });
-    const editorAfter = renderer.root.find(
-      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
-    );
+    const editorAfter = findLatexEditor(renderer.root);
     expect(editorAfter.props.value).toContain('\\cite{Doe2020Laser}');
   });
 
@@ -538,9 +537,7 @@ describe('WritingProjectEditorScreen', () => {
     act(() => {
       findPressableByLabel(renderer.root, 'Editor').props.onPress();
     });
-    const editorAfter = renderer.root.find(
-      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
-    );
+    const editorAfter = findLatexEditor(renderer.root);
     expect(editorAfter.props.value).toContain('\\cite{Doe2020Laser}');
     expect(editorAfter.props.value.startsWith('\\cite{')).toBe(false);
     expect(editorAfter.props.value.indexOf('\\cite{Doe2020Laser}')).toBeGreaterThan(
