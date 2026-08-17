@@ -1025,22 +1025,30 @@ export default function WritingProjectEditorScreen() {
 
   return (
     <View style={styles.screen}>
-      <Pressable
-        onPress={() => router.push('/writing')}
-        accessibilityRole="button"
-        accessibilityLabel="Back to Writing"
-        style={styles.backButton}
-        hitSlop={8}
-      >
-        <ChevronIcon size={14} color={theme.subtext} style={styles.backChevron} />
-        <Text style={styles.backText}>Writing</Text>
-      </Pressable>
-
+      {/* Milestone 5.5.1 Part 3 — a compact workspace header: "← Writing"
+          used to be its own full-width row above the title, costing a
+          whole row of vertical space for four words. Folded onto the
+          SAME row as the title/actions instead — matches the spec's own
+          "← Writing   Literature Review" sketch, one row instead of two,
+          leaving more room for the actual research/editor workspace. */}
       <View style={styles.header}>
         <View style={styles.headerTitleCol}>
-          <Text style={styles.headerTitle} numberOfLines={1}>
-            {project.title}
-          </Text>
+          <View style={styles.headerTitleRow}>
+            <Pressable
+              onPress={() => router.push('/writing')}
+              accessibilityRole="button"
+              accessibilityLabel="Back to Writing"
+              style={styles.backButton}
+              hitSlop={8}
+            >
+              <ChevronIcon size={14} color={theme.subtext} style={styles.backChevron} />
+              <Text style={styles.backText}>Writing</Text>
+            </Pressable>
+            <Text style={styles.headerTitleSeparator}>·</Text>
+            <Text style={styles.headerTitle} numberOfLines={1}>
+              {project.title}
+            </Text>
+          </View>
           <Text
             style={[styles.saveStatus, activeFileSaveStatus === 'error' && styles.saveStatusError]}
             accessibilityLiveRegion="polite"
@@ -1487,32 +1495,34 @@ function buildStyles(theme: Theme) {
   return StyleSheet.create({
     screen: { flex: 1, backgroundColor: theme.background },
     spinner: { marginTop: 60 },
+    // Milestone 5.5.1 Part 3 — folded onto the title row (see the render
+    // comment above), so this no longer needs its own top padding/row.
     backButton: {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 2,
-      paddingHorizontal: 24,
-      paddingTop: 16,
     },
     backChevron: { transform: [{ rotate: '180deg' }] },
     backText: { fontSize: 13, color: theme.subtext, fontFamily: theme.fonts.body },
     header: {
       flexDirection: 'row',
-      alignItems: 'flex-end',
+      alignItems: 'center',
       justifyContent: 'space-between',
       gap: 16,
       paddingHorizontal: 24,
-      paddingTop: 6,
-      paddingBottom: 12,
+      paddingVertical: 12,
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: theme.border,
     },
     headerTitleCol: { flex: 1, minWidth: 120, gap: 3 },
+    headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    headerTitleSeparator: { fontSize: 14, color: theme.faint },
     headerTitle: {
-      fontSize: theme.scale(22),
+      fontSize: theme.scale(18),
       fontFamily: theme.fonts.display,
       color: theme.text,
       letterSpacing: -0.2,
+      flexShrink: 1,
     },
     saveStatus: { fontSize: 12, fontFamily: theme.fonts.body, color: theme.faint, minHeight: 15 },
     saveStatusError: { color: theme.danger },
