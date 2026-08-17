@@ -501,14 +501,58 @@ def _collect_extra_files(
     folders (which carry no content). Text files are UTF-8-encoded here;
     binary files are read from disk via WritingProjectFileStorage. Used
     identically by both the compile snapshot and the export ZIP so the
-    two can never drift apart on "what counts as a project file"."""
+    two can never drift apart on "what counts as a project file".
+
+    Milestone 5.5.1 Part 20/23 — real-ZIP-import testing (a genuine
+    Springer Nature journal template, imported with its root .tex file
+    inside a subfolder — e.g. "sn-article-template/sn-article.tex" next
+    to its own "sn-article-template/sn-jnl.cls") found this silently
+    broke every such project: the root always compiles as "main.tex" at
+    the compile sandbox's TOP level, but every other file (including
+    the root's own former folder-mates) kept its original,
+    project-relative path — so "sn-jnl.cls" stayed nested inside
+    "sn-article-template/" once compilation moved main.tex out of that
+    folder, and `\documentclass{sn-jnl}` (resolved relative to
+    main.tex's own directory, same as any real local LaTeX build) could
+    no longer find it. "LaTeX Error: File `sn-jnl.cls' not found" is
+    the exact real compile failure this produced.
+
+    Fix: every other file's path is rebased relative to the ROOT
+    FILE'S OWN directory, not the project's absolute root — so a file
+    that was a folder-mate of the root keeps that exact relationship at
+    compile time (root's directory effectively becomes the sandbox's
+    top level, matching where main.tex now lives). A file living
+    OUTSIDE the root's own folder (rare — most templates keep
+    everything under one directory) has no well-defined relative
+    position once main.tex moves, so it falls back to its original
+    project-relative path unchanged, exactly as before this fix —
+    still better than guessing, and no worse than prior behavior for
+    that specific edge case.
+    """
     contents = files_repository.get_all_content(user_id, project_id_uuid)
     if contents is None:
         return {}
+
+    # First pass: find the root's own directory (e.g. "sn-article-template"
+    # for a root at "sn-article-template/sn-article.tex", or "" for a
+    # root already at the project's top level — the overwhelmingly
+    # common case, where this whole rebase is a no-op).
+    root_dir = ""
+    for content in contents:
+        if content.node.id == root_file_id:
+            root_dir = content.node.path.rsplit("/", 1)[0] if "/" in content.node.path else ""
+            break
+    root_prefix = f"{root_dir}/" if root_dir else ""
+
     extra: dict[str, bytes] = {}
     for content in contents:
         if content.node.id == root_file_id:
             continue
+        rebased_path = (
+            content.node.path[len(root_prefix) :]
+            if root_prefix and content.node.path.startswith(root_prefix)
+            else content.node.path
+        )
         # Real-browser validation (M5.3 scenario K3) found a genuine
         # silent-corruption bug here: the compiler workdir (and the
         # export ZIP) always reserve the top-level "main.tex" slot for
@@ -520,13 +564,16 @@ def _collect_extra_files(
         # such a file here would silently overwrite the true root
         # content on disk (compiler) or produce a duplicate zip entry
         # (export), compiling/exporting the wrong document with no
-        # error surfaced anywhere. That slot is reserved; skip it.
-        if content.node.path == "main.tex":
+        # error surfaced anywhere. That slot is reserved; skip it. This
+        # now checks the REBASED path — the same collision is exactly
+        # as possible (and exactly as important to guard against) after
+        # rebasing as it always was for an already-top-level file.
+        if rebased_path == "main.tex":
             continue
         if content.node.kind == "text" and content.content_text is not None:
-            extra[content.node.path] = content.content_text.encode("utf-8")
+            extra[rebased_path] = content.content_text.encode("utf-8")
         elif content.node.kind == "binary" and content.storage_key:
-            extra[content.node.path] = files_storage.read(content.storage_key)
+            extra[rebased_path] = files_storage.read(content.storage_key)
     return extra
 
 

@@ -153,6 +153,58 @@ class ImportInspection:
         )
 
 
+def _decode_text_entry(raw: bytes) -> str | None:
+    """Milestone 5.5.1 Part 20/23 — real-world finding, not a synthetic
+    fixture: a genuine Springer Nature journal template's main .tex file
+    (the December 2024 "sn-article-template" package) failed to import
+    at all, because it contains "smart quotes" saved as Windows-1252
+    (cp1252) bytes 0x93/0x94 rather than UTF-8 — the file's own
+    `\\usepackage[utf8]{inputenc}` declaration only describes what
+    encoding pdflatex should EXPECT once compiled, and says nothing
+    about what encoding the .tex file was actually SAVED in; templates
+    edited on Windows (often via Word or a legacy editor) commonly end
+    up cp1252-encoded regardless. UTF-8 is tried first and preferred —
+    cp1252 is only a fallback for files that are not valid UTF-8 at
+    all — and cp1252 (not the more permissive latin-1) is the right
+    fallback specifically because latin-1 accepts EVERY byte value
+    without ever failing, silently mapping 0x93/0x94 to the WRONG
+    control-range characters instead of the correct curly quotes;
+    cp1252 gets it right for exactly the "Windows text editor" case this
+    exists for, while still failing on genuinely non-text content (Part
+    18's requirement is preserved — this only ever changes what gets
+    ACCEPTED as valid text, never accepts binary data as text). The
+    result is re-encoded to UTF-8 when persisted (ImportFileEntry.
+    content_text is a Python str), so what pdflatex ultimately reads
+    back is real UTF-8 bytes — consistent with the template's own
+    inputenc declaration, not a mismatch this introduces.
+
+    Regression guard: unlike UTF-8, cp1252 defines a mapping for
+    almost every byte value, so tried on its own it cannot tell "real
+    Windows-encoded text" apart from arbitrary binary garbage that
+    merely isn't valid UTF-8 (an existing test caught this: content
+    with a NUL byte was previously "successfully" cp1252-decoded and
+    silently accepted as text). Two guards keep Part 18's promise
+    intact: a NUL byte never appears in genuine text, so it is rejected
+    immediately, before either encoding is even attempted; and once
+    cp1252-decoded, content whose control-character ratio is too high
+    to plausibly be prose/markup is rejected too.
+    """
+    if b"\x00" in raw:
+        return None
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    try:
+        text = raw.decode("cp1252")
+    except UnicodeDecodeError:
+        return None
+    control_count = sum(1 for ch in text if ord(ch) < 32 and ch not in "\t\n\r")
+    if control_count > max(1, len(text) // 100):
+        return None
+    return text
+
+
 def _is_symlink_entry(info: zipfile.ZipInfo) -> bool:
     """A ZIP entry created on a POSIX system with `zipfile`/`zip -y` (or
     most archivers) stores the Unix file mode in the upper 16 bits of
@@ -341,10 +393,20 @@ def inspect_archive(data: bytes, *, max_archive_bytes: int) -> ImportInspection:
         if ext in _ARCHIVE_EXTENSIONS:
             raise ArchiveRejected(f"Archive contains a nested archive: {rel_path}")
 
-        if name.lower() in _BIBLIOGRAPHY_FILENAMES:
-            # Part 11 — detected, reported, EXCLUDED. Never silently
-            # made canonical; EduM8's own references.bib remains the
-            # only bibliography source of truth.
+        if ext == ".bib":
+            # Part 11, generalized by Milestone 5.5.1 Part 21/24 — real-
+            # ZIP testing found this only matched the 3 hardcoded
+            # conventional names (references.bib/bibliography.bib/
+            # refs.bib), so a template's own differently-named .bib file
+            # (e.g. a Springer Nature template's "sn-bibliography.bib")
+            # fell through to the generic "Unsupported file type"
+            # warning instead of this specific, actionable one — true,
+            # but far less helpful, and Part 24 explicitly wants a
+            # meaningful diagnostic here, not just "unsupported". ANY
+            # .bib file gets the same treatment now: detected, reported,
+            # EXCLUDED. Never silently made canonical; EduM8's own
+            # references.bib remains the only bibliography source of
+            # truth.
             warnings.append(
                 ImportWarning(
                     path=rel_path,
@@ -385,9 +447,8 @@ def inspect_archive(data: bytes, *, max_archive_bytes: int) -> ImportInspection:
             raise ArchiveRejected("Archive's total uncompressed size exceeds the project storage limit")
 
         if kind == "text":
-            try:
-                text = raw.decode("utf-8")
-            except UnicodeDecodeError:
+            text = _decode_text_entry(raw)
+            if text is None:
                 # Part 18 — invalid/binary content masquerading as
                 # `.tex`/`.cls`/`.sty`/`.txt` is excluded, not silently
                 # imported as garbled text.

@@ -549,6 +549,55 @@ class TestBibliographyAndExport:
         assert "sections/methods.tex" in archive.namelist()
         assert archive.read("sections/methods.tex").decode("utf-8") == "Methods body."
 
+    def test_export_rebases_sibling_paths_when_root_lives_in_a_subfolder(
+        self, harness
+    ) -> None:
+        """Milestone 5.5.1 Part 20/23 — the export ZIP shares
+        _collect_extra_files with /compile (by the function's own
+        design guarantee that the two can never drift apart), so a
+        root file imported inside a subfolder alongside its own
+        supporting files must round-trip the same way on export: the
+        root always lands at "main.tex" in the ZIP, and a former
+        folder-mate is rebased to sit alongside it — not left at its
+        stale, now-orphaned original path."""
+        client, *_ = harness
+        project = _create_project(client, title="Journal Paper")
+        folder_resp = client.post(
+            f"/writing-projects/{project['id']}/files/folders",
+            json={"name": "sn-article-template"},
+        )
+        folder_id = folder_resp.json()["file"]["id"]
+        root_resp = client.post(
+            f"/writing-projects/{project['id']}/files/text",
+            json={
+                "name": "sn-article.tex",
+                "parent_id": folder_id,
+                "content_text": "\\documentclass{sn-jnl}\nBody.",
+            },
+        )
+        root_id = root_resp.json()["file"]["id"]
+        client.post(
+            f"/writing-projects/{project['id']}/files/text",
+            json={
+                "name": "sn-jnl.cls",
+                "parent_id": folder_id,
+                "content_text": "% journal class stub",
+            },
+        )
+        set_root_resp = client.put(
+            f"/writing-projects/{project['id']}/root-file", json={"file_id": root_id}
+        )
+        assert set_root_resp.status_code == 200, set_root_resp.text
+
+        resp = client.get(f"/writing-projects/{project['id']}/export")
+        archive = zipfile.ZipFile(io.BytesIO(resp.content))
+        names = archive.namelist()
+        assert "main.tex" in names
+        assert archive.read("main.tex").decode("utf-8") == "\\documentclass{sn-jnl}\nBody."
+        assert "sn-jnl.cls" in names
+        assert archive.read("sn-jnl.cls").decode("utf-8") == "% journal class stub"
+        assert "sn-article-template/sn-jnl.cls" not in names
+
 
 class TestDuplicateArchiveRestore:
     def test_duplicate_copies_metadata_files_and_references(self, harness) -> None:
@@ -833,6 +882,72 @@ class TestCompile:
             "\\documentclass{article}\nAlternate root document."
         )
         assert "main.tex" not in fake_compiler.calls[0]["extra_files"]
+
+    def test_compile_rebases_sibling_paths_when_root_lives_in_a_subfolder(
+        self, compile_harness
+    ) -> None:
+        """Milestone 5.5.1 Part 20/23 — real-ZIP-import validation (a
+        genuine Springer Nature journal template) found that when the
+        root .tex file is imported inside a subfolder alongside its own
+        supporting files (e.g. "sn-article-template/sn-article.tex" +
+        sibling "sn-article-template/sn-jnl.cls"), the root always
+        compiles at the sandbox's TOP level as "main.tex" — but its
+        sibling kept its original, now-mismatched project-relative
+        path, so `\\documentclass{sn-jnl}` (resolved relative to
+        main.tex's own directory, same as any real local LaTeX build)
+        could no longer find "sn-jnl.cls". Real symptom: "LaTeX Error:
+        File `sn-jnl.cls' not found."
+
+        Fix: every other file's path is rebased relative to the root
+        file's OWN directory, so a former folder-mate of the root keeps
+        that exact relationship once main.tex moves to the sandbox's
+        top level. A file living OUTSIDE the root's own folder has no
+        well-defined relative position once main.tex moves, so it
+        falls back to its original project-relative path unchanged."""
+        client, *_rest, fake_compiler = compile_harness
+        project = _create_project(client, title="Journal Paper")
+        folder_resp = client.post(
+            f"/writing-projects/{project['id']}/files/folders",
+            json={"name": "sn-article-template"},
+        )
+        folder_id = folder_resp.json()["file"]["id"]
+        root_resp = client.post(
+            f"/writing-projects/{project['id']}/files/text",
+            json={
+                "name": "sn-article.tex",
+                "parent_id": folder_id,
+                "content_text": "\\documentclass{sn-jnl}\nBody.",
+            },
+        )
+        root_id = root_resp.json()["file"]["id"]
+        client.post(
+            f"/writing-projects/{project['id']}/files/text",
+            json={
+                "name": "sn-jnl.cls",
+                "parent_id": folder_id,
+                "content_text": "% journal class stub",
+            },
+        )
+        client.post(
+            f"/writing-projects/{project['id']}/files/text",
+            json={"name": "outside.tex", "content_text": "Outside the root's folder."},
+        )
+        set_root_resp = client.put(
+            f"/writing-projects/{project['id']}/root-file", json={"file_id": root_id}
+        )
+        assert set_root_resp.status_code == 200, set_root_resp.text
+
+        resp = client.post(f"/writing-projects/{project['id']}/compile")
+        assert resp.status_code == 200, resp.text
+        assert len(fake_compiler.calls) == 1
+        extra_files = fake_compiler.calls[0]["extra_files"]
+        # Rebased to sit alongside main.tex — not at its original
+        # project-relative path.
+        assert extra_files["sn-jnl.cls"] == b"% journal class stub"
+        assert "sn-article-template/sn-jnl.cls" not in extra_files
+        # A file outside the root's own folder has no new well-defined
+        # position, so it keeps its original project-relative path.
+        assert extra_files["outside.tex"] == b"Outside the root's folder."
 
     def test_compile_source_hash_changes_when_secondary_file_edited(self, compile_harness) -> None:
         """Part 40 — editing a NON-root file must still change the
