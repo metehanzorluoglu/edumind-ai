@@ -688,15 +688,21 @@ export default function WritingProjectEditorScreen() {
   // Escape handlers. Never a browser-critical combo (no Ctrl+W/T/N/Q) —
   // preventDefault only fires for the three combos actually handled, and
   // only when the modifier key is held, so ordinary typing is untouched.
-  useEffect(() => {
-    if (
-      Platform.OS !== 'web' ||
-      typeof document === 'undefined' ||
-      typeof document.addEventListener !== 'function'
-    ) {
-      return;
-    }
-    function handleKeyDown(e: KeyboardEvent): void {
+  //
+  // Real-browser validation (Part 32) caught that a document-level
+  // listener alone is not enough: react-native-web's <TextInput> calls
+  // e.stopPropagation() on EVERY keydown while it's focused ("Prevent
+  // key events bubbling", see node_modules/react-native-web/dist/
+  // exports/TextInput/index.js) — meaning these shortcuts would have
+  // silently gone dead the instant the cursor was inside the LaTeX
+  // editor, i.e. almost all the time. handleShortcutKey is therefore
+  // wired to BOTH the document listener (for focus outside the editor —
+  // toolbar buttons, tabs, etc.) and the editor's own onKeyPress (for
+  // focus inside it) — RNW forwards the same real KeyboardEvent-shaped
+  // synthetic event to onKeyPress before stopping its propagation, so
+  // one handler covers both paths with no double-firing.
+  const handleShortcutKey = useCallback(
+    (e: { key: string; ctrlKey: boolean; metaKey: boolean; preventDefault: () => void }): void => {
       if (!e.metaKey && !e.ctrlKey) return;
       const key = e.key.toLowerCase();
       if (key === 's') {
@@ -713,11 +719,20 @@ export default function WritingProjectEditorScreen() {
         if (isWide) setPanelTab('ask');
         else setMobileTab('ask');
       }
+    },
+    [flushActiveFile, flush, latexCompilation, compiling, isWide, setPanelTab, setMobileTab]
+  );
+  useEffect(() => {
+    if (
+      Platform.OS !== 'web' ||
+      typeof document === 'undefined' ||
+      typeof document.addEventListener !== 'function'
+    ) {
+      return;
     }
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flushActiveFile, flush, latexCompilation, compiling, isWide, setPanelTab, setMobileTab]);
+    document.addEventListener('keydown', handleShortcutKey);
+    return () => document.removeEventListener('keydown', handleShortcutKey);
+  }, [handleShortcutKey]);
 
   const headerMenuItems: ActionSheetItem[] = [
     { key: 'rename', label: 'Rename project', onPress: handleOpenRename },
@@ -1164,6 +1179,19 @@ export default function WritingProjectEditorScreen() {
                 onChangeText={setActiveFileContent}
                 selection={selection}
                 onSelectionChange={(e) => handleSelectionChange(e.nativeEvent.selection)}
+                // Milestone 5.5 Part 12 — see handleShortcutKey's own
+                // comment: react-native-web's TextInput stops keydown
+                // from ever reaching the document-level listener above,
+                // so the same handler is wired here too for when the
+                // cursor is inside the editor (the common case). RN's
+                // official TextInputKeyPressEventData only types `key`,
+                // but react-native-web forwards the real DOM
+                // KeyboardEvent underneath (ctrlKey/metaKey/
+                // preventDefault included) — a web-only enrichment
+                // handleShortcutKey's own param type documents.
+                onKeyPress={(e) =>
+                  handleShortcutKey(e as unknown as Parameters<typeof handleShortcutKey>[0])
+                }
                 multiline
                 editable={isActiveFileEditable}
                 style={styles.editor}
@@ -1258,6 +1286,19 @@ function PanelTabButton({
       accessibilityRole="tab"
       accessibilityState={{ selected: active }}
       accessibilityLabel={label}
+      // Milestone 5.5 Part 30 — react-native-web 0.21's createDOMProps
+      // only recognizes a flat `aria-selected` prop, not RN's nested
+      // `accessibilityState.selected` object (confirmed by reading
+      // node_modules/react-native-web/dist/modules/createDOMProps —
+      // accessibilityState is never destructured there), so the line
+      // above silently produces no `aria-selected` attribute on web,
+      // failing WAI-ARIA's required-attribute rule for role="tab".
+      // This same accessibilityState={{...}} pattern is used ~25 other
+      // places across the app (pre-existing, not introduced by M5.5) —
+      // out of scope to sweep all of them here; fixing it on this
+      // milestone's own audited surface (the Research tab strip) via
+      // the same raw-DOM-prop-cast idiom AppDrawer.tsx already uses.
+      {...(Platform.OS === 'web' ? ({ 'aria-selected': active } as object) : {})}
       style={[
         panelTabStyles.tab,
         active && { borderBottomColor: theme.accent, borderBottomWidth: 2 },
@@ -1291,6 +1332,7 @@ function MobileTabButton({
       accessibilityRole="tab"
       accessibilityState={{ selected: active }}
       accessibilityLabel={label}
+      {...(Platform.OS === 'web' ? ({ 'aria-selected': active } as object) : {})}
       style={[mobileTabStyles.tab, active && { backgroundColor: theme.accentSoft }]}
     >
       <Text

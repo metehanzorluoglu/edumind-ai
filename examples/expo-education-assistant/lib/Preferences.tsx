@@ -104,7 +104,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
   documentsViewMode: 'grid',
   citationStyle: 'apa7',
-  writingPanelTab: 'references',
+  writingPanelTab: 'project',
   writingPreviewCollapsed: false,
   writingResearchPanelWidth: WRITING_RESEARCH_PANEL_WIDTH_DEFAULT,
   writingPreviewPanelWidth: WRITING_PREVIEW_PANEL_WIDTH_DEFAULT,

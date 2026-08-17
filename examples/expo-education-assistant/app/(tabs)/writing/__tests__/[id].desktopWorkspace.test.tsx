@@ -228,22 +228,23 @@ describe('WritingProjectEditorScreen — desktop Research panel (Milestone 5.5)'
   it('shows Files/References/Notes/Ask EduM8 as one tab strip, and switching tabs swaps the panel body in place', async () => {
     const renderer = await renderScreen([getProjectRoute(), referencesRoute()]);
 
-    // Defaults to References (existing behavior, unchanged).
+    // Defaults to Files (Part 9's own real-browser validation caught
+    // that the original 'references' default landed a user on an empty
+    // References panel on first open of any project — Files is the
+    // primary content and belongs first).
     expect(findByTextIncluding(renderer.root, 'Research')).toBeTruthy();
-    expect(findPressableByLabel(renderer.root, 'References')).toBeTruthy();
-
-    act(() => {
-      findPressableByLabel(renderer.root, 'Files').props.onPress();
-    });
     expect(
       renderer.root.find(
         (n) =>
           String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
       )
     ).toBeTruthy();
-    // The file tree's own root entry — proves the Files tab, not just an
-    // empty pane, actually rendered.
     expect(findByTextIncluding(renderer.root, 'main.tex')).toBeTruthy();
+
+    act(() => {
+      findPressableByLabel(renderer.root, 'References').props.onPress();
+    });
+    expect(findByTextIncluding(renderer.root, 'References')).toBeTruthy();
 
     act(() => {
       findPressableByLabel(renderer.root, 'Ask EduM8').props.onPress();
@@ -289,14 +290,72 @@ describe('WritingProjectEditorScreen — desktop Research panel (Milestone 5.5)'
     expect(findByTextIncluding(renderer.root, 'Research')).toBeTruthy();
   });
 
-  // Keyboard shortcuts (Cmd/Ctrl+S/Enter/K) are deliberately NOT covered
-  // here: they need a real `document` to dispatch a genuine KeyboardEvent
-  // against (this screen's own guard against Platform.OS === 'web' with
-  // no DOM behind it), which needs @jest-environment jsdom — and this
-  // file's fetch-mock harness (global.fetch = jest.fn(...), the same
-  // convention every other Writing test file uses) does not reliably
-  // intercept requests under jsdom in this repo's Jest config. Real
-  // keyboard-driven save/compile/Ask-EduM8 behavior is validated against
-  // a real browser instead (Milestone 5.5 Part 32/33 real browser
+  // The document-level Cmd/Ctrl+S/Enter/K listener itself is deliberately
+  // NOT covered here: it needs a real `document` to dispatch a genuine
+  // KeyboardEvent against (this screen's own guard against
+  // Platform.OS === 'web' with no DOM behind it), which needs
+  // @jest-environment jsdom — and this file's fetch-mock harness
+  // (global.fetch = jest.fn(...), the same convention every other
+  // Writing test file uses) does not reliably intercept requests under
+  // jsdom in this repo's Jest config. That path is validated against a
+  // real browser instead (Milestone 5.5 Part 32/33 real browser
   // validation), where the DOM is genuine rather than approximated.
+  //
+  // The editor's own onKeyPress wiring below IS covered here, without
+  // jsdom, by calling the prop directly — real-browser validation is
+  // what actually found the bug this closes: react-native-web's
+  // <TextInput> calls e.stopPropagation() on every keydown while
+  // focused, so the document-level listener above never sees a
+  // Cmd/Ctrl+S/Enter/K pressed while the cursor is in the editor (i.e.
+  // almost all the time a user would reach for one of these). Wiring
+  // the SAME handler to the TextInput's own onKeyPress closes that gap.
+  describe('keyboard shortcuts while focus is inside the editor (Part 12 regression)', () => {
+    function findEditor(root: ReactTestInstance): ReactTestInstance {
+      const match = root.find(
+        (n) =>
+          String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
+      );
+      return match;
+    }
+
+    it('Ctrl+S saves without also falling through to a plain keystroke', async () => {
+      const renderer = await renderScreen([getProjectRoute(), referencesRoute()]);
+      const editor = findEditor(renderer.root);
+      const preventDefault = jest.fn();
+
+      await act(async () => {
+        editor.props.onKeyPress({ key: 's', ctrlKey: true, metaKey: false, preventDefault });
+        await flushAsync();
+      });
+
+      expect(preventDefault).toHaveBeenCalled();
+    });
+
+    it('a plain "s" keystroke (no modifier) is left alone — never intercepted', async () => {
+      const renderer = await renderScreen([getProjectRoute(), referencesRoute()]);
+      const editor = findEditor(renderer.root);
+      const preventDefault = jest.fn();
+
+      await act(async () => {
+        editor.props.onKeyPress({ key: 's', ctrlKey: false, metaKey: false, preventDefault });
+        await flushAsync();
+      });
+
+      expect(preventDefault).not.toHaveBeenCalled();
+    });
+
+    it('Ctrl+K jumps to the Ask EduM8 tab from inside the editor', async () => {
+      const renderer = await renderScreen([getProjectRoute(), referencesRoute()]);
+      const editor = findEditor(renderer.root);
+      const preventDefault = jest.fn();
+
+      await act(async () => {
+        editor.props.onKeyPress({ key: 'k', ctrlKey: true, metaKey: false, preventDefault });
+        await flushAsync();
+      });
+
+      expect(preventDefault).toHaveBeenCalled();
+      expect(findByTextIncluding(renderer.root, 'Research context')).toBeTruthy();
+    });
+  });
 });

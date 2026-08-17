@@ -39,6 +39,16 @@ export function useDragResizeWidth(params: {
   const draggingRef = useRef(false);
   const startXRef = useRef(0);
   const startWidthRef = useRef(width);
+  // Mirrors `dragWidth` for handleMouseUp to read synchronously. Real-
+  // browser validation (Milestone 5.5 Part 32) caught a genuine bug here:
+  // calling onResizeEnd(current) — which calls Preferences' setState —
+  // from INSIDE the functional updater passed to setDragWidth triggered
+  // React's "Cannot update a component while rendering a different
+  // component" warning, because updater functions must be pure/side-
+  // effect-free (React can invoke them during another component's
+  // render). Reading the last value off a ref outside the updater avoids
+  // the side effect entirely.
+  const dragWidthRef = useRef<number | null>(null);
   const effectiveWidth = dragWidth ?? width;
 
   useEffect(() => {
@@ -57,15 +67,16 @@ export function useDragResizeWidth(params: {
       const rawDelta = e.clientX - startXRef.current;
       const delta = invert ? -rawDelta : rawDelta;
       const next = Math.min(max, Math.max(min, startWidthRef.current + delta));
+      dragWidthRef.current = next;
       setDragWidth(next);
     }
     function handleMouseUp(): void {
       if (!draggingRef.current) return;
       draggingRef.current = false;
-      setDragWidth((current) => {
-        if (current != null) onResizeEnd(current);
-        return null;
-      });
+      const finalWidth = dragWidthRef.current;
+      dragWidthRef.current = null;
+      setDragWidth(null);
+      if (finalWidth != null) onResizeEnd(finalWidth);
     }
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
