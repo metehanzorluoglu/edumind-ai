@@ -19,7 +19,7 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { ChevronIcon, MoreIcon, SparkleIcon } from '@/components/icons';
+import { ChevronIcon, MoreIcon, PanelIcon, SparkleIcon } from '@/components/icons';
 import { ActionSheet, type ActionSheetItem } from '@/components/ui/ActionSheet';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -233,6 +233,19 @@ export default function WritingProjectEditorScreen() {
         typeof next === 'function' ? next(preferences.writingPreviewCollapsed) : next
       ),
     [update, preferences.writingPreviewCollapsed]
+  );
+  // Milestone 5.5.1 Part 4/5 — the Research panel's own open/closed
+  // state, independent of `panelTab` (Part 4: closing/reopening the
+  // drawer must land back on the same tab, not reset it). Same
+  // Preferences-backed pattern as `previewCollapsed` above.
+  const researchDrawerOpen = preferences.writingResearchDrawerOpen;
+  const setResearchDrawerOpen = useCallback(
+    (next: boolean | ((prev: boolean) => boolean)) =>
+      update(
+        'writingResearchDrawerOpen',
+        typeof next === 'function' ? next(preferences.writingResearchDrawerOpen) : next
+      ),
+    [update, preferences.writingResearchDrawerOpen]
   );
   // Milestone 5.5 Part 8 — drag-resize for the Research/Preview columns,
   // wide-web only (the hook itself no-ops off-web). Widths persist via
@@ -717,11 +730,24 @@ export default function WritingProjectEditorScreen() {
         }
       } else if (key === 'k') {
         e.preventDefault();
-        if (isWide) setPanelTab('ask');
-        else setMobileTab('ask');
+        if (isWide) {
+          setPanelTab('ask');
+          setResearchDrawerOpen(true);
+        } else {
+          setMobileTab('ask');
+        }
       }
     },
-    [flushActiveFile, flush, latexCompilation, compiling, isWide, setPanelTab, setMobileTab]
+    [
+      flushActiveFile,
+      flush,
+      latexCompilation,
+      compiling,
+      isWide,
+      setPanelTab,
+      setMobileTab,
+      setResearchDrawerOpen,
+    ]
   );
   useEffect(() => {
     if (
@@ -780,8 +806,23 @@ export default function WritingProjectEditorScreen() {
   // bar instead — see the mobile tab set below). Non-"ask" tabs keep
   // their own padding (panelBodyPadded); Ask EduM8 is full-bleed, same as
   // it always was as a drawer.
+  // Milestone 5.5.1 Part 4/5 — on wide/desktop, the whole panel (tab
+  // strip + all four bodies + resize handle) is hidden via `display:
+  // 'none'` rather than removed from the tree when the drawer is
+  // closed, for the same "never destroy state you might come back to"
+  // reason the four tab bodies above stay mounted. Mobile is
+  // unaffected — its own tab-driven visibility (see the `!isWide &&
+  // mobileTab !== ...` check where `panel` is used below) already
+  // decides when this renders there; the drawer concept doesn't apply
+  // to mobile at all (Part 6).
   const panel = (
-    <View style={[styles.panel, isWide && { width: researchPanelResize.effectiveWidth }]}>
+    <View
+      style={[
+        styles.panel,
+        isWide && { width: researchPanelResize.effectiveWidth },
+        isWide && !researchDrawerOpen && styles.panelHidden,
+      ]}
+    >
       <View style={styles.panelInner}>
         <Text style={styles.panelSectionLabel}>Research</Text>
         {isWide && (
@@ -813,51 +854,60 @@ export default function WritingProjectEditorScreen() {
             />
           </View>
         )}
-        {panelTab === 'project' && (
-          <View style={styles.panelBodyPadded}>
-            <WritingFileTree
-              tree={treeState.status === 'success' ? treeState.data : null}
-              loading={treeState.status === 'loading'}
-              loadError={treeState.status === 'error' ? treeState.error.message : uploadError}
-              activeFileId={activeFileId}
-              onSelectFile={(node) => void openFile(node.id)}
-              onSelectGenerated={handleOpenBibliography}
-              onCreateFolder={(parentId, name) => createFolder({ parentId, name })}
-              onCreateTextFile={(parentId, name) => createTextFile({ parentId, name })}
-              onUpload={(parentId) => void handleUploadAt(parentId)}
-              onRename={renameFile}
-              onMove={moveFile}
-              onDelete={deleteFile}
-              onSetRoot={setRootFile}
-            />
-          </View>
-        )}
-        {panelTab === 'references' && (
-          <View style={styles.panelBodyPadded}>
-            <ReferencesPanel
-              references={references}
-              missingCitationKeys={missingCitationKeys}
-              loading={referencesState.status === 'loading'}
-              loadError={referencesState.status === 'error' ? referencesState.error.message : null}
-              onAddReferences={() => setPickerOpen(true)}
-              onInsertCitation={handleInsertCitation}
-              onInsertMultipleCitations={handleInsertMultipleCitations}
-              onRemoveReference={removeReference}
-              onViewBibliography={handleOpenBibliography}
-              onOpenSource={handleOpenReferenceSource}
-            />
-          </View>
-        )}
-        {panelTab === 'notes' && (
-          <View style={styles.panelBodyPadded}>
-            <NotesPanel
-              onInsertNote={handleInsertNote}
-              onInsertCitationForDocument={handleInsertCitationForDocument}
-              onOpenSource={handleOpenSource}
-            />
-          </View>
-        )}
-        {panelTab === 'ask' && (
+        {/* Milestone 5.5.1 Part 4 — all four tab bodies stay mounted all
+            the time now (display toggles which one is visible), instead
+            of the previous `{panelTab === 'x' && <Y/>}` pattern that
+            actually UNMOUNTED whichever tab you weren't looking at. That
+            was silently destroying real state on every switch —
+            ReferencesPanel's own search text, and (the one explicitly
+            named in the spec) AskEduM8Panel's entire conversation, since
+            its useWritingAsk() call lived inside a component that got
+            torn down and rebuilt from scratch. Applies equally to
+            toggling the drawer itself (Part 4/5) below, which now hides
+            this whole tree via the same technique rather than unmounting
+            it — closing and reopening the drawer must not lose any of
+            this either. */}
+        <View style={[styles.panelBodyPadded, { display: panelTab === 'project' ? 'flex' : 'none' }]}>
+          <WritingFileTree
+            tree={treeState.status === 'success' ? treeState.data : null}
+            loading={treeState.status === 'loading'}
+            loadError={treeState.status === 'error' ? treeState.error.message : uploadError}
+            activeFileId={activeFileId}
+            onSelectFile={(node) => void openFile(node.id)}
+            onSelectGenerated={handleOpenBibliography}
+            onCreateFolder={(parentId, name) => createFolder({ parentId, name })}
+            onCreateTextFile={(parentId, name) => createTextFile({ parentId, name })}
+            onUpload={(parentId) => void handleUploadAt(parentId)}
+            onRename={renameFile}
+            onMove={moveFile}
+            onDelete={deleteFile}
+            onSetRoot={setRootFile}
+          />
+        </View>
+        <View
+          style={[styles.panelBodyPadded, { display: panelTab === 'references' ? 'flex' : 'none' }]}
+        >
+          <ReferencesPanel
+            references={references}
+            missingCitationKeys={missingCitationKeys}
+            loading={referencesState.status === 'loading'}
+            loadError={referencesState.status === 'error' ? referencesState.error.message : null}
+            onAddReferences={() => setPickerOpen(true)}
+            onInsertCitation={handleInsertCitation}
+            onInsertMultipleCitations={handleInsertMultipleCitations}
+            onRemoveReference={removeReference}
+            onViewBibliography={handleOpenBibliography}
+            onOpenSource={handleOpenReferenceSource}
+          />
+        </View>
+        <View style={[styles.panelBodyPadded, { display: panelTab === 'notes' ? 'flex' : 'none' }]}>
+          <NotesPanel
+            onInsertNote={handleInsertNote}
+            onInsertCitationForDocument={handleInsertCitationForDocument}
+            onOpenSource={handleOpenSource}
+          />
+        </View>
+        <View style={[styles.panelAskWrap, { display: panelTab === 'ask' ? 'flex' : 'none' }]}>
           <AskEduM8Panel
             visible
             embedded
@@ -868,7 +918,7 @@ export default function WritingProjectEditorScreen() {
             onAddReference={(documentId) => addReferences([documentId]).then(() => undefined)}
             onInsertCitation={handleInsertCitationForDocument}
           />
-        )}
+        </View>
       </View>
       {isWide && Platform.OS === 'web' && (
         <View
@@ -1008,12 +1058,32 @@ export default function WritingProjectEditorScreen() {
           </Text>
         </View>
         <View style={styles.headerActions}>
+          {/* Milestone 5.5.1 Part 4/5 — THE one dedicated Research-drawer
+              toggle: click to open, click again to close, same
+              "analogous to Chat's drawer" affordance as PanelIcon's
+              other use (NavRail's own conversation-list toggle). Never
+              resets `panelTab` — see researchDrawerOpen/panelTab being
+              two independent pieces of state above. */}
+          {isWide && (
+            <IconButton
+              label={researchDrawerOpen ? 'Hide Research panel' : 'Show Research panel'}
+              icon={<PanelIcon size={16} color={theme.subtext} open={researchDrawerOpen} />}
+              variant="outline"
+              size="sm"
+              onPress={() => setResearchDrawerOpen((v) => !v)}
+            />
+          )}
           {/* Milestone 5.2, repointed at the unified Research panel's own
               "Ask EduM8" tab by 5.5 Part 6 — desktop-only: narrow
               viewports already have the "Ask EduM8" mobile tab below
               (Part 11's own "avoid redundant controls" precedent). A
               quick-jump shortcut, not a second source of truth — the
-              panel tab strip itself has the exact same control. */}
+              panel tab strip itself has the exact same control. Distinct
+              in INTENT from the drawer toggle right above it (this one
+              means "take me to Ask EduM8", opening the drawer if needed
+              is incidental to that, not this button's own job) — same
+              "one control, one understandable action" reasoning
+              NavRail's logo-vs-toggle split documents. */}
           {isWide && (
             <View {...webTitle('Ctrl/Cmd+K')}>
               <Button
@@ -1031,7 +1101,10 @@ export default function WritingProjectEditorScreen() {
                     color={panelTab === 'ask' ? theme.accentContrast : theme.accent}
                   />
                 }
-                onPress={() => setPanelTab('ask')}
+                onPress={() => {
+                  setPanelTab('ask');
+                  setResearchDrawerOpen(true);
+                }}
               />
             </View>
           )}
@@ -1516,8 +1589,16 @@ function buildStyles(theme: Theme) {
       flexGrow: 0,
       flexShrink: 0,
     },
+    // Milestone 5.5.1 Part 4/5 — `display: 'none'` hides the whole
+    // drawer (including its border) without unmounting it, so every
+    // tab's state — most importantly Ask EduM8's live conversation —
+    // survives closing and reopening.
+    panelHidden: { display: 'none' },
     panelInner: { flex: 1, minWidth: 0 },
     panelBodyPadded: { flex: 1, padding: 20 },
+    // The Ask EduM8 tab is full-bleed (AskEduM8Panel owns its own
+    // internal padding/scroll regions), unlike the other three tabs.
+    panelAskWrap: { flex: 1, minHeight: 0 },
     panelSectionLabel: {
       fontSize: 10.5,
       fontFamily: theme.fonts.bodySemibold,

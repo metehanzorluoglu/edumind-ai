@@ -67,6 +67,14 @@ export interface Preferences {
    * lands where the researcher left off rather than always resetting to
    * References. */
   writingPanelTab: 'project' | 'references' | 'notes' | 'ask';
+  /** Milestone 5.5.1 Part 4/5 — the Research panel (Files/References/
+   * Notes/Ask EduM8) is a true collapsible drawer, not an always-visible
+   * column: this is that drawer's own open/closed state, independent of
+   * `writingPanelTab` (which tab is showing) so closing and reopening the
+   * drawer always lands back on the same tab. Defaults to open (true) —
+   * preserves today's "always visible" appearance for every existing
+   * user; only becomes closed once someone actually closes it. */
+  writingResearchDrawerOpen: boolean;
   /** Mirrors sidebarCollapsed's own reasoning, for the Writing PDF
    * preview column on wide web. */
   writingPreviewCollapsed: boolean;
@@ -105,6 +113,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   documentsViewMode: 'grid',
   citationStyle: 'apa7',
   writingPanelTab: 'project',
+  writingResearchDrawerOpen: true,
   writingPreviewCollapsed: false,
   writingResearchPanelWidth: WRITING_RESEARCH_PANEL_WIDTH_DEFAULT,
   writingPreviewPanelWidth: WRITING_PREVIEW_PANEL_WIDTH_DEFAULT,
@@ -176,6 +185,10 @@ function parseStoredPreferences(raw: string | null): Preferences {
         parsed.writingPanelTab === 'ask'
           ? parsed.writingPanelTab
           : DEFAULT_PREFERENCES.writingPanelTab,
+      writingResearchDrawerOpen:
+        typeof parsed.writingResearchDrawerOpen === 'boolean'
+          ? parsed.writingResearchDrawerOpen
+          : DEFAULT_PREFERENCES.writingResearchDrawerOpen,
       writingPreviewCollapsed:
         typeof parsed.writingPreviewCollapsed === 'boolean'
           ? parsed.writingPreviewCollapsed

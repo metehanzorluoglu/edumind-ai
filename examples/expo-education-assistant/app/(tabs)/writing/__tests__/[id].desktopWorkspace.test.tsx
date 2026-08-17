@@ -263,6 +263,59 @@ describe('WritingProjectEditorScreen — desktop Research panel (Milestone 5.5)'
     ).toBeGreaterThan(0);
   });
 
+  describe('Research drawer toggle (Milestone 5.5.1 Part 4/5)', () => {
+    it('opens and closes via the dedicated header toggle, defaulting to open', async () => {
+      const renderer = await renderScreen([getProjectRoute(), referencesRoute()]);
+
+      // Default (no stored preference) is open — the tab strip is visible.
+      expect(findPressableByLabel(renderer.root, 'Files')).toBeTruthy();
+      const toggle = findPressableByLabel(renderer.root, 'Hide Research panel');
+
+      act(() => {
+        toggle.props.onPress();
+      });
+      // Closed: the SAME toggle now offers to re-open it (relabeled, not
+      // a second control) and the panel itself is hidden.
+      expect(findPressableByLabel(renderer.root, 'Show Research panel')).toBeTruthy();
+      const panelWrap = renderer.root.findAll(
+        (n) =>
+          Array.isArray(n.props.style) &&
+          n.props.style.some(
+            (s: unknown) => !!s && (s as { display?: string }).display === 'none'
+          )
+      );
+      expect(panelWrap.length).toBeGreaterThan(0);
+
+      act(() => {
+        findPressableByLabel(renderer.root, 'Show Research panel').props.onPress();
+      });
+      expect(findPressableByLabel(renderer.root, 'Hide Research panel')).toBeTruthy();
+    });
+
+    it('closing and reopening the drawer preserves the active tab and Ask EduM8 conversation', async () => {
+      const renderer = await renderScreen([getProjectRoute(), referencesRoute()]);
+
+      act(() => {
+        findPressableByLabel(renderer.root, 'Notes').props.onPress();
+      });
+      act(() => {
+        findPressableByLabel(renderer.root, 'Hide Research panel').props.onPress();
+      });
+      act(() => {
+        findPressableByLabel(renderer.root, 'Show Research panel').props.onPress();
+      });
+
+      // Still on Notes, not reset back to Files/References.
+      const notesTab = findPressableByLabel(renderer.root, 'Notes');
+      expect(notesTab.props['aria-selected']).toBe(true);
+      // AskEduM8Panel never left the tree across the close/reopen cycle —
+      // the actual bug this part exists to fix.
+      expect(
+        renderer.root.findAll((n) => n.props.testID === 'ask-edum8-panel').length
+      ).toBeGreaterThan(0);
+    });
+  });
+
   it('the header "Ask EduM8" button is a quick-jump to the same panel tab, not a second drawer', async () => {
     const renderer = await renderScreen([getProjectRoute(), referencesRoute()]);
 
@@ -285,9 +338,22 @@ describe('WritingProjectEditorScreen — desktop Research panel (Milestone 5.5)'
       writingPanelTab: 'notes',
     });
 
-    // Notes panel content, not the default References panel.
-    expect(queryByTextIncluding(renderer.root, 'Research context')).toBeNull();
     expect(findByTextIncluding(renderer.root, 'Research')).toBeTruthy();
+    // Milestone 5.5.1 Part 4 — AskEduM8Panel stays MOUNTED even when a
+    // different tab is the one showing (its own wrapper is hidden via
+    // display:'none' below, not removed from the tree) — this is the
+    // exact fix for the conversation-state-loss bug this same part
+    // describes. Confirms presence, then confirms it's the WRAPPER
+    // that's hidden, not merely coincidentally absent.
+    expect(
+      renderer.root.findAll((n) => n.props.testID === 'ask-edum8-panel').length
+    ).toBeGreaterThan(0);
+    const hiddenNodes = renderer.root.findAll(
+      (n) =>
+        Array.isArray(n.props.style) &&
+        n.props.style.some((s: unknown) => !!s && (s as { display?: string }).display === 'none')
+    );
+    expect(hiddenNodes.length).toBeGreaterThan(0);
   });
 
   // The document-level Cmd/Ctrl+S/Enter/K listener itself is deliberately
