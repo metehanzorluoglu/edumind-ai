@@ -1,6 +1,6 @@
 import { useConversations, useProjects } from 'education-assistant-client';
 import { Redirect, Slot, usePathname, useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -21,6 +21,11 @@ import { ChatConversationsProvider } from '@/lib/ChatConversationsContext';
 import { useClient } from '@/lib/ClientProvider';
 import { flushBeforeNavigate } from '@/lib/navigationFlushGuard';
 import { DARK_PALETTE, usePreferences, useTheme } from '@/lib/Preferences';
+import {
+  getLastSectionLocation,
+  recordSectionLocation,
+  type LastLocationSection,
+} from '@/lib/sectionLastLocation';
 
 const WIDE_PANEL_BREAKPOINT_PX = 900;
 
@@ -82,6 +87,19 @@ export default function TabsLayout() {
     activeSection === 'chat' && lastSegment && lastSegment !== 'chat' && lastSegment !== 'new'
       ? lastSegment
       : null;
+
+  // Milestone 5.5.2 Part 26 — records every pathname visited inside
+  // Writing/Documents/Notes so this section's own nav icon can return
+  // to it later (see handleNavigate below) — manual testing found the
+  // nav icon always going to the bare section dashboard, regardless of
+  // where the user actually was, read as "continuity is broken" even
+  // though no STATE was actually lost (that's sessionNavCache's job,
+  // a different concern — this fixes the nav icon's OWN destination).
+  useEffect(() => {
+    if (activeSection === 'writing' || activeSection === 'documents' || activeSection === 'notes') {
+      recordSectionLocation(activeSection, pathname);
+    }
+  }, [activeSection, pathname]);
 
   if (status === 'loading') {
     return (
@@ -145,22 +163,38 @@ export default function TabsLayout() {
       if (preferences.sidebarCollapsed) update('sidebarCollapsed', false);
       return;
     }
+    // Milestone 5.5.2 Part 26 — manual testing on the real production
+    // stack found M5.5.1's continuity fixes insufficient: the nav icon
+    // itself always pushed the section's bare dashboard route
+    // (/writing, /documents, /notes), discarding wherever the user
+    // actually was — sessionNavCache/navigationFlushGuard only ever
+    // protected state WITHIN an already-open project/document/
+    // notebook, never the nav icon's own destination. Prefer the last
+    // pathname visited in that section this session (recorded by the
+    // effect above) — reached from ANYWHERE (another section, or
+    // already inside this one), the nav icon now means "take me back
+    // to my work here," not "reset to the list." The section's own
+    // list/dashboard is still one click away via its in-screen
+    // breadcrumb (e.g. [id].tsx's own "Writing" back-chevron) — see
+    // this milestone's report for why that satisfies "section home
+    // must still be reachable" without a second, competing meaning for
+    // the nav icon itself.
+    const lastLocationSection: LastLocationSection | null =
+      section === 'writing' || section === 'documents' || section === 'notes' ? section : null;
+    const target =
+      (lastLocationSection && getLastSectionLocation(lastLocationSection)) ||
+      ROUTE_BY_SECTION[section];
     // Milestone 5.5.1 Part 25 — real-browser validation (checking
     // window.history.length before/after repeated same-icon clicks)
-    // caught a genuine duplicate-history bug here: clicking a nav icon
-    // while ALREADY on that exact section's own top-level route (e.g.
-    // pressing "Writing" twice in a row while sitting on /writing)
-    // pushed a SECOND, identical history entry every time — so the
-    // browser's Back button, faced with two adjacent identical entries,
-    // appeared to do nothing (landing on the same URL again) instead of
-    // actually leaving the section, exactly the "broken loops or
-    // duplicate history" Part 25 explicitly rules out. A route that
-    // ADDS a path segment (e.g. /documents/abc123 -> pressing
-    // "Documents" to return to the /documents list) is still a real,
-    // intentional navigation and must still push — only the exact-match
-    // case is the no-op.
-    if (pathname !== ROUTE_BY_SECTION[section]) {
-      router.push(ROUTE_BY_SECTION[section] as never);
+    // caught a genuine duplicate-history bug: pushing a route that's
+    // already the current pathname adds a useless, identical history
+    // entry every time, so the browser's Back button appears to do
+    // nothing (landing on the same URL again). Still correct under the
+    // last-location logic above: `target` and `pathname` naturally
+    // agree whenever the remembered location IS where the user already
+    // is.
+    if (pathname !== target) {
+      router.push(target as never);
     }
     setDrawerOpen(false);
   }
