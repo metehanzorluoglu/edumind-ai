@@ -30,6 +30,55 @@ _ERROR_PATTERNS = [
 _CITATION_WARNING = re.compile(r"Citation `([^']+)' on page \d+ undefined")
 _UNDEFINED_REF_WARNING = re.compile(r"Reference `([^']+)' on page \d+ undefined")
 
+# Milestone 5.5.3 — real-world finding, not a synthetic case: the UNLV
+# thesis fixture's own Abstract.tex places a `\\` line break immediately
+# before bracketed placeholder text on the next line
+# ("Dr. [Advisor Name] \\\n[Advisor Title] \\"), which LaTeX parses as
+# `\\[Advisor Title]` — the OPTIONAL numeric spacing argument `\\` can
+# take — producing exactly "Missing number, treated as zero." This is a
+# genuinely common class of template-authoring mistake (placeholder
+# brackets are a near-universal convention in academic templates), not
+# an EduM8 bug or a missing package. Detected here, deterministically,
+# from data ALREADY in the log: TeX's own standard "l.NN <content>"
+# context dump (printed a few lines after most errors) shows the actual
+# source text being processed — if its line number matches this
+# diagnostic's own line AND it contains a bracket-wrapped phrase, that
+# is real, present-in-the-log evidence, never a guess or fabrication.
+# Scoped specifically to "Missing number, treated as zero" — the exact
+# error this particular authoring mistake produces — rather than any
+# error with a bracket nearby, to avoid mischaracterizing an unrelated
+# failure.
+_MISSING_NUMBER_MESSAGE = "Missing number, treated as zero."
+_CONTEXT_LINE_PATTERN = re.compile(r"^l\.(\d+)\s?(.*)$")
+_PLACEHOLDER_PATTERN = re.compile(r"\[[A-Z][^\[\]]{1,60}\]")
+
+
+def _placeholder_near(lines: list[str], error_index: int, line_no: int) -> str | None:
+    window = lines[error_index : error_index + 6]
+    for line in window:
+        m = _CONTEXT_LINE_PATTERN.match(line)
+        if m and int(m.group(1)) == line_no:
+            placeholder = _PLACEHOLDER_PATTERN.search(m.group(2))
+            if placeholder:
+                return placeholder.group(0)
+    return None
+
+
+def _classify_message(lines: list[str], error_index: int, message: str, file: str | None, line_no: int | None) -> str:
+    """Returns the truthful, specific message when inspection actually
+    proves the cause (Category D/E: template placeholder content); the
+    original raw message otherwise — never a fabricated diagnosis."""
+    if message != _MISSING_NUMBER_MESSAGE or file is None or line_no is None:
+        return message
+    placeholder = _placeholder_near(lines, error_index, line_no)
+    if placeholder is None:
+        return message
+    return (
+        f"Compilation reached {file} line {line_no}. This template still contains "
+        f"placeholder content `{placeholder}`, which LaTeX is interpreting as syntax. "
+        "Replace the placeholder with your actual content, then compile again."
+    )
+
 
 def sanitize_log(raw_log: str, *, workdir_label: str = "<project>") -> str:
     """Replaces every occurrence of the real (absolute, host-specific)
@@ -68,6 +117,7 @@ def extract_diagnostics(raw_log: str) -> list[Diagnostic]:
         if line.startswith("!"):
             message = line[1:].strip()
             line_no, file = _find_nearby_line_and_file(lines, i)
+            message = _classify_message(lines, i, message, file, line_no)
             diagnostics.append(
                 Diagnostic(severity="error", message=message, line=line_no, file=file)
             )
@@ -82,13 +132,11 @@ def extract_diagnostics(raw_log: str) -> list[Diagnostic]:
         # warnings that still use the classic form).
         m = _FILE_LINE_ERROR_PATTERN.match(line)
         if m:
+            file = m.group(1)
+            line_no = int(m.group(2))
+            message = _classify_message(lines, i, m.group(3).strip(), file, line_no)
             diagnostics.append(
-                Diagnostic(
-                    severity="error",
-                    message=m.group(3).strip(),
-                    line=int(m.group(2)),
-                    file=m.group(1),
-                )
+                Diagnostic(severity="error", message=message, line=line_no, file=file)
             )
     return diagnostics
 

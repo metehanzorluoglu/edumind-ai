@@ -46,6 +46,64 @@ def test_extract_diagnostics_attributes_the_real_file_for_a_multi_file_project()
     assert diags[0].file == "sections/introduction.tex"
 
 
+def test_extract_diagnostics_classifies_placeholder_content_truthfully():
+    """Milestone 5.5.3 — real-world finding from the UNLV thesis fixture:
+    Abstract.tex's own `\\` line break immediately followed by bracketed
+    placeholder text on the next line ("[Advisor Title]") gets parsed by
+    LaTeX as `\\[Advisor Title]` (an invalid spacing argument), producing
+    "Missing number, treated as zero." The real pdflatex log this
+    produces (-file-line-error form, with the standard l.NN context
+    dump a couple of lines later)."""
+    raw = (
+        "./Abstract.tex:11: Missing number, treated as zero.\n"
+        "<to be read again> \n"
+        "                   [\n"
+        "l.11 [Advisor Title] \\\\\n"
+        "                       \n"
+    )
+    diags = extract_diagnostics(raw)
+    assert len(diags) == 1
+    assert diags[0].file == "Abstract.tex"
+    assert diags[0].line == 11
+    assert diags[0].message == (
+        "Compilation reached Abstract.tex line 11. This template still contains "
+        "placeholder content `[Advisor Title]`, which LaTeX is interpreting as syntax. "
+        "Replace the placeholder with your actual content, then compile again."
+    )
+
+
+def test_extract_diagnostics_never_classifies_an_unrelated_missing_number_error():
+    """The classification is scoped to a REAL bracket placeholder found
+    in the log's own context line — a "Missing number" error with no
+    such context (or none nearby) keeps its original, honest message."""
+    raw = "./main.tex:5: Missing number, treated as zero.\nl.5 \\vspace{}\n"
+    diags = extract_diagnostics(raw)
+    assert len(diags) == 1
+    assert diags[0].message == "Missing number, treated as zero."
+
+
+def test_extract_diagnostics_never_classifies_a_different_error_type_even_with_brackets_nearby():
+    raw = "./main.tex:5: Undefined control sequence.\nl.5 \\foo [Some Bracketed Text]\n"
+    diags = extract_diagnostics(raw)
+    assert len(diags) == 1
+    assert diags[0].message == "Undefined control sequence."
+
+
+def test_extract_diagnostics_never_classifies_the_classic_bang_form_without_a_file():
+    """The classic "! message" / "l.NN" two-line form never carries a
+    filename (module-wide design constraint — see _find_nearby_line_and
+    _file's own docstring). The classification message names the file
+    ("Compilation reached {file} line {line}"), so it only ever fires
+    when a real filename is available — never with a placeholder/omitted
+    file, which would be less useful and inconsistent with every other
+    diagnostic's own file-attribution guarantee."""
+    raw = "! Missing number, treated as zero.\nl.11 [Advisor Title] \\\\\n"
+    diags = extract_diagnostics(raw)
+    assert len(diags) == 1
+    assert diags[0].file is None
+    assert diags[0].message == "Missing number, treated as zero."
+
+
 def test_extract_diagnostics_normalizes_a_leading_dot_slash():
     raw = "./main.tex:3: Undefined control sequence.\nl.3 \\foo\n"
     diags = extract_diagnostics(raw)
