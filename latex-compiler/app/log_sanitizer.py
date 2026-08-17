@@ -1,12 +1,15 @@
-"""Milestone 5.1 Part 15/22/23 — turns a raw pdflatex/bibtex log into
-(a) a short list of structured Diagnostics for the primary UI and (b) a
-truncated, path-sanitized excerpt safe to log or show in an expandable
-"Show log" panel. Conservative by design (Part 22: "Parse LaTeX output
-conservatively") — false negatives (missing an error) are acceptable;
-false positives that hide a genuine failure behind a fabricated "success"
-are not, so the caller (app/compiler.py) never relies on this module to
-decide success/failure, only pdflatex's own exit code and PDF presence
-do that."""
+"""Milestone 5.1 Part 15/22/23, extended by 5.5 Part 14 — turns a raw
+pdflatex/bibtex log into (a) a short list of structured Diagnostics for
+the primary UI and (b) a truncated, path-sanitized excerpt safe to log or
+show in an expandable "Show log" panel. Conservative by design (Part 22:
+"Parse LaTeX output conservatively") — false negatives (missing an error,
+or missing a diagnostic's file identity) are acceptable; false positives
+that hide a genuine failure behind a fabricated "success", or attribute a
+diagnostic to the WRONG file, are not — so the caller (app/compiler.py)
+never relies on this module to decide success/failure, only pdflatex's
+own exit code and PDF presence do that, and file identity (Diagnostic.file)
+is only ever populated from the one log form that reliably carries a real
+filename (see _find_nearby_line_and_file's own docstring)."""
 
 from __future__ import annotations
 
@@ -64,22 +67,69 @@ def extract_diagnostics(raw_log: str) -> list[Diagnostic]:
             continue
         if line.startswith("!"):
             message = line[1:].strip()
-            line_no = _find_nearby_line_number(lines, i)
-            diagnostics.append(Diagnostic(severity="error", message=message, line=line_no))
+            line_no, file = _find_nearby_line_and_file(lines, i)
+            diagnostics.append(
+                Diagnostic(severity="error", message=message, line=line_no, file=file)
+            )
+            continue
+        # Milestone 5.5 Part 14 — pdflatex's `-file-line-error` REPLACES
+        # the classic "! message" opening with this "file:line: message"
+        # form for most TeX-level errors (the two are alternative
+        # prefixes for the SAME single error report, never both present
+        # for one error) — so this needs its own top-level trigger, not
+        # only the nearby-file lookup above (which only helps a `!` line
+        # find a companion file:line: a few lines later, e.g. for
+        # warnings that still use the classic form).
+        m = _FILE_LINE_ERROR_PATTERN.match(line)
+        if m:
+            diagnostics.append(
+                Diagnostic(
+                    severity="error",
+                    message=m.group(3).strip(),
+                    line=int(m.group(2)),
+                    file=m.group(1),
+                )
+            )
     return diagnostics
 
 
-def _find_nearby_line_number(lines: list[str], error_index: int) -> int | None:
+# Milestone 5.5 Part 14 — any project file, not just literally "main.tex"
+# (the M5.4 multi-file `-file-line-error` case this hardcoded-to-main.tex
+# regex previously missed entirely): an optional leading "./" (kpathsea
+# reports either form for the same file), then a RELATIVE path only — no
+# leading "/", so this can never match (and thus never leak) an absolute
+# host path; that case simply falls through to the no-file "l.NN"
+# fallback below, same as it always has.
+_FILE_LINE_ERROR_PATTERN = re.compile(
+    r"^(?:\./)?([\w.\-]+(?:/[\w.\-]+)*\.(?:tex|cls|sty)):(\d+): (.+)$"
+)
+
+
+def _find_nearby_line_and_file(
+    lines: list[str], error_index: int
+) -> tuple[int | None, str | None]:
     """pdflatex's `-file-line-error` prefixes some (not all) error lines
-    with `main.tex:NN:` directly; for the classic `! message` /
-    `l.NN ...` two-line form, the line number appears a few lines later.
-    Checks a small forward window only — conservative, never guesses."""
+    with `<file>:NN:` directly — reliable, since kpathsea only ever
+    reports a relative path here; for the classic `! message` / `l.NN
+    ...` two-line form, only the line number appears a few lines later,
+    with no filename in that line at all. Attributing THAT form to a
+    file would mean guessing from LaTeX's separate, deeply-nested
+    "(filename ... )" open/close trace — real, but fragile enough
+    (nesting depth, kpathsea search noise) that a wrong guess is a false
+    positive this module's own docstring rules out. So: file is only
+    ever populated from the reliable `file:NN:` form; the `l.NN` form
+    still contributes a line number alone, exactly as before this
+    milestone. Checks a small forward window only — conservative, never
+    guesses further than that either."""
     window = lines[error_index : error_index + 5]
     for line in window:
-        m = re.match(r"^main\.tex:(\d+):", line)
+        m = _FILE_LINE_ERROR_PATTERN.match(line)
         if m:
-            return int(m.group(1))
+            # The regex's own (?:\./)? already strips a leading "./" —
+            # group(1) is the bare relative path either way, so
+            # "./intro.tex" and "intro.tex" both normalize to "intro.tex".
+            return int(m.group(2)), m.group(1)
         m = re.match(r"^l\.(\d+)", line)
         if m:
-            return int(m.group(1))
-    return None
+            return int(m.group(1)), None
+    return None, None

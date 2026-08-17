@@ -175,6 +175,12 @@ class CompileDiagnosticResponse(BaseModel):
     severity: str
     message: str
     line: int | None = None
+    # Milestone 5.5 Part 14 — the erroring file's project-relative path
+    # (e.g. "sections/introduction.tex"), passed through verbatim from
+    # the compiler service's own Diagnostic.file — see that field's
+    # docstring for why it's only ever populated from the reliable
+    # -file-line-error log form, never guessed.
+    file: str | None = None
 
 
 class CompileWritingProjectResponse(BaseModel):

@@ -2524,6 +2524,8 @@ export interface components {
             message: string;
             /** Line */
             line?: number | null;
+            /** File */
+            file?: string | null;
         };
         /**
          * CompileWritingProjectResponse

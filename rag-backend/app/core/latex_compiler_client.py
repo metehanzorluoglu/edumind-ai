@@ -37,6 +37,9 @@ class Diagnostic:
     severity: Literal["error", "warning"]
     message: str
     line: int | None = None
+    # Milestone 5.5 Part 14 — passthrough of the compiler service's own
+    # Diagnostic.file (see latex-compiler/app/log_sanitizer.py).
+    file: str | None = None
 
 
 @dataclass(frozen=True)
@@ -125,7 +128,10 @@ class LatexCompilerClient:
             body = response.json()
             diagnostics = tuple(
                 Diagnostic(
-                    severity=item["severity"], message=item["message"], line=item.get("line")
+                    severity=item["severity"],
+                    message=item["message"],
+                    line=item.get("line"),
+                    file=item.get("file"),
                 )
                 for item in body.get("diagnostics", [])
             )

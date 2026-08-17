@@ -42,6 +42,14 @@ class Diagnostic(BaseModel):
     severity: Literal["error", "warning"]
     message: str
     line: int | None = None
+    # Milestone 5.5 Part 14 — the relative path of the erroring file (e.g.
+    # "sections/introduction.tex"), same key shape as CompileRequest's own
+    # `extra_files`, so the frontend can open the exact file. Only ever
+    # populated from pdflatex's `-file-line-error` "file:line: message"
+    # form, which reliably names the real erroring file (see
+    # log_sanitizer.py) — never guessed or derived from the classic
+    # two-line "l.NN" form, which carries no filename of its own.
+    file: str | None = None
 
 
 class CompileResponse(BaseModel):

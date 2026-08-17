@@ -81,6 +81,20 @@ function webTitle(text: string): object {
   return Platform.OS === 'web' ? ({ title: text } as object) : {};
 }
 
+/** Milestone 5.5 Part 14 — the character offset of the START of a 1-indexed
+ * line, clamped to the content's actual line count so a stale diagnostic
+ * (compiled against an edit made since) never throws or lands out of
+ * range — collapses to the nearest valid line instead of guessing. */
+function offsetForLine(content: string, line: number): { start: number; end: number } {
+  const lines = content.split('\n');
+  const targetIndex = Math.max(0, Math.min(line - 1, lines.length - 1));
+  let offset = 0;
+  for (let i = 0; i < targetIndex; i += 1) {
+    offset += lines[i]!.length + 1; // +1 for the '\n' consumed by split('\n')
+  }
+  return { start: offset, end: offset };
+}
+
 /**
  * Milestone 5 (Academic Writing & LaTeX Foundation) — the writing
  * project editor: LaTeX source (Part 6), debounced autosave with a
@@ -273,6 +287,12 @@ export default function WritingProjectEditorScreen() {
     setSelection(next);
     if (activeFileId) cursorMemoryRef.current[activeFileId] = next;
   }
+  // Milestone 5.5 Part 14 — set by handleOpenDiagnostic just before
+  // openFile(); consumed (and cleared) by the very next load-effect run
+  // below, taking priority over both the remembered-cursor and
+  // end-of-content fallbacks — "go to line" always wins the one time
+  // it's actually requested.
+  const pendingDiagnosticLineRef = useRef<number | null>(null);
 
   // Milestone 5.2.1 real-browser finding (Part 7/24), generalized by
   // Milestone 5.3 Part 13 to whichever file is active — `selection`
@@ -297,14 +317,21 @@ export default function WritingProjectEditorScreen() {
   // wins over the "end of content" fallback.
   useEffect(() => {
     if (activeFileLoadState.status === 'success') {
-      const remembered = activeFileId ? cursorMemoryRef.current[activeFileId] : undefined;
-      const inRange =
-        remembered !== undefined &&
-        remembered.start <= activeFileContent.length &&
-        remembered.end <= activeFileContent.length;
-      const next = inRange
-        ? remembered!
-        : { start: activeFileContent.length, end: activeFileContent.length };
+      const pendingLine = pendingDiagnosticLineRef.current;
+      let next: { start: number; end: number };
+      if (pendingLine != null) {
+        pendingDiagnosticLineRef.current = null;
+        next = offsetForLine(activeFileContent, pendingLine);
+      } else {
+        const remembered = activeFileId ? cursorMemoryRef.current[activeFileId] : undefined;
+        const inRange =
+          remembered !== undefined &&
+          remembered.start <= activeFileContent.length &&
+          remembered.end <= activeFileContent.length;
+        next = inRange
+          ? remembered!
+          : { start: activeFileContent.length, end: activeFileContent.length };
+      }
       setSelection(next);
       if (activeFileId) cursorMemoryRef.current[activeFileId] = next;
     }
@@ -424,6 +451,40 @@ export default function WritingProjectEditorScreen() {
         ...(source.chunk_id ? { chunkId: source.chunk_id } : {}),
       },
     });
+  }
+
+  // Milestone 5.5 Part 14 — resolves a compile diagnostic's `file` (a
+  // project-relative path) against the CURRENT file tree; a diagnostic
+  // from a stale compile (a file since renamed/deleted) simply gets no
+  // match, and CompileDiagnostics never offers the action in that case.
+  function resolveDiagnosticFile(path: string): boolean {
+    return (
+      treeState.status === 'success' &&
+      treeState.data.files.some((f) => f.path === path && f.kind === 'text')
+    );
+  }
+
+  function handleOpenDiagnostic(diagnostic: { file?: string | null; line?: number | null }): void {
+    if (!diagnostic.file || treeState.status !== 'success') return;
+    const node = treeState.data.files.find((f) => f.path === diagnostic.file && f.kind === 'text');
+    if (!node) return;
+    if (node.id === activeFileId) {
+      // Already the open file — openFile() below would be a no-op (no
+      // 'loading' -> 'success' transition to hang the pending-line ref
+      // on), so jump the cursor directly instead of going through that
+      // load-effect at all.
+      if (diagnostic.line != null) {
+        const next = offsetForLine(activeFileContent, diagnostic.line);
+        setSelection(next);
+        cursorMemoryRef.current[node.id] = next;
+      }
+    } else {
+      if (diagnostic.line != null) pendingDiagnosticLineRef.current = diagnostic.line;
+      void openFile(node.id);
+    }
+    // Surfaces the editor even if a narrow viewport was showing Preview
+    // (where a diagnostic click most likely originates from).
+    setMobileTab('editor');
   }
 
   function handleOpenRename(): void {
@@ -1016,6 +1077,9 @@ export default function WritingProjectEditorScreen() {
             status={compileState.data.status}
             diagnostics={compileState.data.diagnostics ?? []}
             logExcerpt={compileState.data.log_excerpt}
+            resolveDiagnosticFile={resolveDiagnosticFile}
+            activeFilePath={activeFileNode?.path ?? null}
+            onOpenDiagnostic={handleOpenDiagnostic}
           />
         </View>
       )}

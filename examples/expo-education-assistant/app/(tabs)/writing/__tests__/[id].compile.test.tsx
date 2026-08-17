@@ -168,7 +168,9 @@ function filesTreeRoute(): FetchRoute {
     respond: () =>
       jsonResponse({
         files: [rootFileNode()],
-        generated: [{ name: 'references.bib', path: 'references.bib', read_only: true, reference_count: 0 }],
+        generated: [
+          { name: 'references.bib', path: 'references.bib', read_only: true, reference_count: 0 },
+        ],
         root_file_id: ROOT_FILE_ID,
         total_size_bytes: PROJECT.main_tex_content.length,
         file_count: 1,
@@ -286,6 +288,80 @@ describe('WritingProjectEditorScreen — Compile (Milestone 5.1)', () => {
     );
     expect(matches.length).toBeGreaterThan(0);
     expect(findAllPressablesByLabel(renderer.root, 'Download PDF')).toHaveLength(0);
+  });
+
+  it('a diagnostic naming the active file offers "Go to line" and jumps the editor there (Part 14)', async () => {
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute('hash1'),
+      compileRoute({
+        status: 'error',
+        diagnostics: [
+          { severity: 'error', message: 'Undefined control sequence', line: 2, file: 'main.tex' },
+        ],
+        log_excerpt: '! Undefined control sequence.',
+        duration_ms: 100,
+        source_hash: 'hash1',
+      }),
+    ]);
+
+    await act(async () => {
+      findPressableByLabel(renderer.root, 'Compile').props.onPress();
+      await flushAsync();
+    });
+
+    // "Go to line", not "Open file" — the diagnostic's file is the one
+    // already open in the editor.
+    const goToLineButtons = findAllPressablesByLabel(renderer.root, 'Go to line: main.tex, line 2');
+    expect(goToLineButtons.length).toBeGreaterThan(0);
+
+    await act(async () => {
+      goToLineButtons[0]!.props.onPress();
+      await flushAsync();
+    });
+
+    const editor = renderer.root.find(
+      (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'LaTeX source editor'
+    );
+    const expectedOffset = PROJECT.main_tex_content.split('\n')[0]!.length + 1; // start of line 2
+    expect(editor.props.selection).toEqual({ start: expectedOffset, end: expectedOffset });
+  });
+
+  it('a diagnostic with no file, or naming a file that no longer exists, offers no navigation action', async () => {
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute('hash1'),
+      compileRoute({
+        status: 'error',
+        diagnostics: [
+          { severity: 'error', message: 'stale reference', line: 4, file: 'deleted.tex' },
+          { severity: 'error', message: 'no file info at all', line: 5 },
+        ],
+        log_excerpt: '',
+        duration_ms: 100,
+        source_hash: 'hash1',
+      }),
+    ]);
+
+    await act(async () => {
+      findPressableByLabel(renderer.root, 'Compile').props.onPress();
+      await flushAsync();
+    });
+
+    const staleReferenceText = renderer.root.findAll(
+      (node) =>
+        String(node.type) === 'Text' &&
+        node.children.some((c) => typeof c === 'string' && c.includes('stale reference'))
+    );
+    expect(staleReferenceText.length).toBeGreaterThan(0);
+    const navActions = renderer.root.findAll(
+      (node) =>
+        typeof node.props.onPress === 'function' &&
+        typeof node.props.accessibilityLabel === 'string' &&
+        (node.props.accessibilityLabel.startsWith('Open file') ||
+          node.props.accessibilityLabel.startsWith('Go to line'))
+    );
+    expect(navActions).toHaveLength(0);
   });
 
   it('regression: a transport-level compile failure (e.g. 429 rate limit) shows an error message, not silence', async () => {

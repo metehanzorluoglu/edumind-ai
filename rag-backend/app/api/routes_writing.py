@@ -601,7 +601,7 @@ def _diagnostics_to_response(
     extra: list[CompileDiagnosticResponse] | None = None,
 ) -> list[CompileDiagnosticResponse]:
     result = [
-        CompileDiagnosticResponse(severity=d.severity, message=d.message, line=d.line)
+        CompileDiagnosticResponse(severity=d.severity, message=d.message, line=d.line, file=d.file)
         for d in diagnostics
     ]
     if extra:
