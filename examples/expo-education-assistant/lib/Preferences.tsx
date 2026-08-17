@@ -61,6 +61,21 @@ export interface Preferences {
   /** Milestone 4.2 Section 6 — persisted across sessions so choosing IEEE
    * once doesn't need to be repeated on every citation popover open. */
   citationStyle: CitationStyle;
+  /** Milestone 5.5 Part 9 — the Writing workspace's left "Research" panel
+   * (Files/References/Notes/Ask EduM8) restores its last-open tab, so
+   * returning to a project (or coming back from the Reader — Part 19)
+   * lands where the researcher left off rather than always resetting to
+   * References. */
+  writingPanelTab: 'project' | 'references' | 'notes' | 'ask';
+  /** Mirrors sidebarCollapsed's own reasoning, for the Writing PDF
+   * preview column on wide web. */
+  writingPreviewCollapsed: boolean;
+  /** Drag-resize widths (Part 8) for the Writing workspace's two
+   * side columns, wide-web only. Clamped wherever read — see
+   * WRITING_RESEARCH_PANEL_WIDTH_MIN/MAX and
+   * WRITING_PREVIEW_PANEL_WIDTH_MIN/MAX. */
+  writingResearchPanelWidth: number;
+  writingPreviewPanelWidth: number;
 }
 
 /** Drag-resize bounds for the drawer — narrow enough to still show full
@@ -68,6 +83,15 @@ export interface Preferences {
 export const SIDEBAR_WIDTH_MIN = 220;
 export const SIDEBAR_WIDTH_MAX = 400;
 export const SIDEBAR_WIDTH_DEFAULT = 280;
+
+/** Milestone 5.5 Part 8 — narrow enough to leave the editor most of the
+ * width, wide enough that Ask EduM8's turn history/composer stay usable. */
+export const WRITING_RESEARCH_PANEL_WIDTH_MIN = 240;
+export const WRITING_RESEARCH_PANEL_WIDTH_MAX = 480;
+export const WRITING_RESEARCH_PANEL_WIDTH_DEFAULT = 320;
+export const WRITING_PREVIEW_PANEL_WIDTH_MIN = 280;
+export const WRITING_PREVIEW_PANEL_WIDTH_MAX = 640;
+export const WRITING_PREVIEW_PANEL_WIDTH_DEFAULT = 420;
 
 export const DEFAULT_PREFERENCES: Preferences = {
   themeMode: 'system',
@@ -80,6 +104,10 @@ export const DEFAULT_PREFERENCES: Preferences = {
   sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
   documentsViewMode: 'grid',
   citationStyle: 'apa7',
+  writingPanelTab: 'references',
+  writingPreviewCollapsed: false,
+  writingResearchPanelWidth: WRITING_RESEARCH_PANEL_WIDTH_DEFAULT,
+  writingPreviewPanelWidth: WRITING_PREVIEW_PANEL_WIDTH_DEFAULT,
 };
 
 // Intentionally NOT renamed to "edum8.*" despite the EduM8 rebrand — this
@@ -141,6 +169,29 @@ function parseStoredPreferences(raw: string | null): Preferences {
         parsed.citationStyle === 'apa7' || parsed.citationStyle === 'ieee'
           ? parsed.citationStyle
           : DEFAULT_PREFERENCES.citationStyle,
+      writingPanelTab:
+        parsed.writingPanelTab === 'project' ||
+        parsed.writingPanelTab === 'references' ||
+        parsed.writingPanelTab === 'notes' ||
+        parsed.writingPanelTab === 'ask'
+          ? parsed.writingPanelTab
+          : DEFAULT_PREFERENCES.writingPanelTab,
+      writingPreviewCollapsed:
+        typeof parsed.writingPreviewCollapsed === 'boolean'
+          ? parsed.writingPreviewCollapsed
+          : DEFAULT_PREFERENCES.writingPreviewCollapsed,
+      writingResearchPanelWidth:
+        typeof parsed.writingResearchPanelWidth === 'number' &&
+        parsed.writingResearchPanelWidth >= WRITING_RESEARCH_PANEL_WIDTH_MIN &&
+        parsed.writingResearchPanelWidth <= WRITING_RESEARCH_PANEL_WIDTH_MAX
+          ? parsed.writingResearchPanelWidth
+          : DEFAULT_PREFERENCES.writingResearchPanelWidth,
+      writingPreviewPanelWidth:
+        typeof parsed.writingPreviewPanelWidth === 'number' &&
+        parsed.writingPreviewPanelWidth >= WRITING_PREVIEW_PANEL_WIDTH_MIN &&
+        parsed.writingPreviewPanelWidth <= WRITING_PREVIEW_PANEL_WIDTH_MAX
+          ? parsed.writingPreviewPanelWidth
+          : DEFAULT_PREFERENCES.writingPreviewPanelWidth,
     };
   } catch {
     return { ...DEFAULT_PREFERENCES };

@@ -1,8 +1,12 @@
 import { useWritingProject, useWritingProjectFiles } from 'education-assistant-client';
-import type { DisplaySource, NotebookEntry, WritingProjectFileNode } from 'education-assistant-client';
+import type {
+  DisplaySource,
+  NotebookEntry,
+  WritingProjectFileNode,
+} from 'education-assistant-client';
 import * as DocumentPicker from 'expo-document-picker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -36,8 +40,17 @@ import {
   downloadWritingProjectExport,
   safeWritingProjectExportFilename,
 } from '@/lib/downloadWritingProjectExport';
+import { useDragResizeWidth } from '@/lib/useDragResizeWidth';
 import { useFeatureFlags } from '@/lib/FeatureFlags';
-import { useTheme, type Theme } from '@/lib/Preferences';
+import {
+  useTheme,
+  usePreferences,
+  WRITING_RESEARCH_PANEL_WIDTH_MIN,
+  WRITING_RESEARCH_PANEL_WIDTH_MAX,
+  WRITING_PREVIEW_PANEL_WIDTH_MIN,
+  WRITING_PREVIEW_PANEL_WIDTH_MAX,
+  type Theme,
+} from '@/lib/Preferences';
 import {
   buildUploadableFileFromPickerAsset,
   WRITING_PROJECT_UPLOAD_MIME_TYPES,
@@ -45,7 +58,10 @@ import {
 
 const WIDE_BREAKPOINT_PX = 860;
 
-type PanelTab = 'project' | 'references' | 'notes';
+// Milestone 5.5 Part 6 — "Ask EduM8" is now a 4th tab of the same
+// Research panel as Files/References/Notes, not a separately-positioned
+// drawer (see the panel/askOpen removal below).
+type PanelTab = 'project' | 'references' | 'notes' | 'ask';
 type MobileTab = 'editor' | 'preview' | 'files' | 'references' | 'notes' | 'ask';
 
 const SAVE_STATUS_LABEL: Record<string, string> = {
@@ -55,6 +71,15 @@ const SAVE_STATUS_LABEL: Record<string, string> = {
   saved: 'Saved',
   error: 'Could not save',
 };
+
+/** Milestone 5.5 Part 12 — documents a keyboard shortcut via a native
+ * browser tooltip (web-only; a no-op object elsewhere). RN's ViewProps/
+ * TextProps don't declare `title`, but react-native-web forwards it to
+ * the underlying DOM node — same cast idiom as the resize handles'
+ * onMouseDown. */
+function webTitle(text: string): object {
+  return Platform.OS === 'web' ? ({ title: text } as object) : {};
+}
 
 /**
  * Milestone 5 (Academic Writing & LaTeX Foundation) — the writing
@@ -81,6 +106,11 @@ export default function WritingProjectEditorScreen() {
   const { width } = useWindowDimensions();
   const isWide = width >= WIDE_BREAKPOINT_PX;
   const { latexCompilation } = useFeatureFlags();
+  // Milestone 5.5 Part 9 — panel tab/preview-collapsed/panel-width state
+  // all live in the existing local-preferences blob (same "remember
+  // across visits, per-device, no server round trip" mechanism the app
+  // drawer's own width/collapse already use — app/(tabs)/_layout.tsx).
+  const { preferences, update, hydrated } = usePreferences();
 
   const {
     loadState,
@@ -130,7 +160,28 @@ export default function WritingProjectEditorScreen() {
   const isActiveFileEditable = activeFileNode?.kind === 'text';
   const content = isActiveFileEditable ? activeFileContent : '';
 
-  const [panelTab, setPanelTab] = useState<PanelTab>('references');
+  // Local state, seeded from (and kept in sync with) Preferences once
+  // hydration completes — NOT a direct `preferences.writingPanelTab`
+  // read. Preferences hydrates asynchronously (a storage read after
+  // mount), and its `update()` is a same-tick no-op outside a
+  // PreferencesProvider (see that module's own null-safe fallback) — a
+  // direct read would leave every tab click silently inert in any
+  // render tree that hasn't mounted the provider. Local state means tab
+  // switching always works this session regardless; the effect below
+  // only pulls in a REMEMBERED tab once, when hydration resolves, and
+  // never fights a click that happens first.
+  const [panelTab, setPanelTabState] = useState<PanelTab>(preferences.writingPanelTab);
+  useEffect(() => {
+    if (hydrated) setPanelTabState(preferences.writingPanelTab);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated]);
+  const setPanelTab = useCallback(
+    (tab: PanelTab) => {
+      setPanelTabState(tab);
+      update('writingPanelTab', tab);
+    },
+    [update]
+  );
   const [mobileTab, setMobileTab] = useState<MobileTab>('editor');
   const [selection, setSelection] = useState({ start: 0, end: 0 });
   const editorRef = useRef<TextInput>(null);
@@ -147,11 +198,6 @@ export default function WritingProjectEditorScreen() {
   const [bibModalOpen, setBibModalOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
-  // Milestone 5.2 — the "Ask EduM8" drawer's own visibility. A toggle,
-  // never a permanent third column (Part 11): closed by default, and
-  // creates zero backend state until the researcher actually asks a
-  // question (see useWritingAsk's own lazy-conversation-creation docs).
-  const [askOpen, setAskOpen] = useState(false);
 
   // Milestone 5.1 Part 24/25/32/34 — the compiled-PDF preview's own
   // state. Deliberately separate from `compileState` (which tracks the
@@ -164,7 +210,33 @@ export default function WritingProjectEditorScreen() {
   const [compiledPdfSourceHash, setCompiledPdfSourceHash] = useState<string | null>(null);
   const [pdfFetching, setPdfFetching] = useState(false);
   const [pdfFetchError, setPdfFetchError] = useState<string | null>(null);
-  const [previewCollapsed, setPreviewCollapsed] = useState(false);
+  const previewCollapsed = preferences.writingPreviewCollapsed;
+  const setPreviewCollapsed = useCallback(
+    (next: boolean | ((prev: boolean) => boolean)) =>
+      update(
+        'writingPreviewCollapsed',
+        typeof next === 'function' ? next(preferences.writingPreviewCollapsed) : next
+      ),
+    [update, preferences.writingPreviewCollapsed]
+  );
+  // Milestone 5.5 Part 8 — drag-resize for the Research/Preview columns,
+  // wide-web only (the hook itself no-ops off-web). Widths persist via
+  // Preferences (Part 9), committed only on release.
+  const researchPanelResize = useDragResizeWidth({
+    width: preferences.writingResearchPanelWidth,
+    min: WRITING_RESEARCH_PANEL_WIDTH_MIN,
+    max: WRITING_RESEARCH_PANEL_WIDTH_MAX,
+    onResizeEnd: (w) => update('writingResearchPanelWidth', w),
+  });
+  const previewPanelResize = useDragResizeWidth({
+    width: preferences.writingPreviewPanelWidth,
+    min: WRITING_PREVIEW_PANEL_WIDTH_MIN,
+    max: WRITING_PREVIEW_PANEL_WIDTH_MAX,
+    onResizeEnd: (w) => update('writingPreviewPanelWidth', w),
+    // The Preview column is anchored to the right edge of the screen —
+    // its handle sits on its LEFT, so dragging left (not right) widens it.
+    invert: true,
+  });
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [downloadPdfError, setDownloadPdfError] = useState<string | null>(null);
   const [compileTransportError, setCompileTransportError] = useState<string | null>(null);
@@ -191,6 +263,17 @@ export default function WritingProjectEditorScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeFileSaveStatus]);
 
+  // Milestone 5.5 Part 10 — per-file cursor memory: switching away from a
+  // file and back restores exactly where you were, rather than always
+  // resetting to the end. Session-only (an in-memory ref, not
+  // Preferences — Part 9 explicitly excludes transient/content-shaped
+  // state from persistence), keyed by fileId.
+  const cursorMemoryRef = useRef<Record<string, { start: number; end: number }>>({});
+  function handleSelectionChange(next: { start: number; end: number }): void {
+    setSelection(next);
+    if (activeFileId) cursorMemoryRef.current[activeFileId] = next;
+  }
+
   // Milestone 5.2.1 real-browser finding (Part 7/24), generalized by
   // Milestone 5.3 Part 13 to whichever file is active — `selection`
   // starts at {0, 0} on every mount AND every file switch: the editor
@@ -207,9 +290,23 @@ export default function WritingProjectEditorScreen() {
   // content itself), so this never fires again on ordinary edits/
   // autosave and never fights the user's own cursor placement
   // mid-session.
+  //
+  // Milestone 5.5 Part 10 extends this: if cursorMemoryRef already has a
+  // position for this exact fileId (a previous visit this session) and
+  // it's still in-range for the freshly-loaded content, that position
+  // wins over the "end of content" fallback.
   useEffect(() => {
     if (activeFileLoadState.status === 'success') {
-      setSelection({ start: activeFileContent.length, end: activeFileContent.length });
+      const remembered = activeFileId ? cursorMemoryRef.current[activeFileId] : undefined;
+      const inRange =
+        remembered !== undefined &&
+        remembered.start <= activeFileContent.length &&
+        remembered.end <= activeFileContent.length;
+      const next = inRange
+        ? remembered!
+        : { start: activeFileContent.length, end: activeFileContent.length };
+      setSelection(next);
+      if (activeFileId) cursorMemoryRef.current[activeFileId] = next;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, activeFileId, activeFileLoadState.status]);
@@ -413,9 +510,7 @@ export default function WritingProjectEditorScreen() {
       const file = await buildUploadableFileFromPickerAsset(asset);
       await uploadFile(file, { parentId, name: asset.name });
     } catch (error) {
-      setUploadError(
-        error instanceof Error ? error.message : `Could not upload "${asset.name}".`
-      );
+      setUploadError(error instanceof Error ? error.message : `Could not upload "${asset.name}".`);
     }
   }
 
@@ -518,6 +613,44 @@ export default function WritingProjectEditorScreen() {
         : 'Compile failed'
       : 'Compile';
 
+  // Milestone 5.5 Part 12 — safe, conventional keyboard shortcuts, scoped
+  // to this screen's lifetime. Same Platform.OS==='web' &&
+  // document-exists guard + document.addEventListener('keydown', ...)
+  // idiom as SidebarContextMenuContext.tsx/ConversationRow.tsx's own
+  // Escape handlers. Never a browser-critical combo (no Ctrl+W/T/N/Q) —
+  // preventDefault only fires for the three combos actually handled, and
+  // only when the modifier key is held, so ordinary typing is untouched.
+  useEffect(() => {
+    if (
+      Platform.OS !== 'web' ||
+      typeof document === 'undefined' ||
+      typeof document.addEventListener !== 'function'
+    ) {
+      return;
+    }
+    function handleKeyDown(e: KeyboardEvent): void {
+      if (!e.metaKey && !e.ctrlKey) return;
+      const key = e.key.toLowerCase();
+      if (key === 's') {
+        e.preventDefault();
+        void flushActiveFile();
+        void flush();
+      } else if (key === 'enter') {
+        if (latexCompilation && !compiling) {
+          e.preventDefault();
+          void handleCompile();
+        }
+      } else if (key === 'k') {
+        e.preventDefault();
+        if (isWide) setPanelTab('ask');
+        else setMobileTab('ask');
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flushActiveFile, flush, latexCompilation, compiling, isWide, setPanelTab, setMobileTab]);
+
   const headerMenuItems: ActionSheetItem[] = [
     { key: 'rename', label: 'Rename project', onPress: handleOpenRename },
     {
@@ -555,69 +688,109 @@ export default function WritingProjectEditorScreen() {
   }
   if (!project) return null;
 
-  // Milestone 5.1 Part 26/27/28/29, superseded by Milestone 5.3 Part 4 —
-  // Overleaf-style layout foundation: the LEFT supporting panel's
-  // "Project" tab is now a real file tree (WritingFileTree), not the
-  // pre-M5.3 fixed main.tex/references.bib list. Desktop only (Part 42:
-  // mobile gets its own "Files" tab instead — see the mobile tab set
-  // below).
+  // Milestone 5.1 Part 26/27/28/29, superseded by Milestone 5.3 Part 4 and
+  // 5.5 Part 6/7/8 — the unified "RESEARCH" panel: Files, References,
+  // Notes, and (folded in by 5.5, previously its own separately-
+  // positioned drawer) Ask EduM8, as one coherent left column instead of
+  // an N-column layout. Desktop only (Part 42: mobile gets its own tab
+  // bar instead — see the mobile tab set below). Non-"ask" tabs keep
+  // their own padding (panelBodyPadded); Ask EduM8 is full-bleed, same as
+  // it always was as a drawer.
   const panel = (
-    <View style={styles.panel}>
-      {isWide && (
-        <View style={styles.panelTabs}>
-          <PanelTabButton
-            label="Files"
-            active={panelTab === 'project'}
-            onPress={() => setPanelTab('project')}
+    <View style={[styles.panel, isWide && { width: researchPanelResize.effectiveWidth }]}>
+      <View style={styles.panelInner}>
+        <Text style={styles.panelSectionLabel}>Research</Text>
+        {isWide && (
+          <View style={styles.panelTabs}>
+            <PanelTabButton
+              label="Files"
+              active={panelTab === 'project'}
+              onPress={() => setPanelTab('project')}
+            />
+            <PanelTabButton
+              label="References"
+              active={panelTab === 'references'}
+              onPress={() => setPanelTab('references')}
+            />
+            <PanelTabButton
+              label="Notes"
+              active={panelTab === 'notes'}
+              onPress={() => setPanelTab('notes')}
+            />
+            <PanelTabButton
+              label="Ask EduM8"
+              active={panelTab === 'ask'}
+              onPress={() => setPanelTab('ask')}
+            />
+          </View>
+        )}
+        {panelTab === 'project' && (
+          <View style={styles.panelBodyPadded}>
+            <WritingFileTree
+              tree={treeState.status === 'success' ? treeState.data : null}
+              loading={treeState.status === 'loading'}
+              loadError={treeState.status === 'error' ? treeState.error.message : uploadError}
+              activeFileId={activeFileId}
+              onSelectFile={(node) => void openFile(node.id)}
+              onSelectGenerated={handleOpenBibliography}
+              onCreateFolder={(parentId, name) => createFolder({ parentId, name })}
+              onCreateTextFile={(parentId, name) => createTextFile({ parentId, name })}
+              onUpload={(parentId) => void handleUploadAt(parentId)}
+              onRename={renameFile}
+              onMove={moveFile}
+              onDelete={deleteFile}
+              onSetRoot={setRootFile}
+            />
+          </View>
+        )}
+        {panelTab === 'references' && (
+          <View style={styles.panelBodyPadded}>
+            <ReferencesPanel
+              references={references}
+              missingCitationKeys={missingCitationKeys}
+              loading={referencesState.status === 'loading'}
+              loadError={referencesState.status === 'error' ? referencesState.error.message : null}
+              onAddReferences={() => setPickerOpen(true)}
+              onInsertCitation={handleInsertCitation}
+              onInsertMultipleCitations={handleInsertMultipleCitations}
+              onRemoveReference={removeReference}
+              onViewBibliography={handleOpenBibliography}
+            />
+          </View>
+        )}
+        {panelTab === 'notes' && (
+          <View style={styles.panelBodyPadded}>
+            <NotesPanel
+              onInsertNote={handleInsertNote}
+              onInsertCitationForDocument={handleInsertCitationForDocument}
+              onOpenSource={handleOpenSource}
+            />
+          </View>
+        )}
+        {panelTab === 'ask' && (
+          <AskEduM8Panel
+            visible
+            embedded
+            onClose={() => setPanelTab('references')}
+            projectReferenceDocumentIds={referenceDocumentIds}
+            manuscriptSelectionText={manuscriptSelectionText}
+            onOpenSource={handleOpenEvidenceSource}
+            onAddReference={(documentId) => addReferences([documentId]).then(() => undefined)}
+            onInsertCitation={handleInsertCitationForDocument}
           />
-          <PanelTabButton
-            label="References"
-            active={panelTab === 'references'}
-            onPress={() => setPanelTab('references')}
-          />
-          <PanelTabButton
-            label="Notes"
-            active={panelTab === 'notes'}
-            onPress={() => setPanelTab('notes')}
-          />
+        )}
+      </View>
+      {isWide && Platform.OS === 'web' && (
+        <View
+          accessibilityRole="none"
+          accessibilityLabel="Resize Research panel"
+          style={styles.panelResizeHandle}
+          // react-native-web forwards raw mouse events on View for web
+          // targets — same pattern as AppDrawer.tsx's own resize handle.
+          {...({ onMouseDown: researchPanelResize.handleMouseDown } as object)}
+        >
+          <View style={styles.panelResizeHandleGrip} />
         </View>
-      )}
-      {panelTab === 'project' && (
-        <WritingFileTree
-          tree={treeState.status === 'success' ? treeState.data : null}
-          loading={treeState.status === 'loading'}
-          loadError={treeState.status === 'error' ? treeState.error.message : uploadError}
-          activeFileId={activeFileId}
-          onSelectFile={(node) => void openFile(node.id)}
-          onSelectGenerated={handleOpenBibliography}
-          onCreateFolder={(parentId, name) => createFolder({ parentId, name })}
-          onCreateTextFile={(parentId, name) => createTextFile({ parentId, name })}
-          onUpload={(parentId) => void handleUploadAt(parentId)}
-          onRename={renameFile}
-          onMove={moveFile}
-          onDelete={deleteFile}
-          onSetRoot={setRootFile}
-        />
-      )}
-      {panelTab === 'references' && (
-        <ReferencesPanel
-          references={references}
-          missingCitationKeys={missingCitationKeys}
-          loading={referencesState.status === 'loading'}
-          loadError={referencesState.status === 'error' ? referencesState.error.message : null}
-          onAddReferences={() => setPickerOpen(true)}
-          onInsertCitation={handleInsertCitation}
-          onInsertMultipleCitations={handleInsertMultipleCitations}
-          onRemoveReference={removeReference}
-          onViewBibliography={handleOpenBibliography}
-        />
-      )}
-      {panelTab === 'notes' && (
-        <NotesPanel
-          onInsertNote={handleInsertNote}
-          onInsertCitationForDocument={handleInsertCitationForDocument}
-          onOpenSource={handleOpenSource}
-        />
       )}
     </View>
   );
@@ -627,43 +800,57 @@ export default function WritingProjectEditorScreen() {
   // off — matches every other flag-gated surface in this app. Desktop
   // only (mobile gets its own "Preview" tab, wired further below).
   const previewPanel = latexCompilation && (
-    <View style={styles.previewPanel}>
-      <View style={styles.previewHeader}>
-        <Text style={styles.previewHeaderTitle}>Preview</Text>
-        <View style={styles.previewHeaderActions}>
-          {compiledPdfBlob && (
-            <Button
-              label={downloadingPdf ? 'Downloading…' : 'Download PDF'}
-              variant="ghost"
-              size="sm"
-              loading={downloadingPdf}
-              onPress={() => void handleDownloadPdf()}
-            />
-          )}
-          <IconButton
-            label={previewCollapsed ? 'Expand preview' : 'Collapse preview'}
-            icon={
-              <ChevronIcon
-                size={12}
-                color={theme.subtext}
-                style={{ transform: [{ rotate: previewCollapsed ? '180deg' : '0deg' }] }}
-              />
-            }
-            size="sm"
-            variant="outline"
-            onPress={() => setPreviewCollapsed((v) => !v)}
-          />
+    <View style={[styles.previewPanel, isWide && { width: previewPanelResize.effectiveWidth }]}>
+      {isWide && Platform.OS === 'web' && (
+        <View
+          accessibilityRole="none"
+          accessibilityLabel="Resize Preview panel"
+          style={styles.previewResizeHandle}
+          // react-native-web forwards raw mouse events on View for web
+          // targets — same pattern as AppDrawer.tsx's own resize handle.
+          {...({ onMouseDown: previewPanelResize.handleMouseDown } as object)}
+        >
+          <View style={styles.panelResizeHandleGrip} />
         </View>
-      </View>
-      {!previewCollapsed && (
-        <CompiledPdfPreview
-          pdfBlob={compiledPdfBlob}
-          loading={compiling}
-          error={null}
-          stale={isPreviewStale}
-          emptyMessage="Compile to see a preview."
-        />
       )}
+      <View style={styles.previewInner}>
+        <View style={styles.previewHeader}>
+          <Text style={styles.previewHeaderTitle}>Preview</Text>
+          <View style={styles.previewHeaderActions}>
+            {compiledPdfBlob && (
+              <Button
+                label={downloadingPdf ? 'Downloading…' : 'Download PDF'}
+                variant="ghost"
+                size="sm"
+                loading={downloadingPdf}
+                onPress={() => void handleDownloadPdf()}
+              />
+            )}
+            <IconButton
+              label={previewCollapsed ? 'Expand preview' : 'Collapse preview'}
+              icon={
+                <ChevronIcon
+                  size={12}
+                  color={theme.subtext}
+                  style={{ transform: [{ rotate: previewCollapsed ? '180deg' : '0deg' }] }}
+                />
+              }
+              size="sm"
+              variant="outline"
+              onPress={() => setPreviewCollapsed((v) => !v)}
+            />
+          </View>
+        </View>
+        {!previewCollapsed && (
+          <CompiledPdfPreview
+            pdfBlob={compiledPdfBlob}
+            loading={compiling}
+            error={null}
+            stale={isPreviewStale}
+            emptyMessage="Compile to see a preview."
+          />
+        )}
+      </View>
     </View>
   );
 
@@ -686,11 +873,13 @@ export default function WritingProjectEditorScreen() {
             {project.title}
           </Text>
           <Text
-            style={[
-              styles.saveStatus,
-              activeFileSaveStatus === 'error' && styles.saveStatusError,
-            ]}
+            style={[styles.saveStatus, activeFileSaveStatus === 'error' && styles.saveStatusError]}
             accessibilityLiveRegion="polite"
+            // Part 12 — documents the Cmd/Ctrl+S shortcut via a native
+            // browser tooltip, same cast idiom as the resize handles'
+            // onMouseDown (RN's TextProps doesn't declare `title`, but
+            // react-native-web forwards it to the underlying DOM node).
+            {...webTitle('Cmd/Ctrl+S to save now')}
           >
             {/* Milestone 5.3 — names WHICH file the save status refers to,
                 since editing is no longer always main.tex. */}
@@ -700,28 +889,43 @@ export default function WritingProjectEditorScreen() {
           </Text>
         </View>
         <View style={styles.headerActions}>
-          {/* Milestone 5.2 — desktop-only: narrow viewports already have
-              the "Ask EduM8" mobile tab below (Part 11's own "avoid
-              redundant controls" precedent, matching 3.2.2's drawer-
-              control-redundancy decision — never two controls for the
-              exact same toggle). */}
+          {/* Milestone 5.2, repointed at the unified Research panel's own
+              "Ask EduM8" tab by 5.5 Part 6 — desktop-only: narrow
+              viewports already have the "Ask EduM8" mobile tab below
+              (Part 11's own "avoid redundant controls" precedent). A
+              quick-jump shortcut, not a second source of truth — the
+              panel tab strip itself has the exact same control. */}
           {isWide && (
-            <Button
-              label="Ask EduM8"
-              variant={askOpen ? 'primary' : 'secondary'}
-              size="sm"
-              icon={<SparkleIcon size={14} color={askOpen ? theme.accentContrast : theme.accent} />}
-              onPress={() => setAskOpen((v) => !v)}
-            />
+            <View {...webTitle('Ctrl/Cmd+K')}>
+              <Button
+                label="Ask EduM8"
+                // Distinct from the Research panel's own "Ask EduM8" tab
+                // (same visible text, different control) — otherwise two
+                // on-screen elements would share one accessibilityLabel,
+                // indistinguishable to a screen reader.
+                accessibilityLabel="Show Ask EduM8 panel"
+                variant={panelTab === 'ask' ? 'primary' : 'secondary'}
+                size="sm"
+                icon={
+                  <SparkleIcon
+                    size={14}
+                    color={panelTab === 'ask' ? theme.accentContrast : theme.accent}
+                  />
+                }
+                onPress={() => setPanelTab('ask')}
+              />
+            </View>
           )}
           {latexCompilation && (
-            <Button
-              label={compileButtonLabel}
-              variant="primary"
-              size="sm"
-              loading={compiling}
-              onPress={() => void handleCompile()}
-            />
+            <View {...webTitle('Ctrl/Cmd+Enter to compile')}>
+              <Button
+                label={compileButtonLabel}
+                variant="primary"
+                size="sm"
+                loading={compiling}
+                onPress={() => void handleCompile()}
+              />
+            </View>
           )}
           <Button
             label={exporting ? 'Exporting…' : 'Export'}
@@ -775,7 +979,10 @@ export default function WritingProjectEditorScreen() {
 
       {activeFileSaveStatus === 'error' && activeFileSaveError && (
         <View style={styles.errorBar}>
-          <Notice tone="danger" body={`Couldn't save your latest edit: ${activeFileSaveError.message}`} />
+          <Notice
+            tone="danger"
+            body={`Couldn't save your latest edit: ${activeFileSaveError.message}`}
+          />
         </View>
       )}
       {exportError && (
@@ -854,10 +1061,7 @@ export default function WritingProjectEditorScreen() {
           <MobileTabButton
             label="Ask EduM8"
             active={mobileTab === 'ask'}
-            onPress={() => {
-              setMobileTab('ask');
-              setAskOpen(true);
-            }}
+            onPress={() => setMobileTab('ask')}
           />
         </View>
       )}
@@ -887,7 +1091,7 @@ export default function WritingProjectEditorScreen() {
                 value={content}
                 onChangeText={setActiveFileContent}
                 selection={selection}
-                onSelectionChange={(e) => setSelection(e.nativeEvent.selection)}
+                onSelectionChange={(e) => handleSelectionChange(e.nativeEvent.selection)}
                 multiline
                 editable={isActiveFileEditable}
                 style={styles.editor}
@@ -925,24 +1129,13 @@ export default function WritingProjectEditorScreen() {
             />
           </View>
         )}
-        {isWide && askOpen && (
-          <AskEduM8Panel
-            visible
-            onClose={() => setAskOpen(false)}
-            projectReferenceDocumentIds={referenceDocumentIds}
-            manuscriptSelectionText={manuscriptSelectionText}
-            onOpenSource={handleOpenEvidenceSource}
-            onAddReference={(documentId) => addReferences([documentId]).then(() => undefined)}
-            onInsertCitation={handleInsertCitationForDocument}
-          />
-        )}
+        {/* Desktop's Ask EduM8 now renders INSIDE `panel` above, as the
+            Research panel's "Ask EduM8" tab (5.5 Part 6) — no separate
+            drawer mount here anymore. */}
         {!isWide && mobileTab === 'ask' && (
           <AskEduM8Panel
             visible
-            onClose={() => {
-              setAskOpen(false);
-              setMobileTab('editor');
-            }}
+            onClose={() => setMobileTab('editor')}
             projectReferenceDocumentIds={referenceDocumentIds}
             manuscriptSelectionText={manuscriptSelectionText}
             onOpenSource={handleOpenEvidenceSource}
@@ -1114,22 +1307,62 @@ function buildStyles(theme: Theme) {
       borderRadius: theme.radius.md,
       padding: 16,
     },
+    // Milestone 5.5 Part 6/8 — the unified Research panel is now a ROW
+    // (content column + resize handle), not a padded column, since the
+    // "Ask EduM8" tab needs full-bleed width the same way it always had
+    // as its own drawer (panelBodyPadded below carries the padding the
+    // other three tabs still want).
     panel: {
       width: 320,
       maxWidth: '100%',
       borderRightWidth: StyleSheet.hairlineWidth,
       borderRightColor: theme.border,
-      padding: 20,
+      flexDirection: 'row',
       flex: 1,
     },
-    panelTabs: { flexDirection: 'row', marginBottom: 8 },
-    // Milestone 5.1 Part 25/26/31 — the right-side PDF Preview panel.
+    panelInner: { flex: 1, minWidth: 0 },
+    panelBodyPadded: { flex: 1, padding: 20 },
+    panelSectionLabel: {
+      fontSize: 10.5,
+      fontFamily: theme.fonts.bodySemibold,
+      color: theme.faint,
+      textTransform: 'uppercase',
+      letterSpacing: 0.5,
+      paddingHorizontal: 20,
+      paddingTop: 16,
+    },
+    panelTabs: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 20, marginTop: 8 },
+    // Same "6px wide, centered on the border, small grip line" idiom as
+    // AppDrawer.tsx's own resize handle.
+    panelResizeHandle: {
+      width: 6,
+      marginRight: -3,
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: 1,
+      ...(Platform.OS === 'web' ? ({ cursor: 'col-resize' } as object) : null),
+    },
+    panelResizeHandleGrip: { width: 2, height: 32, borderRadius: 1, opacity: 0.6 },
+    // Milestone 5.1 Part 25/26/31 — the right-side PDF Preview panel, a
+    // ROW (resize handle + content column, in that order since this
+    // panel is anchored to the right edge — Part 8) rather than a single
+    // padded column.
     previewPanel: {
       width: 420,
       maxWidth: '100%',
       borderLeftWidth: StyleSheet.hairlineWidth,
       borderLeftColor: theme.border,
+      flexDirection: 'row',
       flex: 1,
+    },
+    previewInner: { flex: 1, minWidth: 0 },
+    previewResizeHandle: {
+      width: 6,
+      marginLeft: -3,
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: 1,
+      ...(Platform.OS === 'web' ? ({ cursor: 'col-resize' } as object) : null),
     },
     previewHeader: {
       flexDirection: 'row',

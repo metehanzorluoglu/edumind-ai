@@ -87,17 +87,23 @@ export interface AskEduM8PanelProps {
   onOpenSource: (source: DisplaySource) => void;
   onAddReference: (documentId: string) => Promise<void>;
   onInsertCitation: (documentId: string) => Promise<void>;
+  /** Milestone 5.5 Part 6 — true when this is rendered as the "Ask
+   * EduM8" tab of the unified desktop Research panel rather than its own
+   * fixed-width right-side drawer: drops the own width/left-border
+   * styling (the parent panel already owns both) since content should
+   * simply fill whatever width the shared panel has. Mobile is
+   * unaffected — it always mounts this full-width regardless. */
+  embedded?: boolean;
 }
 
 /**
- * Milestone 5.2 Part 2/11/12 — "Ask EduM8" inside the Writing workspace: a
- * dismissible panel (never a giant permanent third column — Part 11) with
- * an always-visible research-context indicator (Part 12), an explicit
- * scope selector (Part 4), evidence-first answers (Part 5), and the
- * deterministic evidence actions (Parts 6-10) via WritingEvidenceCard.
- * Every manuscript mutation those actions trigger is the ONLY way this
- * panel ever touches the manuscript — the AI response itself never does
- * (Part 14).
+ * Milestone 5.2 Part 2/11/12, folded into the unified Research panel by
+ * 5.5 Part 6 — "Ask EduM8" inside the Writing workspace: an always-visible
+ * research-context indicator (Part 12), an explicit scope selector (Part
+ * 4), evidence-first answers (Part 5), and the deterministic evidence
+ * actions (Parts 6-10) via WritingEvidenceCard. Every manuscript mutation
+ * those actions trigger is the ONLY way this panel ever touches the
+ * manuscript — the AI response itself never does (Part 14).
  */
 export function AskEduM8Panel({
   visible,
@@ -107,6 +113,7 @@ export function AskEduM8Panel({
   onOpenSource,
   onAddReference,
   onInsertCitation,
+  embedded = false,
 }: AskEduM8PanelProps) {
   const theme = useTheme();
   const styles = useMemo(() => buildStyles(theme), [theme]);
@@ -142,7 +149,7 @@ export function AskEduM8Panel({
   if (!visible) return null;
 
   return (
-    <View style={styles.panel} testID="ask-edum8-panel">
+    <View style={[styles.panel, embedded && styles.panelEmbedded]} testID="ask-edum8-panel">
       <View style={styles.header}>
         <Text style={styles.title}>Ask EduM8</Text>
         <IconButton
@@ -383,6 +390,13 @@ function buildStyles(theme: Theme) {
       borderLeftColor: theme.border,
       backgroundColor: theme.background,
       flex: 1,
+    },
+    // Milestone 5.5 Part 6 — as the Research panel's "Ask EduM8" tab, the
+    // parent already owns width and its own left border; this just fills
+    // whatever space it's given.
+    panelEmbedded: {
+      width: undefined,
+      borderLeftWidth: 0,
     },
     header: {
       flexDirection: 'row',
