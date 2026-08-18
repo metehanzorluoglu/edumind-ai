@@ -114,6 +114,7 @@ import type {
   CreateWritingProjectTextFileRequest,
   MoveWritingProjectFileRequest,
   RenameWritingProjectFileRequest,
+  SwitchWritingProjectToEdum8ReferencesRequest,
   UpdateWritingProjectFileContentRequest,
   UpdateWritingProjectRequest,
   WritingProject,
@@ -122,6 +123,7 @@ import type {
   WritingProjectFileMutationResponse,
   WritingProjectFileTree,
   WritingProjectListResponse,
+  WritingProjectReferenceMode,
   WritingProjectReferencesResponse,
 } from '../types/writing';
 import type {
@@ -2335,6 +2337,54 @@ export class EducationAssistantClient {
       method: 'PUT',
       path: `/writing-projects/${encodeURIComponent(projectId)}/root-file`,
       body: { file_id: fileId },
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * Bibliography Source Detection — how this project ACTUALLY manages
+   * its citations/references right now (never assumed EduM8-library
+   * just because references.bib exists — see rag-backend's
+   * app/core/reference_mode.py). Re-fetch after any file
+   * create/rename/delete/content change that could plausibly affect a
+   * project's `\bibliography{}`/`\input`/`\include` structure — same
+   * "computed fresh server-side on every call" convention as
+   * listWritingProjectFiles' own references.bib entry.
+   */
+  async getWritingProjectReferenceMode(
+    projectId: string,
+    options: RequestOptions = {}
+  ): Promise<WritingProjectReferenceMode> {
+    const { data } = await requestJson<WritingProjectReferenceMode>(this.context, {
+      method: 'GET',
+      path: `/writing-projects/${encodeURIComponent(projectId)}/reference-mode`,
+      signal: options.signal,
+    });
+    return data;
+  }
+
+  /**
+   * Applies EXACTLY the substitution named by an
+   * `edum8_switch_proposal` from getWritingProjectReferenceMode() —
+   * never a general "switch to EduM8" action, and never called with a
+   * hand-constructed find/replace the user hasn't actually been shown.
+   * The backend re-verifies `find` is still present in the root file's
+   * CURRENT content first (409 if the file changed since the proposal
+   * was shown) and that `filePath` still names the current root file
+   * (422 if it changed) — never silently applied against stale text,
+   * and never deletes the old `.bib` file (it simply stops being
+   * referenced).
+   */
+  async switchWritingProjectToEdum8References(
+    projectId: string,
+    request: SwitchWritingProjectToEdum8ReferencesRequest,
+    options: RequestOptions = {}
+  ): Promise<WritingProjectFileMutationResponse> {
+    const { data } = await requestJson<WritingProjectFileMutationResponse>(this.context, {
+      method: 'POST',
+      path: `/writing-projects/${encodeURIComponent(projectId)}/reference-mode/switch-to-edum8`,
+      body: { file_path: request.filePath, find: request.find, replace: request.replace },
       signal: options.signal,
     });
     return data;

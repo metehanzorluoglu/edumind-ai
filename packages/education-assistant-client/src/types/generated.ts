@@ -1222,10 +1222,13 @@ export interface paths {
         };
         /**
          * Get Compiled Pdf
-         * @description Milestone 5.1 Part 16/17/42 — a short-lived, ownership-checked
-         *     fetch of one compile's PDF bytes. A guessed/expired/wrong-owner
-         *     compile_id 404s identically to a nonexistent one (Part 42: never
-         *     leak whether a compile_id exists for someone else's project).
+         * @description Milestone 5.1 Part 16/17/42, made cross-worker by 5.5 Part 22 — a
+         *     short-lived, ownership-checked fetch of one compile's PDF bytes. A
+         *     guessed/expired/wrong-owner compile_id 404s identically to a
+         *     nonexistent one (Part 42: never leak whether a compile_id exists for
+         *     someone else's project) — and, since the DB row (not process memory)
+         *     is now the source of truth, identically regardless of which of the 2
+         *     uvicorn workers produced the compile vs. is serving this GET.
          */
         get: operations["get_compiled_pdf_writing_projects__project_id__compile__compile_id__pdf_get"];
         put?: never;
@@ -1251,6 +1254,57 @@ export interface paths {
         get: operations["list_files_writing_projects__project_id__files_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/{project_id}/reference-mode": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Reference Mode
+         * @description Bibliography Source Detection — how this project ACTUALLY manages
+         *     its citations/references, inspected fresh on every call from real
+         *     project content (see app/core/reference_mode.py's own docstring for
+         *     the full detection algorithm and why EDUM8_REFERENCE_LIBRARY is
+         *     never assumed just because references.bib exists).
+         */
+        get: operations["get_reference_mode_writing_projects__project_id__reference_mode_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/{project_id}/reference-mode/switch-to-edum8": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Switch To Edum8 References
+         * @description Applies EXACTLY the substitution the GET endpoint proposed —
+         *     never a general "switch to EduM8" action. Re-verifies `find` is
+         *     still present in the root file's CURRENT content first (409 if not
+         *     — the file changed since the proposal was shown, never silently
+         *     applied against stale text) and only ever touches the root file the
+         *     proposal named (422 if the project's root file has since changed).
+         *     Never deletes the old `.bib` file — it simply stops being
+         *     referenced.
+         */
+        post: operations["switch_to_edum8_references_writing_projects__project_id__reference_mode_switch_to_edum8_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3371,6 +3425,21 @@ export interface components {
             title?: string | null;
         };
         /**
+         * Edum8SwitchProposalResponse
+         * @description A safe, single-substitution rewrite EduM8 can apply on explicit
+         *     user confirmation — see app/core/reference_mode.py's
+         *     propose_edum8_switch for exactly when this is (and is never)
+         *     offered.
+         */
+        Edum8SwitchProposalResponse: {
+            /** File Path */
+            file_path: string;
+            /** Find */
+            find: string;
+            /** Replace */
+            replace: string;
+        };
+        /**
          * ExtractionSource
          * @description Where one field's value came from — surfaced to the frontend via
          *     POST /documents/metadata-preview's `extraction_sources` (see
@@ -4190,6 +4259,50 @@ export interface components {
             /** Mime */
             mime: string;
         };
+        /**
+         * ReferenceKeyResponse
+         * @description One resolved citation key, deterministically parsed — never an
+         *     EduM8-invented key. `title` is a best-effort DISPLAY label only
+         *     (from a real BibTeX `title` field or the text following a
+         *     `\bibitem`), never itself used as the key.
+         */
+        ReferenceKeyResponse: {
+            /** Key */
+            key: string;
+            /** Title */
+            title?: string | null;
+        };
+        /**
+         * ReferenceModeResponse
+         * @description Bibliography Source Detection — how this project ACTUALLY manages
+         *     its citations/references right now, detected from real project
+         *     content (see app/core/reference_mode.py), never assumed from
+         *     references.bib merely existing (it always does, as a virtual file —
+         *     GeneratedFileNodeResponse above).
+         */
+        ReferenceModeResponse: {
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "edum8_library" | "imported_bib" | "template_tex" | "inline_template";
+            /** Bibliography Source */
+            bibliography_source: string | null;
+            /**
+             * Citation Key Source
+             * @enum {string}
+             */
+            citation_key_source: "edum8" | "bib_file" | "bibitem" | "none";
+            /** Keys */
+            keys: components["schemas"]["ReferenceKeyResponse"][];
+            /** Edum8 Available */
+            edum8_available: boolean;
+            /** No Key Source Reason */
+            no_key_source_reason?: string | null;
+            edum8_switch_proposal?: components["schemas"]["Edum8SwitchProposalResponse"] | null;
+            /** Edum8 Switch Instructions */
+            edum8_switch_instructions?: string | null;
+        };
         /** ReferencedDocument */
         ReferencedDocument: {
             /** Document Id */
@@ -4488,6 +4601,26 @@ export interface components {
             scope: "chat" | "project" | "general";
             /** Project Id */
             project_id?: string | null;
+        };
+        /**
+         * SwitchToEdum8Request
+         * @description Echoes back the EXACT proposal the GET endpoint returned — the
+         *     apply endpoint re-verifies `find` is still present in the root
+         *     file's CURRENT content before writing anything, so a proposal
+         *     computed against stale content can never silently clobber a file
+         *     the user has since edited.
+         */
+        SwitchToEdum8Request: {
+            /** File Path */
+            file_path: string;
+            /** Find */
+            find: string;
+            /** Replace */
+            replace: string;
+        };
+        /** SwitchToEdum8Response */
+        SwitchToEdum8Response: {
+            file: components["schemas"]["WritingProjectFileNodeResponse"];
         };
         /** TokenResponse */
         TokenResponse: {
@@ -7475,6 +7608,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WritingProjectFileTreeResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_reference_mode_writing_projects__project_id__reference_mode_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReferenceModeResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    switch_to_edum8_references_writing_projects__project_id__reference_mode_switch_to_edum8_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SwitchToEdum8Request"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SwitchToEdum8Response"];
                 };
             };
             /** @description Validation Error */

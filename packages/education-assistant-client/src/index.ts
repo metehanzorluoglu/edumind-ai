@@ -127,6 +127,12 @@ export type {
   WritingFileTreeState,
 } from './hooks/useWritingProjectFiles';
 
+export { useWritingProjectReferenceMode } from './hooks/useWritingProjectReferenceMode';
+export type {
+  UseWritingProjectReferenceModeResult,
+  WritingProjectReferenceModeState,
+} from './hooks/useWritingProjectReferenceMode';
+
 export { useWritingTemplates } from './hooks/useWritingTemplates';
 export type {
   CreateFromTemplateState,
@@ -283,15 +289,20 @@ export type {
   AddWritingProjectReferenceOutcome,
   AddWritingProjectReferenceResult,
   AddWritingProjectReferencesResponse,
+  CitationKeySource,
   CompileDiagnostic,
   CompileStatus,
   CompileWritingProjectResponse,
   CreateWritingProjectFolderRequest,
   CreateWritingProjectRequest,
   CreateWritingProjectTextFileRequest,
+  Edum8SwitchProposal,
   GeneratedFileNode,
   MoveWritingProjectFileRequest,
+  ReferenceKey,
+  ReferenceMode,
   RenameWritingProjectFileRequest,
+  SwitchWritingProjectToEdum8ReferencesRequest,
   UpdateWritingProjectFileContentRequest,
   UpdateWritingProjectRequest,
   WritingProject,
@@ -303,6 +314,7 @@ export type {
   WritingProjectFileTree,
   WritingProjectListResponse,
   WritingProjectReference,
+  WritingProjectReferenceMode,
   WritingProjectReferencesResponse,
   WritingProjectSummary,
 } from './types/writing';

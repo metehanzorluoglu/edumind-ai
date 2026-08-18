@@ -105,6 +105,34 @@ export type WritingProjectFileTree = components['schemas']['WritingProjectFileTr
 export type WritingProjectFileContent =
   components['schemas']['WritingProjectFileContentResponse'];
 
+/**
+ * Bibliography Source Detection — how a Writing Project ACTUALLY
+ * manages its citations/references, detected server-side from real
+ * project content (see rag-backend's app/core/reference_mode.py) rather
+ * than assumed from EduM8's own `references.bib` merely existing (it
+ * always does, as a virtual/generated file — see GeneratedFileNode
+ * above). One of:
+ *
+ * - "edum8_library" — EduM8's own generated references.bib.
+ * - "imported_bib" — a real imported `.bib` database, e.g. a Springer
+ *   Nature template's own "sn-bibliography.bib".
+ * - "template_tex" — a template `.tex` file (e.g. "Bibliography.tex")
+ *   with a manual `\begin{thebibliography}`/`\bibitem{...}` block.
+ * - "inline_template" — the same, but directly inside the root/source
+ *   `.tex` rather than a separate included file.
+ */
+export type ReferenceMode = components['schemas']['ReferenceModeResponse']['mode'];
+export type CitationKeySource = components['schemas']['ReferenceModeResponse']['citation_key_source'];
+export type ReferenceKey = components['schemas']['ReferenceKeyResponse'];
+export type Edum8SwitchProposal = components['schemas']['Edum8SwitchProposalResponse'];
+export type WritingProjectReferenceMode = components['schemas']['ReferenceModeResponse'];
+
+export interface SwitchWritingProjectToEdum8ReferencesRequest {
+  filePath: string;
+  find: string;
+  replace: string;
+}
+
 export interface CreateWritingProjectFolderRequest {
   parentId?: string | null;
   name: string;
