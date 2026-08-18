@@ -242,6 +242,37 @@ class TestConfirm:
         # main.tex + sections/ (folder) + sections/intro.tex + figure.png
         assert tree["file_count"] == 4
 
+    def test_confirm_with_a_wrapper_folder_and_a_binary_file(self, harness) -> None:
+        """Real-world regression: the Springer Nature journal template
+        ships every file under a common "sn-article-template/" wrapper
+        folder AND includes a binary `sn-article.pdf`. Inspection
+        (_normalize_common_wrapper_prefix, M5.5.2 Part 14) strips that
+        wrapper from every accepted file's `path` — but confirm's own
+        binary-content re-read previously looked entries up by their RAW
+        (un-stripped) zip path, so it could never find a match and 500'd
+        with "Staged archive is missing a previously-inspected entry"
+        for every project with BOTH a wrapper folder and a binary file.
+        Found via real-browser testing against the actual fixture, not a
+        synthetic case."""
+        client, *_ = harness
+        data = _zip_bytes(
+            {
+                "sn-article-template/sn-article.tex": b"\\documentclass{article}",
+                "sn-article-template/sn-article.pdf": b"%PDF-1.4" + b"0" * 40,
+            }
+        )
+        session_id = _upload(client, data).json()["session_id"]
+        resp = client.post(
+            f"/writing-projects/import/{session_id}/confirm",
+            json={"title": "Sn Article"},
+        )
+        assert resp.status_code == 201, resp.text
+        project = resp.json()
+        tree = client.get(f"/writing-projects/{project['id']}/files").json()
+        paths = {f["path"] for f in tree["files"]}
+        # The wrapper folder is stripped from both files' paths.
+        assert paths == {"sn-article.tex", "sn-article.pdf"}
+
     def test_confirm_deletes_the_session_and_staged_bytes(self, harness) -> None:
         client, *_, import_storage = harness
         data = _zip_bytes({"main.tex": b"\\documentclass{article}"})

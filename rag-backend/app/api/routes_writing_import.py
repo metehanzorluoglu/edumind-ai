@@ -163,6 +163,31 @@ def confirm_import(
             for path in binary_paths:
                 info = by_normalized.get(path)
                 if info is None:
+                    # Bibliography Source Detection bugfix — real-world
+                    # regression found via real-browser testing against
+                    # the actual Springer Nature fixture (every file
+                    # under a common "sn-article-template/" wrapper
+                    # folder, plus a binary sn-article.pdf): inspection's
+                    # own _normalize_common_wrapper_prefix (M5.5.2 Part
+                    # 14) strips exactly one common top-level wrapper
+                    # directory from every accepted file's `path` — but
+                    # `by_normalized` above is built from the RAW,
+                    # un-stripped zip entry names, so a direct lookup by
+                    # the (stripped) inspection path can never match
+                    # whenever a wrapper was actually stripped. Fall back
+                    # to a wrapper-aware match: exactly ONE raw entry
+                    # whose path, with its own leading segment removed,
+                    # equals this path — ambiguous (more than one match)
+                    # or zero matches still fails loudly below, never
+                    # guesses.
+                    candidates = [
+                        raw_info
+                        for raw_path, raw_info in by_normalized.items()
+                        if "/" in raw_path and raw_path.split("/", 1)[1] == path
+                    ]
+                    if len(candidates) == 1:
+                        info = candidates[0]
+                if info is None:
                     raise HTTPException(
                         status.HTTP_500_INTERNAL_SERVER_ERROR,
                         detail=f"Staged archive is missing a previously-inspected entry: {path}",
