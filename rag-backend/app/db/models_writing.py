@@ -163,13 +163,28 @@ class WritingProjectDocument(Base):
 WritingProjectFileKind = Literal["folder", "text", "binary"]
 
 #: Milestone 5.3 Part 5/10 — every extension this milestone allows a
-#: project file to have, by kind. `.bst` is deliberately NOT included
-#: (Part 45: "if custom style-file support materially weakens security,
-#: restrict or defer it" — a `.bst` file is a small stack-based program
-#: with its own `write$`/`format.name$` primitives; this milestone's
-#: compiler-security review did not extend to auditing that surface, so
-#: it stays out until a dedicated review, same posture as ZIP import
-#: being deferred to M5.4 rather than rushed in).
+#: project file to have, by kind.
+#:
+#: M5.5.3 continuation — `.bst` support reverses Part 45's original
+#: deferral ("if custom style-file support materially weakens security,
+#: restrict or defer it"). Real journal templates (the Springer Nature
+#: fixture is the concrete case) ship many `.bst` files so the author
+#: can pick a citation style via `\bibliographystyle{...}`; without one
+#: matching the manuscript's own `\bibliographystyle` call, bibtex fails
+#: outright — this was a real functional gap, not cosmetic. The
+#: dedicated review Part 45 asked for: bibtex already runs through
+#: latex-compiler's own `_run_phase` (compiler.py) — the exact same
+#: subprocess launcher pdflatex uses, with the same minimal `_BASE_ENV`
+#: (PATH=/usr/bin:/bin only), the same per-job tmpfs working directory,
+#: the same wall-clock timeout, and the same process-group kill on
+#: timeout/cancel. A `.bst` file's `write$`/`format.name$` primitives
+#: only ever write into the `.bbl` inside that already-sandboxed workdir
+#: — unlike pdflatex's `\write18`, BibTeX's style language has no
+#: shell-exec primitive for `-no-shell-escape` to guard against, so
+#: there is no new execution surface here to review. EduM8 itself never
+#: gives `.bst` any special privilege: like `.cls`/`.sty`, it is treated
+#: purely as an importable/editable/exportable text file that happens to
+#: also be readable by the compiler.
 #: Milestone 5.5.2 Part 16 — real-world finding: serious academic
 #: templates ship a README with setup/publisher/thesis-requirement
 #: instructions (the UNLV fixture is the exact real case), and
@@ -194,7 +209,7 @@ WritingProjectFileKind = Literal["folder", "text", "binary"]
 #: name is EduM8's own synthesized virtual file (see
 #: WritingProjectFile's own docstring below) and can never be a real row
 #: regardless of this set.
-TEXT_FILE_EXTENSIONS = frozenset({".tex", ".cls", ".sty", ".txt", ".md", ".bib"})
+TEXT_FILE_EXTENSIONS = frozenset({".tex", ".cls", ".sty", ".txt", ".md", ".bib", ".bst"})
 BINARY_FILE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".pdf"})
 ALL_ALLOWED_EXTENSIONS = TEXT_FILE_EXTENSIONS | BINARY_FILE_EXTENSIONS
 

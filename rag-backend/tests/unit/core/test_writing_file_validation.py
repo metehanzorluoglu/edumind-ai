@@ -95,6 +95,7 @@ class TestExtensionAndKind:
             ("custom.sty", "text"),
             ("notes.txt", "text"),
             ("sn-bibliography.bib", "text"),
+            ("sn-nature.bst", "text"),  # M5.5.3 continuation — reverses Part 45's deferral
             ("figure.png", "binary"),
             ("figure.jpg", "binary"),
             ("figure.jpeg", "binary"),
@@ -110,7 +111,6 @@ class TestExtensionAndKind:
             "script.sh",
             "program.exe",
             "archive.zip",
-            "style.bst",  # deliberately deferred — Part 45
             "malware.py",
             "config.json",
             "noext",
