@@ -1,4 +1,8 @@
-import { useWritingProject, useWritingProjectFiles } from 'education-assistant-client';
+import {
+  useWritingProject,
+  useWritingProjectFiles,
+  useWritingProjectReferenceMode,
+} from 'education-assistant-client';
 import type {
   DisplaySource,
   NotebookEntry,
@@ -156,6 +160,19 @@ export default function WritingProjectEditorScreen() {
     compileProject,
     fetchCompiledPdf,
   } = useWritingProject(client, id ?? '');
+
+  // Bibliography Source Detection — how THIS project actually manages
+  // its citations/references (never assumed EduM8-library just because
+  // references.bib exists — see rag-backend's app/core/reference_mode.py
+  // and this hook's own docstring). Deliberately separate from
+  // useWritingProject's own referencesState (EduM8's reference LIBRARY,
+  // a per-user resource) — this is per-project, derived from real file
+  // content.
+  const {
+    referenceModeState,
+    reload: reloadReferenceMode,
+    applyEdum8Switch,
+  } = useWritingProjectReferenceMode(client, id ?? '');
 
   // Milestone 5.5.1 Part 25 (CORE REQUIREMENT) — cross-navigation
   // continuity: which file was open and where the cursor sat in each
@@ -330,6 +347,25 @@ export default function WritingProjectEditorScreen() {
     if (id && activeFileSaveStatus === 'saved') loadReferences();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeFileSaveStatus]);
+
+  // Bibliography Source Detection — the detected reference mode depends
+  // on real file CONTENT (a `\bibliography{...}` argument, an `\input`/
+  // `\include` target, a `\begin{thebibliography}` block) as well as
+  // file STRUCTURE (which files exist at all). Re-fetched on the same
+  // two triggers as loadReferences above: once at mount, and whenever
+  // any file's save just completed — covers editing the root document's
+  // own `\bibliography{...}`/`\input`/`\include` lines directly. File
+  // structure changes (creating/renaming/deleting a `.bib`/`.tex` file)
+  // are covered separately below, keyed on treeState.
+  useEffect(() => {
+    if (id && activeFileSaveStatus === 'saved') reloadReferenceMode();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeFileSaveStatus]);
+
+  useEffect(() => {
+    if (id && treeState.status === 'success') reloadReferenceMode();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [treeState]);
 
   // Milestone 5.5 Part 10 — per-file cursor memory: switching away from a
   // file and back restores exactly where you were, rather than always
@@ -785,13 +821,37 @@ export default function WritingProjectEditorScreen() {
   // written) from the real file tree. Recomputed only when those
   // underlying lists actually change, not on every keystroke.
   const autocompleteData = useMemo(() => {
-    // Depends on referencesState/treeState directly (not the `references`
-    // local above) so this only recomputes when the underlying fetched
-    // data actually changes — `references` itself is a fresh `[]`
-    // literal every render while referencesState.status !== 'success',
-    // by the same deliberate "reads fresh every render" design as
-    // referenceDocumentIds above (see its own comment); that's fine for
-    // a plain render-time read, but would defeat this memo's purpose.
+    // Depends on referencesState/treeState/referenceModeState directly
+    // (not the `references` local above) so this only recomputes when
+    // the underlying fetched data actually changes — `references`
+    // itself is a fresh `[]` literal every render while
+    // referencesState.status !== 'success', by the same deliberate
+    // "reads fresh every render" design as referenceDocumentIds above
+    // (see its own comment); that's fine for a plain render-time read,
+    // but would defeat this memo's purpose.
+    //
+    // Bibliography Source Detection — which KEY SOURCE feeds
+    // autocomplete depends on the project's actual reference mode
+    // (never always EduM8's own references, which may not even be
+    // connected to this manuscript — see ReferencesPanel's own mode
+    // card). EDUM8_REFERENCE_LIBRARY keeps using the existing
+    // referencesState-derived list (unchanged — this hook has no DB
+    // access and doesn't duplicate it); every other mode uses the
+    // deterministically-parsed keys the backend already resolved.
+    if (
+      referenceModeState.status === 'success' &&
+      referenceModeState.data.mode !== 'edum8_library'
+    ) {
+      return {
+        citationKeys: referenceModeState.data.keys.map((k) => ({ key: k.key, title: k.title })),
+        filePaths:
+          treeState.status === 'success'
+            ? treeState.data.files
+                .filter((f) => f.kind === 'text' && f.path.endsWith('.tex'))
+                .map((f) => f.path.replace(/\.tex$/, ''))
+            : [],
+      };
+    }
     const currentReferences =
       referencesState.status === 'success' ? referencesState.data.references : [];
     return {
@@ -805,7 +865,7 @@ export default function WritingProjectEditorScreen() {
               .map((f) => f.path.replace(/\.tex$/, ''))
           : [],
     };
-  }, [referencesState, treeState]);
+  }, [referencesState, treeState, referenceModeState]);
 
   // Milestone 5.1 Part 34/35 — "Preview is current" vs "Source changed
   // since last compile", derived from comparing the CURRENT
@@ -1036,6 +1096,8 @@ export default function WritingProjectEditorScreen() {
             onRemoveReference={removeReference}
             onViewBibliography={handleOpenBibliography}
             onOpenSource={handleOpenReferenceSource}
+            referenceMode={referenceModeState.status === 'success' ? referenceModeState.data : null}
+            onSwitchToEdum8={applyEdum8Switch}
           />
         </View>
         <View style={[styles.panelBodyPadded, { display: panelTab === 'notes' ? 'flex' : 'none' }]}>

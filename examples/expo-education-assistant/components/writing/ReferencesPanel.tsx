@@ -1,4 +1,7 @@
-import type { WritingProjectReference } from 'education-assistant-client';
+import type {
+  WritingProjectReference,
+  WritingProjectReferenceMode,
+} from 'education-assistant-client';
 import { useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Badge } from '@/components/ui/Badge';
@@ -8,6 +11,7 @@ import { Notice } from '@/components/ui/Notice';
 import { TextField } from '@/components/ui/TextField';
 import { formatSourceIdentity } from '@/lib/format';
 import { useTheme, type Theme } from '@/lib/Preferences';
+import { ReferenceModeCard } from './ReferenceModeCard';
 
 export interface ReferencesPanelProps {
   references: WritingProjectReference[];
@@ -15,7 +19,12 @@ export interface ReferencesPanelProps {
   loading: boolean;
   loadError: string | null;
   onAddReferences: () => void;
-  /** Inserts `\cite{key}` at the editor's cursor — Part 9. */
+  /** Inserts `\cite{key}` at the editor's cursor — Part 9. Mode-agnostic:
+   * `\cite{}` resolves against whatever bibliography mechanism the
+   * project's root document actually uses, so the SAME insertion path
+   * is reused for an EduM8 canonical key, a real imported-.bib key, or
+   * a `\bibitem` key — see referenceMode.citation_key_source below for
+   * which one `key` actually came from. */
   onInsertCitation: (citationKey: string) => void;
   /** Inserts `\cite{KeyOne,KeyTwo,...}` in the exact order the caller
    * selected them — Part 10. */
@@ -26,6 +35,13 @@ export interface ReferencesPanelProps {
    * document (the Reader remains canonical — never a second document
    * viewer here). */
   onOpenSource: (documentId: string) => void;
+  /** Bibliography Source Detection — how this project ACTUALLY manages
+   * its citations/references (rag-backend's app/core/reference_mode.py),
+   * null while still loading. */
+  referenceMode: WritingProjectReferenceMode | null;
+  /** Applies EXACTLY referenceMode's current edum8_switch_proposal —
+   * see ReferenceModeCard's own docstring. */
+  onSwitchToEdum8: () => Promise<unknown>;
 }
 
 /**
@@ -34,7 +50,13 @@ export interface ReferencesPanelProps {
  * references with a compact identity, search, single/multi
  * "Insert citation", "Open source", "Remove" (association only — Part
  * 5), a missing-citation-key warning (Part 26), and "View BibTeX" (Part
- * 13).
+ * 13). Extended by Bibliography Source Detection with a mode card
+ * (ReferenceModeCard) explaining this project's ACTUAL bibliography
+ * setup, and — for a project whose real bibliography ISN'T EduM8's own
+ * library (imported_bib/template_tex/inline_template) — a "Bibliography
+ * entries" list sourced from the deterministically-parsed real keys,
+ * so citation insertion still works for those projects too (never
+ * gated behind first connecting EduM8 references).
  */
 export function ReferencesPanel({
   references,
@@ -47,6 +69,8 @@ export function ReferencesPanel({
   onRemoveReference,
   onViewBibliography,
   onOpenSource,
+  referenceMode,
+  onSwitchToEdum8,
 }: ReferencesPanelProps) {
   const theme = useTheme();
   const styles = useMemo(() => buildStyles(theme), [theme]);
@@ -106,8 +130,45 @@ export function ReferencesPanel({
     exitSelectMode();
   }
 
+  const showBibliographyEntries =
+    referenceMode !== null &&
+    referenceMode.mode !== 'edum8_library' &&
+    referenceMode.keys.length > 0;
+
   return (
     <View style={styles.container}>
+      <ReferenceModeCard referenceMode={referenceMode} onSwitchToEdum8={onSwitchToEdum8} />
+
+      {showBibliographyEntries && referenceMode && (
+        <View style={styles.bibEntriesSection}>
+          <Text style={styles.bibEntriesLabel}>
+            Bibliography entries ({referenceMode.keys.length})
+          </Text>
+          <View style={styles.bibEntriesList}>
+            {referenceMode.keys.map((entry) => (
+              <View key={entry.key} style={styles.bibEntryRow}>
+                <View style={styles.bibEntryBody}>
+                  <Text style={styles.bibEntryTitle} numberOfLines={1}>
+                    {entry.title ?? entry.key}
+                  </Text>
+                  <Text style={styles.bibEntryKey} numberOfLines={1}>
+                    {entry.key}
+                  </Text>
+                </View>
+                <Pressable
+                  onPress={() => onInsertCitation(entry.key)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Insert citation for ${entry.title ?? entry.key}`}
+                  hitSlop={6}
+                >
+                  <Text style={styles.actionText}>Insert citation</Text>
+                </Pressable>
+              </View>
+            ))}
+          </View>
+        </View>
+      )}
+
       <View style={styles.toolbar}>
         <Text style={styles.count}>
           {references.length} {references.length === 1 ? 'reference' : 'references'}
@@ -259,6 +320,20 @@ export function ReferencesPanel({
 function buildStyles(theme: Theme) {
   return StyleSheet.create({
     container: { flex: 1, gap: 10 },
+    bibEntriesSection: { gap: 6 },
+    bibEntriesLabel: { fontSize: 12, fontFamily: theme.fonts.bodySemibold, color: theme.faint },
+    bibEntriesList: { gap: 2 },
+    bibEntryRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      paddingVertical: 8,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: theme.border,
+    },
+    bibEntryBody: { flex: 1, gap: 1 },
+    bibEntryTitle: { fontSize: 13, fontFamily: theme.fonts.body, color: theme.text },
+    bibEntryKey: { fontSize: 11, fontFamily: theme.fonts.mono, color: theme.faint },
     toolbar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
     count: { fontSize: 12, fontFamily: theme.fonts.bodySemibold, color: theme.faint },
     toolbarActions: { flexDirection: 'row', gap: 6 },
