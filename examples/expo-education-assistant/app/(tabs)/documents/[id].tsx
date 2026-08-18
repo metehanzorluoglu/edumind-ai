@@ -799,7 +799,29 @@ function buildStyles(theme: Theme) {
       color: theme.subtext,
       marginTop: 1,
     },
-    toolbarActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+    // M5.5.3 continuation Part 11 — real mobile pass (390px) found this
+    // row itself (Original/Text view toggle + Use in chat + Citation +
+    // Add to writing project + Highlights (N), several more buttons
+    // than existed when the PARENT `toolbar` row above got its own
+    // wrap fix in M3.1) still didn't fit once wrapped onto its own
+    // line — the page's own scrollWidth measurably exceeded its
+    // viewport width. Same fix, one level deeper: wrap this row's own
+    // children too. No effect at desktop widths.
+    // maxWidth: '100%' is load-bearing here, not decorative — without
+    // it this row (as a flex child of `toolbar`, itself already
+    // wrapped onto its own line below the back button/title) sizes to
+    // its own preferred content width instead of the width actually
+    // available on that line, so its own flexWrap above never gets a
+    // chance to trigger for ITS children (confirmed via real 390px
+    // measurement: the row rendered at 612px wide, well past the
+    // viewport, with wrap otherwise doing nothing).
+    toolbarActions: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      alignItems: 'center',
+      gap: 6,
+      maxWidth: '100%',
+    },
     viewModeToggle: {
       flexDirection: 'row',
       borderWidth: StyleSheet.hairlineWidth,

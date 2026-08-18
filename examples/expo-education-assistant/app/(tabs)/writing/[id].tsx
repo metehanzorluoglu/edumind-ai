@@ -1845,6 +1845,19 @@ function buildStyles(theme: Theme) {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',
+      // M5.5.3 continuation Part 11 — real mobile pass (390px) found
+      // the title column's own `minWidth: 120` plus headerActions'
+      // un-shrinking button row (Compile[ failed]/Export/⋯, `isWide`
+      // already drops the two desktop-only buttons) genuinely don't
+      // both fit in a 390px viewport's remaining ~340px of content
+      // width once "Compile failed" — a longer label than plain
+      // "Compile" — is showing; the page's own scrollWidth measurably
+      // exceeded its viewport width, not just a cosmetic squeeze. Same
+      // fix PdfReader.tsx's own analogous toolbar-row overflow already
+      // uses: wrap onto a second line rather than force a
+      // whole-page horizontal scroll. No effect at desktop widths,
+      // where everything already fits on one line.
+      flexWrap: 'wrap',
       gap: 16,
       paddingHorizontal: 24,
       paddingVertical: 12,
