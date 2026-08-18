@@ -282,6 +282,14 @@ describe('WritingProjectEditorScreen — Compile (Milestone 5.1)', () => {
       await flushAsync();
     });
 
+    // Milestone 5.5.3 continuation — diagnostics now live inside the
+    // Preview pane (previously an always-visible top banner). Same
+    // "jest-expo's default test viewport is narrow (mobile tabs)"
+    // pattern the Download PDF test above already documents.
+    act(() => {
+      findPressableByLabel(renderer.root, 'Preview').props.onPress();
+    });
+
     const matches = renderer.root.findAll(
       (node) =>
         String(node.type) === 'Text' &&
@@ -309,6 +317,15 @@ describe('WritingProjectEditorScreen — Compile (Milestone 5.1)', () => {
     await act(async () => {
       findPressableByLabel(renderer.root, 'Compile').props.onPress();
       await flushAsync();
+    });
+
+    // Milestone 5.5.3 continuation — diagnostics now live inside the
+    // Preview pane; same "narrow test viewport" pattern as the Download
+    // PDF test above. Clicking "Go to line" below switches the mobile
+    // tab back to 'editor' itself (handleOpenDiagnostic's own "surfaces
+    // the editor even if Preview was showing" behavior).
+    act(() => {
+      findPressableByLabel(renderer.root, 'Preview').props.onPress();
     });
 
     // "Go to line", not "Open file" — the diagnostic's file is the one
@@ -345,6 +362,13 @@ describe('WritingProjectEditorScreen — Compile (Milestone 5.1)', () => {
     await act(async () => {
       findPressableByLabel(renderer.root, 'Compile').props.onPress();
       await flushAsync();
+    });
+
+    // Milestone 5.5.3 continuation — diagnostics now live inside the
+    // Preview pane; same "narrow test viewport" pattern as the Download
+    // PDF test above.
+    act(() => {
+      findPressableByLabel(renderer.root, 'Preview').props.onPress();
     });
 
     const staleReferenceText = renderer.root.findAll(

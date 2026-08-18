@@ -620,6 +620,29 @@ export default function WritingProjectEditorScreen() {
     );
   }
 
+  // Milestone 5.5.3 continuation — PERSISTENT editor error decoration
+  // (LatexCodeEditor's own `errorLines` prop): the CURRENT compile's
+  // error-severity diagnostics that name the file currently open in
+  // the editor, with a real line number. Deliberately NOT stored in
+  // separate state — derived fresh from `compileState` on every render,
+  // so the "atomic replace/clear" lifecycle (Part 11: a successful
+  // recompile clears every mark, a different failed one shows only the
+  // new set, never stale) falls out of React's own data flow for free:
+  // compileState.status === 'result' with a fresh `.data` object IS
+  // the single source of truth, never accumulated or manually cleared
+  // here. Warnings are deliberately excluded — persistent IN-EDITOR
+  // decoration is scoped to errors only (Part 9); warnings stay listed
+  // in the Preview panel's own diagnostics list.
+  const activeFileErrorLines =
+    compileState.status === 'result' && activeFileNode
+      ? (compileState.data.diagnostics ?? [])
+          .filter(
+            (d): d is typeof d & { line: number } =>
+              d.severity === 'error' && d.file === activeFileNode.path && d.line != null
+          )
+          .map((d) => ({ line: d.line, message: d.message }))
+      : [];
+
   function handleOpenDiagnostic(diagnostic: { file?: string | null; line?: number | null }): void {
     if (!diagnostic.file || treeState.status !== 'success') return;
     const node = treeState.data.files.find((f) => f.path === diagnostic.file && f.kind === 'text');
@@ -1174,6 +1197,37 @@ export default function WritingProjectEditorScreen() {
     </View>
   );
 
+  // Milestone 5.5.3 continuation — "Preview is primary home" for
+  // compile diagnostics: previously a full-width Notice banner spanning
+  // the whole workspace ABOVE the editor/preview/research columns
+  // (`styles.errorBar`); now rendered INSIDE the Preview pane itself,
+  // above wherever the PDF (or its own empty/stale state) would show.
+  // Shown for any result worth saying something about — a clean
+  // success with zero diagnostics renders nothing (the PDF itself is
+  // the confirmation); a success WITH diagnostics (e.g. an undefined-
+  // citation warning) still shows the (warnings-only) section above
+  // the PDF; a failure shows the full error/warning breakdown, with no
+  // redundant PDF-area empty state underneath (see the `hidePdfArea`
+  // check just below this).
+  const diagnosticsPanel = compileState.status === 'result' &&
+    ((compileState.data.diagnostics?.length ?? 0) > 0 ||
+      compileState.data.status !== 'success') && (
+      <CompileDiagnostics
+        status={compileState.data.status}
+        diagnostics={compileState.data.diagnostics ?? []}
+        logExcerpt={compileState.data.log_excerpt}
+        resolveDiagnosticFile={resolveDiagnosticFile}
+        activeFilePath={activeFileNode?.path ?? null}
+        onOpenDiagnostic={handleOpenDiagnostic}
+      />
+    );
+  // Skip CompiledPdfPreview's own "Compile to see a preview" empty
+  // state specifically when the diagnostics panel is ALREADY showing
+  // why there's nothing to preview yet (no PDF, not currently
+  // compiling) — showing both would read as a redundant, slightly
+  // contradictory second message under the real explanation.
+  const showPdfArea = Boolean(compiledPdfBlob) || compiling || !diagnosticsPanel;
+
   // Milestone 5.1 Part 25/26/31/37 — the RIGHT PDF Preview panel.
   // Entirely absent from the tree (not merely hidden) when the flag is
   // off — matches every other flag-gated surface in this app. Desktop
@@ -1231,13 +1285,35 @@ export default function WritingProjectEditorScreen() {
           </View>
         </View>
         {!previewCollapsed && (
-          <CompiledPdfPreview
-            pdfBlob={compiledPdfBlob}
-            loading={compiling}
-            error={null}
-            stale={isPreviewStale}
-            emptyMessage="Compile to see a preview."
-          />
+          <View style={styles.previewBody}>
+            {/* Milestone 5.5.3 continuation — diagnostics render at
+                their own NATURAL height (never flex:1), same
+                convention as the rest of this screen's own audited
+                flex/minHeight/overflow architecture: only the ONE
+                area that actually needs internal scrolling
+                (CompiledPdfPreview's own PDF pages, below) gets
+                `flex:1, minHeight:0` — deliberately NOT wrapped in a
+                second, outer ScrollView, which would be exactly the
+                "flex child + missing minHeight:0 + nested overflow
+                container" bug class this app has already been bitten
+                by once (see WritingFileTree's own Files-pane fix). If
+                diagnostics content is ever long enough to want its own
+                scroll, CompileDiagnostics' internal "Show log" box
+                already bounds itself via `maxHeight` (a ScrollView, not
+                a flex child — no nesting hazard there either). */}
+            {diagnosticsPanel}
+            {showPdfArea && (
+              <View style={styles.previewPdfArea}>
+                <CompiledPdfPreview
+                  pdfBlob={compiledPdfBlob}
+                  loading={compiling}
+                  error={null}
+                  stale={isPreviewStale}
+                  emptyMessage="Compile to see a preview."
+                />
+              </View>
+            )}
+          </View>
         )}
       </View>
     </View>
@@ -1430,19 +1506,6 @@ export default function WritingProjectEditorScreen() {
           <Notice tone="danger" body={downloadPdfError} />
         </View>
       )}
-      {compileState.status === 'result' && (
-        <View style={styles.errorBar}>
-          <CompileDiagnostics
-            status={compileState.data.status}
-            diagnostics={compileState.data.diagnostics ?? []}
-            logExcerpt={compileState.data.log_excerpt}
-            resolveDiagnosticFile={resolveDiagnosticFile}
-            activeFilePath={activeFileNode?.path ?? null}
-            onOpenDiagnostic={handleOpenDiagnostic}
-          />
-        </View>
-      )}
-
       {!isWide && (
         // Milestone 5.5 Part 29 — real-browser validation at 390×844
         // caught this row squeezing 5-6 equal-width (flex: 1) tabs into
@@ -1534,6 +1597,7 @@ export default function WritingProjectEditorScreen() {
                 placeholder="\\documentclass{article}…"
                 autocompleteData={autocompleteData}
                 flashLine={flashLine}
+                errorLines={activeFileErrorLines}
                 accessibilityLabel="LaTeX source editor"
                 // Milestone 5.5 Part 12 — see handleShortcutKey's own
                 // comment: a raw DOM <textarea> doesn't stop keydown from
@@ -1563,13 +1627,21 @@ export default function WritingProjectEditorScreen() {
                 />
               </View>
             )}
-            <CompiledPdfPreview
-              pdfBlob={compiledPdfBlob}
-              loading={compiling}
-              error={null}
-              stale={isPreviewStale}
-              emptyMessage="Compile to see a preview."
-            />
+            {/* Milestone 5.5.3 continuation — same "Preview owns the
+                diagnostics list" placement as desktop's previewInner
+                above, mobile's own single-column equivalent. */}
+            {diagnosticsPanel}
+            {showPdfArea && (
+              <View style={styles.previewPdfArea}>
+                <CompiledPdfPreview
+                  pdfBlob={compiledPdfBlob}
+                  loading={compiling}
+                  error={null}
+                  stale={isPreviewStale}
+                  emptyMessage="Compile to see a preview."
+                />
+              </View>
+            )}
           </View>
         )}
         {/* Desktop's Ask EduM8 now renders INSIDE `panel` above, as the
@@ -1848,6 +1920,8 @@ function buildStyles(theme: Theme) {
       flexShrink: 0,
     },
     previewInner: { flex: 1, minWidth: 0 },
+    previewBody: { flex: 1, minHeight: 0 },
+    previewPdfArea: { flex: 1, minHeight: 0 },
     previewResizeHandle: {
       width: 6,
       marginLeft: -3,
