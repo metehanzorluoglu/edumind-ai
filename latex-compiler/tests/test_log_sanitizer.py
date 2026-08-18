@@ -72,6 +72,46 @@ def test_extract_diagnostics_classifies_placeholder_content_truthfully():
     )
 
 
+def test_extract_diagnostics_never_duplicates_the_fatal_error_trailer_row():
+    """Milestone 5.5.3 continuation — real bug, reproduced against the
+    ACTUAL log text captured from a real UNLV compile (not a trimmed
+    synthetic excerpt): pdflatex's own "no output PDF file produced!"
+    trailer is prefixed with the SAME file:line as the real error that
+    caused it, so it previously matched _FILE_LINE_ERROR_PATTERN as its
+    own second diagnostic — the UI showed "Abstract.tex:11" twice, one
+    useful and one just a fixed pdflatex string. Must collapse to
+    exactly the one useful, classified diagnostic."""
+    raw = (
+        "(./Abstract.tex\n"
+        "./Abstract.tex:11: Missing number, treated as zero.\n"
+        "<to be read again> \n"
+        "                   A\n"
+        "l.11 [Advisor Title]\n"
+        "                     \\\\\n"
+        "./Abstract.tex:11:  ==> Fatal error occurred, no output PDF file produced!\n"
+        "Transcript written on main.log.\n"
+    )
+    diags = extract_diagnostics(raw)
+    assert len(diags) == 1
+    assert diags[0].file == "Abstract.tex"
+    assert diags[0].line == 11
+    assert "Fatal error occurred" not in diags[0].message
+    assert diags[0].message == (
+        "Compilation reached Abstract.tex line 11. This template still contains "
+        "placeholder content `[Advisor Title]`, which LaTeX is interpreting as syntax. "
+        "Replace the placeholder with your actual content, then compile again."
+    )
+
+
+def test_extract_diagnostics_deduplicates_a_genuinely_repeated_identical_diagnostic():
+    raw = (
+        "! Undefined control sequence.\nl.5 \\foo\n"
+        "! Undefined control sequence.\nl.5 \\foo\n"
+    )
+    diags = extract_diagnostics(raw)
+    assert len(diags) == 1
+
+
 def test_extract_diagnostics_never_classifies_an_unrelated_missing_number_error():
     """The classification is scoped to a REAL bracket placeholder found
     in the log's own context line — a "Missing number" error with no

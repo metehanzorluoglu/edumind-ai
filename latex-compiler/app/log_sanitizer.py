@@ -52,6 +52,22 @@ _MISSING_NUMBER_MESSAGE = "Missing number, treated as zero."
 _CONTEXT_LINE_PATTERN = re.compile(r"^l\.(\d+)\s?(.*)$")
 _PLACEHOLDER_PATTERN = re.compile(r"\[[A-Z][^\[\]]{1,60}\]")
 
+# Milestone 5.5.3 — real-world finding, not synthetic: with
+# -file-line-error on, pdflatex prefixes its own terminal "no PDF
+# produced" summary with the SAME file:line as the real error that
+# triggered it (confirmed against the actual UNLV fixture's log:
+# "./Abstract.tex:11: Missing number, treated as zero." immediately
+# followed, a few lines later, by
+# "./Abstract.tex:11:  ==> Fatal error occurred, no output PDF file
+# produced!"). Both matched _FILE_LINE_ERROR_PATTERN, so the UI showed
+# TWO rows for the same location — "Abstract.tex:11" twice, one with a
+# real message and one that's just TeX's own fixed trailer text, no
+# more informative than the status the caller (app/compiler.py) already
+# reports via `status: "error"`. This exact string is deterministic and
+# well-known (pdflatex's own hardcoded text) — never a guess at what a
+# log line "probably" means.
+_FATAL_ERROR_TRAILER = "==> Fatal error occurred, no output PDF file produced!"
+
 
 def _placeholder_near(lines: list[str], error_index: int, line_no: int) -> str | None:
     window = lines[error_index : error_index + 6]
@@ -94,33 +110,48 @@ def sanitize_log(raw_log: str, *, workdir_label: str = "<project>") -> str:
 
 def extract_diagnostics(raw_log: str) -> list[Diagnostic]:
     """Best-effort structured extraction — never raises, never assumed
-    complete. See module docstring."""
+    complete. See module docstring.
+
+    Deduplicated deterministically on (severity, file, line, message) —
+    never an LLM, never a heuristic "these look similar" judgment, only
+    an exact-tuple match. This is what actually happens for a real
+    failed compile: pdflatex's own terminal "Fatal error occurred, no
+    output PDF file produced!" trailer is filtered out entirely (see
+    _FATAL_ERROR_TRAILER's own comment — it's not an independent
+    problem, just a fixed summary string attached to the SAME file:line
+    as the real error already reported); a genuinely repeated identical
+    (file, line, message) — e.g. from re-processing during error
+    recovery — collapses to the single row a researcher actually needs
+    to act on."""
     diagnostics: list[Diagnostic] = []
+    seen: set[tuple[str, str | None, int | None, str]] = set()
     lines = raw_log.splitlines()
+
+    def _add(severity: str, message: str, *, line_no: int | None = None, file: str | None = None) -> None:
+        key = (severity, file, line_no, message)
+        if key in seen:
+            return
+        seen.add(key)
+        diagnostics.append(Diagnostic(severity=severity, message=message, line=line_no, file=file))
+
     for i, line in enumerate(lines):
         if len(diagnostics) >= _MAX_DIAGNOSTICS:
             break
         m = _CITATION_WARNING.search(line)
         if m:
-            diagnostics.append(
-                Diagnostic(
-                    severity="warning", message=f"Citation undefined: \\cite{{{m.group(1)}}}"
-                )
-            )
+            _add("warning", f"Citation undefined: \\cite{{{m.group(1)}}}")
             continue
         m = _UNDEFINED_REF_WARNING.search(line)
         if m:
-            diagnostics.append(
-                Diagnostic(severity="warning", message=f"Reference undefined: {m.group(1)}")
-            )
+            _add("warning", f"Reference undefined: {m.group(1)}")
             continue
         if line.startswith("!"):
             message = line[1:].strip()
+            if message == _FATAL_ERROR_TRAILER:
+                continue
             line_no, file = _find_nearby_line_and_file(lines, i)
             message = _classify_message(lines, i, message, file, line_no)
-            diagnostics.append(
-                Diagnostic(severity="error", message=message, line=line_no, file=file)
-            )
+            _add("error", message, line_no=line_no, file=file)
             continue
         # Milestone 5.5 Part 14 — pdflatex's `-file-line-error` REPLACES
         # the classic "! message" opening with this "file:line: message"
@@ -134,10 +165,11 @@ def extract_diagnostics(raw_log: str) -> list[Diagnostic]:
         if m:
             file = m.group(1)
             line_no = int(m.group(2))
-            message = _classify_message(lines, i, m.group(3).strip(), file, line_no)
-            diagnostics.append(
-                Diagnostic(severity="error", message=message, line=line_no, file=file)
-            )
+            raw_message = m.group(3).strip()
+            if raw_message == _FATAL_ERROR_TRAILER:
+                continue
+            message = _classify_message(lines, i, raw_message, file, line_no)
+            _add("error", message, line_no=line_no, file=file)
     return diagnostics
 
 
