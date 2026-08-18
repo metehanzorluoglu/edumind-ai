@@ -20,7 +20,7 @@
  * [id].compile.test.tsx already uses for @/lib/pdfjs.
  */
 import { Platform } from 'react-native';
-import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { AuthProvider } from '@/lib/AuthProvider';
 import { ClientProvider } from '@/lib/ClientProvider';
 import { getSessionNavState, __resetSessionNavCacheForTests } from '@/lib/sessionNavCache';
@@ -109,9 +109,7 @@ function contentFor(documentId: string) {
     file_format: 'pdf',
     original_file_available: true,
     page_count: 20,
-    chunks: [
-      { chunk_id: 'chunk-0', chunk_index: 0, page_number: 1, text: 'Intro text.' },
-    ],
+    chunks: [{ chunk_id: 'chunk-0', chunk_index: 0, page_number: 1, text: 'Intro text.' }],
   };
 }
 
@@ -124,7 +122,8 @@ function routesFor(documentId: string): FetchRoute[] {
     },
     {
       method: 'GET',
-      matches: (u) => u.includes(`/documents/${documentId}/highlights`) && !u.endsWith('/notebooks'),
+      matches: (u) =>
+        u.includes(`/documents/${documentId}/highlights`) && !u.endsWith('/notebooks'),
       respond: () => jsonResponse({ highlights: [] }),
     },
   ];
@@ -170,8 +169,7 @@ describe('DocumentReaderScreen — Reader continuity (M5.5.3 continuation Part 1
   it('onReaderStateChange writes zoom/page into sessionNavCache, keyed per document', async () => {
     const renderer = await renderReader('doc-1');
     const onChange = currentPdfReaderProps()?.onReaderStateChange as
-      | ((s: { scale: number; page: number }) => void)
-      | undefined;
+      ((s: { scale: number; page: number }) => void) | undefined;
     expect(onChange).toBeInstanceOf(Function);
     act(() => {
       onChange!({ scale: 1.5, page: 7 });
@@ -208,7 +206,7 @@ describe('DocumentReaderScreen — Reader continuity (M5.5.3 continuation Part 1
     });
   });
 
-  it('keeps two different documents\' zoom/page fully independent (never a shared, last-document-wins slot)', async () => {
+  it("keeps two different documents' zoom/page fully independent (never a shared, last-document-wins slot)", async () => {
     const docA = await renderReader('doc-1');
     const onChangeA = currentPdfReaderProps()?.onReaderStateChange as (s: {
       scale: number;

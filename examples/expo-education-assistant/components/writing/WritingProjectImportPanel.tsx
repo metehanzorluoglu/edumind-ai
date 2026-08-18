@@ -34,8 +34,14 @@ export interface WritingProjectImportPanelProps {
 const _GROUPABLE_WARNING_REASONS: readonly { reason: string; label: string }[] = [
   { reason: 'Unsupported file type — not imported', label: 'Unsupported files' },
   { reason: 'File is empty — not imported', label: 'Empty files' },
-  { reason: 'File is not valid UTF-8 text — not imported', label: 'Files with invalid text encoding' },
-  { reason: 'Repository metadata is not imported by EduM8.', label: 'Repository metadata not imported' },
+  {
+    reason: 'File is not valid UTF-8 text — not imported',
+    label: 'Files with invalid text encoding',
+  },
+  {
+    reason: 'Repository metadata is not imported by EduM8.',
+    label: 'Repository metadata not imported',
+  },
 ];
 
 export function groupImportWarnings(warnings: { path: string; reason: string }[]): {
