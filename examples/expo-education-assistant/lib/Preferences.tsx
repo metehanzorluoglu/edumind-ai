@@ -78,12 +78,17 @@ export interface Preferences {
   /** Mirrors sidebarCollapsed's own reasoning, for the Writing PDF
    * preview column on wide web. */
   writingPreviewCollapsed: boolean;
-  /** Drag-resize widths (Part 8) for the Writing workspace's two
-   * side columns, wide-web only. Clamped wherever read — see
-   * WRITING_RESEARCH_PANEL_WIDTH_MIN/MAX and
-   * WRITING_PREVIEW_PANEL_WIDTH_MIN/MAX. */
+  /** Drag-resize width (Part 8) for the Writing workspace's Research
+   * side column, wide-web only. Clamped wherever read — see
+   * WRITING_RESEARCH_PANEL_WIDTH_MIN/MAX. The Preview column's own
+   * split (Editor ↔ Preview) is deliberately NOT here as of the
+   * M5.5.3 final-acceptance spec's own explicit requirement — "Do NOT
+   * persist exact pixel widths in user database... session-scoped"
+   * only, via lib/sessionNavCache.ts (see app/(tabs)/writing/[id].tsx's
+   * own previewPanelResize wiring) — this field used to exist and
+   * persisted it here (a real, if minor, spec deviation the owner's
+   * own report implicitly flagged); removed rather than left dead. */
   writingResearchPanelWidth: number;
-  writingPreviewPanelWidth: number;
 }
 
 /** Drag-resize bounds for the drawer — narrow enough to still show full
@@ -116,7 +121,6 @@ export const DEFAULT_PREFERENCES: Preferences = {
   writingResearchDrawerOpen: true,
   writingPreviewCollapsed: false,
   writingResearchPanelWidth: WRITING_RESEARCH_PANEL_WIDTH_DEFAULT,
-  writingPreviewPanelWidth: WRITING_PREVIEW_PANEL_WIDTH_DEFAULT,
 };
 
 // Intentionally NOT renamed to "edum8.*" despite the EduM8 rebrand — this
@@ -199,12 +203,6 @@ function parseStoredPreferences(raw: string | null): Preferences {
         parsed.writingResearchPanelWidth <= WRITING_RESEARCH_PANEL_WIDTH_MAX
           ? parsed.writingResearchPanelWidth
           : DEFAULT_PREFERENCES.writingResearchPanelWidth,
-      writingPreviewPanelWidth:
-        typeof parsed.writingPreviewPanelWidth === 'number' &&
-        parsed.writingPreviewPanelWidth >= WRITING_PREVIEW_PANEL_WIDTH_MIN &&
-        parsed.writingPreviewPanelWidth <= WRITING_PREVIEW_PANEL_WIDTH_MAX
-          ? parsed.writingPreviewPanelWidth
-          : DEFAULT_PREFERENCES.writingPreviewPanelWidth,
     };
   } catch {
     return { ...DEFAULT_PREFERENCES };

@@ -56,6 +56,7 @@ import {
   WRITING_RESEARCH_PANEL_WIDTH_MAX,
   WRITING_PREVIEW_PANEL_WIDTH_MIN,
   WRITING_PREVIEW_PANEL_WIDTH_MAX,
+  WRITING_PREVIEW_PANEL_WIDTH_DEFAULT,
   type Theme,
 } from '@/lib/Preferences';
 import {
@@ -64,6 +65,53 @@ import {
 } from '@/lib/writingFileUpload';
 
 const WIDE_BREAKPOINT_PX = 860;
+// M5.5.3 final acceptance Part 21 — must match editorWrap's own
+// `minWidth: 320` below exactly; used to keep the Preview panel's
+// resize from ever claiming more width than the Editor's own hard
+// floor allows, on the current actual window width.
+const EDITOR_MIN_WIDTH_PX = 320;
+// NavRail's own fixed width (components/NavRail.tsx) — outside the
+// three-pane `body` row entirely, so it has to be subtracted separately
+// from the raw window width this calculation starts from.
+const NAV_RAIL_WIDTH_PX = 60;
+// Covers the resize handles' own width/negative-margin straddle, hairline
+// borders, and other small chrome between the three columns that isn't
+// worth tracking pixel-exactly — confirmed empirically via real-browser
+// measurement (a real remaining overflow at the boundary without it).
+const RESIZE_SAFETY_MARGIN_PX = 80;
+
+/**
+ * M5.5.3 final acceptance Part 21 — the Preview panel's actually-
+ * rendered width: `targetWidth` (whatever the drag handle/session cache
+ * says the researcher last chose, already clamped to
+ * WRITING_PREVIEW_PANEL_WIDTH_MIN/MAX by useDragResizeWidth itself)
+ * yields further to whatever room is ACTUALLY left in the current
+ * window, so a wide target chosen at a wide window never forces
+ * horizontal page overflow once the window narrows. Exported as its
+ * own pure function (not inlined) so this real-browser-discovered
+ * arithmetic — window width minus NavRail minus Research (if open)
+ * minus Editor's own hard floor minus a small chrome margin — is
+ * directly unit-testable without needing to render the whole screen.
+ * `styles.body`'s own `overflow: 'hidden'` is a deliberate backstop
+ * alongside this, not a replacement for it — see that style's own
+ * comment for why the interaction with Editor's OWN flex distribution
+ * (not just its bare minWidth) made a purely algebraic cap alone
+ * insufficient in one real-browser-measured case.
+ */
+export function computePreviewSafeWidth(params: {
+  windowWidth: number;
+  targetWidth: number;
+  researchPanelWidth: number;
+}): number {
+  const { windowWidth, targetWidth, researchPanelWidth } = params;
+  const available =
+    windowWidth -
+    NAV_RAIL_WIDTH_PX -
+    researchPanelWidth -
+    EDITOR_MIN_WIDTH_PX -
+    RESIZE_SAFETY_MARGIN_PX;
+  return Math.min(targetWidth, Math.max(WRITING_PREVIEW_PANEL_WIDTH_MIN, available));
+}
 
 // Milestone 5.5 Part 6 — "Ask EduM8" is now a 4th tab of the same
 // Research panel as Files/References/Notes, not a separately-positioned
@@ -314,15 +362,53 @@ export default function WritingProjectEditorScreen() {
     max: WRITING_RESEARCH_PANEL_WIDTH_MAX,
     onResizeEnd: (w) => update('writingResearchPanelWidth', w),
   });
+  // M5.5.3 final acceptance Part 17 — the Editor↔Preview split is
+  // session-scoped ONLY (sessionNavCache — the exact mechanism Writing's
+  // own cursor/scroll and Reader's own zoom/page continuity already use
+  // for this same durability tier), never written to the persisted
+  // Preferences blob the Research panel's own width still uses. Read
+  // once per mount; the drag hook itself owns all in-progress state.
+  const [previewPanelWidth, setPreviewPanelWidth] = useState(
+    () =>
+      getSessionNavState<number>('writing-preview-panel-width') ??
+      WRITING_PREVIEW_PANEL_WIDTH_DEFAULT
+  );
   const previewPanelResize = useDragResizeWidth({
-    width: preferences.writingPreviewPanelWidth,
+    width: previewPanelWidth,
     min: WRITING_PREVIEW_PANEL_WIDTH_MIN,
     max: WRITING_PREVIEW_PANEL_WIDTH_MAX,
-    onResizeEnd: (w) => update('writingPreviewPanelWidth', w),
+    onResizeEnd: (w) => {
+      setPreviewPanelWidth(w);
+      setSessionNavState('writing-preview-panel-width', w);
+    },
     // The Preview column is anchored to the right edge of the screen —
     // its handle sits on its LEFT, so dragging left (not right) widens it.
     invert: true,
   });
+  // M5.5.3 final acceptance Part 21 — real reproduction: with the
+  // Preview panel dragged wide (near its own 640px cap) and the browser
+  // window then narrowed, the workspace overflowed horizontally by
+  // 300+px — Research's and Preview's widths are both independent fixed
+  // pixel values, only the Editor column flexes, and once Editor is
+  // squeezed to its own 320px floor there's nowhere left for the excess
+  // to go but off the edge of the page. Deriving the cap from the raw
+  // reactive window `width` (useWindowDimensions, already tracked above
+  // for `isWide`) rather than an onLayout measurement of the row itself
+  // is deliberate: once overflow is already happening, the row's OWN
+  // rendered width reflects the overflowed state, not the space actually
+  // available — a chicken-and-egg problem a live layout measurement
+  // can't resolve on its own, confirmed via real-browser testing (the
+  // first onLayout-based attempt stayed stuck at its initial overflowed
+  // value across subsequent window-resize events). `width` always
+  // reflects the true current window size, independent of any of this
+  // screen's own layout state.
+  const previewSafeWidth = isWide
+    ? computePreviewSafeWidth({
+        windowWidth: width,
+        targetWidth: previewPanelResize.effectiveWidth,
+        researchPanelWidth: researchDrawerOpen ? researchPanelResize.effectiveWidth : 0,
+      })
+    : previewPanelResize.effectiveWidth;
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [downloadPdfError, setDownloadPdfError] = useState<string | null>(null);
   const [compileTransportError, setCompileTransportError] = useState<string | null>(null);
@@ -1285,7 +1371,7 @@ export default function WritingProjectEditorScreen() {
   // off — matches every other flag-gated surface in this app. Desktop
   // only (mobile gets its own "Preview" tab, wired further below).
   const previewPanel = latexCompilation && (
-    <View style={[styles.previewPanel, isWide && { width: previewPanelResize.effectiveWidth }]}>
+    <View style={[styles.previewPanel, isWide && { width: previewSafeWidth }]}>
       {isWide && Platform.OS === 'web' && (
         <View
           // Milestone 5.5 Part 30 — see the Research panel handle's
@@ -1904,14 +1990,43 @@ function buildStyles(theme: Theme) {
       paddingHorizontal: 24,
       paddingVertical: 10,
     },
-    body: { flex: 1, flexDirection: 'row' },
+    // M5.5.3 final acceptance Part 21 — overflow: 'hidden' here is a
+    // deliberate hard backstop, not a substitute for previewSafeWidth's
+    // own cap: real-browser measurement found the three columns'
+    // combined widths (Research's own fixed width + Editor's naturally
+    // flex-computed width, which isn't the same as its bare minWidth
+    // floor whenever there's nominally "enough" room + Preview's own
+    // resized width) can still add up to more than the actual window
+    // width even after that cap, because Editor's OWN natural flex
+    // distribution — not just its 320px minimum — has to be accounted
+    // for too, and getting that interaction exactly right algebraically
+    // proved fragile. Clipping at this outermost row guarantees no
+    // horizontal PAGE overflow regardless of any remaining imprecision
+    // in the narrower per-column calculations, which still do their job
+    // of keeping the split visually sensible, not just non-overflowing.
+    body: { flex: 1, flexDirection: 'row', overflow: 'hidden' },
     // Milestone 5.5.1 Part 8 — minWidth guards the one column that's
     // ALWAYS meant to flex (fills whatever the fixed-width Research/
     // Preview columns don't take): with both of those now correctly
     // fixed-width instead of fighting for flex space, the editor could
     // otherwise be squeezed to near-zero if a user drags both siblings
     // to their max on a narrower "wide" viewport.
-    editorWrap: { flex: 1, minWidth: 320, padding: 24 },
+    // M5.5.3 final acceptance Part 21/23 — real reproduction: a genuinely
+    // long unwrapped line (this codebase deliberately disables soft-wrap
+    // for .tex/.cls/.sty/.bib — see LatexCodeEditor's own docstring —
+    // for gutter line-number correctness; the real sn-article.tex
+    // fixture's own "%%%%...====" comment-divider lines are 70+ chars)
+    // was forcing this WHOLE column wider than its own flex-assigned
+    // size once Editor's available width narrowed enough, spilling a
+    // real ~100-300px of horizontal overflow onto the page itself —
+    // reproducible independent of any specific pane-resize interaction,
+    // simply from the column being narrow enough for a long real
+    // comment line to exceed it. `overflow: 'hidden'` clips at this
+    // outermost, always flex-bounded boundary regardless of whether
+    // every descendant deep inside LatexCodeEditor's own DOM correctly
+    // sets minWidth: 0 — belt-and-suspenders alongside that component's
+    // own wrapper fix, not a substitute for it.
+    editorWrap: { flex: 1, minWidth: 320, padding: 24, overflow: 'hidden' },
     // Milestone 5.5 Part 6/8 — the unified Research panel is now a ROW
     // (content column + resize handle), not a padded column, since the
     // "Ask EduM8" tab needs full-bleed width the same way it always had

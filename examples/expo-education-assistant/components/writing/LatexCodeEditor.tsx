@@ -588,6 +588,7 @@ export const LatexCodeEditor = forwardRef<LatexCodeEditorHandle, LatexCodeEditor
         style={{
           position: 'relative',
           flex: 1,
+          minWidth: 0,
           minHeight: 0,
           borderRadius: theme.radius.md,
           overflow: 'hidden',
