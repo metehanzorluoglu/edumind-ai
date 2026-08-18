@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/Button';
 import { Notice } from '@/components/ui/Notice';
 import { blobToDataUrl } from '@/lib/referenceImages';
 import { useTheme, type Theme } from '@/lib/Preferences';
+import { CompiledPdfPreview } from './CompiledPdfPreview';
 
 async function resolvePreviewUri(blob: Blob, mime: string, cacheName: string): Promise<string> {
   if (Platform.OS === 'web') {
@@ -19,16 +20,25 @@ async function resolvePreviewUri(blob: Blob, mime: string, cacheName: string): P
 }
 
 /**
- * Milestone 5.3 Part 21 — a small, deliberately minimal asset
- * preview/details pane for a binary project file (PNG/JPEG/PDF): shows
- * a real inline preview for images (reusing lib/referenceImages.ts's
- * exact web-data-URL/native-cache-file pattern — Part 21 explicitly
- * scopes this to "basic," not image annotation), and for a PDF asset
- * shows its metadata plus a "Download" action rather than a full second
- * PDF-page renderer (CompiledPdfPreview already owns that machinery for
- * the COMPILED manuscript specifically; duplicating it here for an
- * uploaded source figure would be overbuilding a feature this
- * milestone's own spec marks optional).
+ * Milestone 5.3 Part 21, extended by the 5.5.3 continuation's "Project
+ * PDF asset support" — a project-file preview/details pane for a
+ * binary project file (PNG/JPEG/PDF): a real inline preview for images
+ * (reusing lib/referenceImages.ts's exact web-data-URL/native-cache-
+ * file pattern), and for a PDF asset (a real project document — e.g.
+ * "user-manual.pdf" or "sn-article.pdf" shipped inside an imported
+ * template, never EduM8's own COMPILED output) a real view/zoom/fit-
+ * width/scroll experience via CompiledPdfPreview — reused, not
+ * reimplemented (per this milestone's own "do not create another PDF
+ * renderer" requirement; CompiledPdfPreview's actual implementation is
+ * already fully generic over any PDF Blob, it just also happens to be
+ * where the compiled-manuscript preview lives). This component never
+ * confuses the two: `stale` is always `false` here (that banner only
+ * ever makes sense for a compile result), and this pane's own state is
+ * entirely local to whichever project FILE is currently selected —
+ * nothing here is shared with the actual Preview pane's own compiled-
+ * PDF state. Never ingested into the RAG/Document Library pipeline —
+ * writing-project files were never part of that to begin with (see
+ * models_writing.py's own TEXT_FILE_EXTENSIONS docstring).
  */
 export function WritingAssetPreview({
   client,
@@ -61,7 +71,11 @@ export function WritingAssetPreview({
         if (cancelled) return;
         setBlob(fetchedBlob);
         if (isImage) {
-          const uri = await resolvePreviewUri(fetchedBlob, node.mime_type ?? 'image/png', node.name);
+          const uri = await resolvePreviewUri(
+            fetchedBlob,
+            node.mime_type ?? 'image/png',
+            node.name
+          );
           if (cancelled) return;
           setPreviewUri(uri);
         }
@@ -102,7 +116,9 @@ export function WritingAssetPreview({
         const file = new ExpoFile(Paths.cache, node.name);
         file.create({ overwrite: true });
         file.write(bytes);
-        await Sharing.shareAsync(file.uri, { mimeType: node.mime_type ?? 'application/octet-stream' });
+        await Sharing.shareAsync(file.uri, {
+          mimeType: node.mime_type ?? 'application/octet-stream',
+        });
       }
     } catch (e) {
       setDownloadError(e instanceof Error ? e.message : 'Could not download this asset.');
@@ -113,21 +129,33 @@ export function WritingAssetPreview({
 
   return (
     <View style={styles.container}>
-      <Text style={styles.name} numberOfLines={1}>
-        {node.name}
-      </Text>
-      <Text style={styles.meta}>
-        {node.mime_type ?? 'binary'} · {(node.size_bytes / 1024).toFixed(1)} KB · {node.path}
-      </Text>
+      <View style={styles.header}>
+        <Text style={styles.name} numberOfLines={1}>
+          {node.name}
+        </Text>
+        <Text style={styles.meta}>
+          {node.mime_type ?? 'binary'} · {(node.size_bytes / 1024).toFixed(1)} KB · {node.path}
+        </Text>
+      </View>
 
       {status === 'loading' && <ActivityIndicator color={theme.accent} style={styles.spinner} />}
       {status === 'error' && error && <Notice tone="danger" body={error} />}
       {status === 'success' && isImage && previewUri && (
         <Image source={{ uri: previewUri }} style={styles.image} resizeMode="contain" />
       )}
+      {/* Every binary project file that ISN'T an image is a PDF (the
+          only other kind BINARY_FILE_EXTENSIONS allows — see
+          models_writing.py) — real view/zoom/fit-width/scroll via the
+          same reused component this pane's own docstring explains. */}
       {status === 'success' && !isImage && (
-        <View style={styles.pdfPlaceholder}>
-          <Text style={styles.pdfPlaceholderText}>PDF asset — no inline preview.</Text>
+        <View style={styles.pdfViewerArea}>
+          <CompiledPdfPreview
+            pdfBlob={blob}
+            loading={false}
+            error={null}
+            stale={false}
+            emptyMessage="No preview available."
+          />
         </View>
       )}
 
@@ -139,6 +167,7 @@ export function WritingAssetPreview({
         loading={downloading}
         disabled={status !== 'success'}
         onPress={() => void handleDownload()}
+        style={styles.downloadButton}
       />
     </View>
   );
@@ -146,18 +175,25 @@ export function WritingAssetPreview({
 
 function buildStyles(theme: Theme) {
   return StyleSheet.create({
-    container: { flex: 1, padding: 20, gap: 10 },
+    container: { flex: 1, minHeight: 0, padding: 20, gap: 10 },
+    header: { gap: 4 },
     name: { fontSize: 14, fontFamily: theme.fonts.bodySemibold, color: theme.text },
     meta: { fontSize: 11.5, fontFamily: theme.fonts.mono, color: theme.faint },
     spinner: { marginTop: 24 },
-    image: { width: '100%', height: 280, borderRadius: theme.radius.md, backgroundColor: theme.cardPressed },
-    pdfPlaceholder: {
-      height: 160,
+    image: {
+      width: '100%',
+      height: 280,
       borderRadius: theme.radius.md,
       backgroundColor: theme.cardPressed,
-      alignItems: 'center',
-      justifyContent: 'center',
     },
-    pdfPlaceholderText: { fontSize: 12.5, fontFamily: theme.fonts.body, color: theme.faint },
+    pdfViewerArea: {
+      flex: 1,
+      minHeight: 0,
+      borderRadius: theme.radius.md,
+      overflow: 'hidden',
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.border,
+    },
+    downloadButton: { alignSelf: 'flex-start' },
   });
 }
