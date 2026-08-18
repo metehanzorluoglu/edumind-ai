@@ -293,7 +293,11 @@ class TestZipBombDefense:
 
 
 class TestReferencesBibPolicy:
-    """Part 11 — detected, reported, EXCLUDED, never silently canonical."""
+    """Part 11, narrowed by the Bibliography Source Detection milestone
+    — only a file literally named "references.bib" (EduM8's own
+    reserved virtual-file name) is detected/reported/EXCLUDED now; any
+    other `.bib` file is a legitimate import (see
+    TestOtherBibFilesAreImported below and app/core/reference_mode.py)."""
 
     def test_references_bib_excluded_with_warning_not_whole_archive_rejection(self) -> None:
         data = _zip_bytes(
@@ -303,10 +307,10 @@ class TestReferencesBibPolicy:
         assert [f.path for f in inspection.files] == ["main.tex"]
         assert len(inspection.warnings) == 1
         assert inspection.warnings[0].path == "references.bib"
-        assert "Reference Library" in inspection.warnings[0].reason
+        assert "reserved" in inspection.warnings[0].reason
 
-    @pytest.mark.parametrize("name", ["bibliography.bib", "refs.bib", "REFERENCES.BIB"])
-    def test_other_bibliography_filename_variants_excluded(self, name: str) -> None:
+    @pytest.mark.parametrize("name", ["REFERENCES.BIB", "References.Bib"])
+    def test_references_bib_excluded_case_insensitively(self, name: str) -> None:
         data = _zip_bytes({"main.tex": b"\\documentclass{article}", name: b"@article{x,}"})
         inspection = inspect_archive(data, max_archive_bytes=30_000_000)
         assert [f.path for f in inspection.files] == ["main.tex"]
@@ -316,6 +320,27 @@ class TestReferencesBibPolicy:
         data = _zip_bytes({"../references.bib": b"@article{x,}"})
         with pytest.raises(ArchiveRejected):
             inspect_archive(data, max_archive_bytes=30_000_000)
+
+
+class TestOtherBibFilesAreImported:
+    """Bibliography Source Detection milestone — a real imported `.bib`
+    database (any name OTHER than the one reserved "references.bib") is
+    now a legitimate project file, not silently dropped: the real-world
+    case this fixes is the Springer Nature journal template, which ships
+    its own "sn-bibliography.bib"."""
+
+    @pytest.mark.parametrize("name", ["bibliography.bib", "refs.bib", "sn-bibliography.bib"])
+    def test_a_differently_named_bib_file_imports_as_a_normal_text_file(self, name: str) -> None:
+        data = _zip_bytes(
+            {"main.tex": b"\\documentclass{article}", name: b"@article{bib1,\ntitle={x}\n}"}
+        )
+        inspection = inspect_archive(data, max_archive_bytes=30_000_000)
+        assert {f.path for f in inspection.files} == {"main.tex", name}
+        assert inspection.warnings == []
+        bib_file = next(f for f in inspection.files if f.path == name)
+        assert bib_file.kind == "text"
+        assert bib_file.content_text is not None
+        assert "@article{bib1," in bib_file.content_text
 
 
 class TestUnsupportedExtensions:

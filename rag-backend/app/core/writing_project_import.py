@@ -61,9 +61,15 @@ _ROOT_FILENAME_PRIORITY = ("main", "paper", "manuscript", "article", "thesis")
 #: directives").
 _ROOT_SCAN_BYTES = 20_000
 
-#: Part 11 — any of these filenames (case-insensitive) found in the
-#: archive gets flagged and EXCLUDED, never silently made canonical.
-_BIBLIOGRAPHY_FILENAMES = frozenset({"references.bib", "bibliography.bib", "refs.bib"})
+#: Part 11, narrowed by the Bibliography Source Detection milestone —
+#: previously every conventionally-named `.bib` file (references.bib/
+#: bibliography.bib/refs.bib); now only the one name actually reserved
+#: for EduM8's own synthesized virtual file (RESERVED_NAMES). Any other
+#: `.bib` file — including a differently-named one like a Springer
+#: Nature template's own "sn-bibliography.bib" — is now a legitimate,
+#: importable project file (see the ext == ".bib" branch below and
+#: app/core/reference_mode.py).
+_BIBLIOGRAPHY_FILENAMES = frozenset({"references.bib"})
 
 
 class ArchiveRejected(Exception):
@@ -265,19 +271,19 @@ def _normalize_entry_segments(filename: str) -> list[str] | None:
         candidate = unicodedata.normalize("NFC", raw)
         is_leaf = position == len(raw_segments) - 1
         if is_leaf and candidate.lower() in _BIBLIOGRAPHY_FILENAMES:
-            # Part 11 — an imported "references.bib" (or an equivalent
-            # name) is a deliberate, EXPECTED, soft-excluded case, never
-            # a structural safety violation: validate_entry_name would
-            # otherwise reject it as a reserved name meant to guard
-            # against a MANUALLY-created file shadowing the generated
-            # bibliography — that concern doesn't apply here since this
-            # entry is never turned into a WritingProjectFile row at all
-            # (see the bibliography-detection pass in inspect_archive,
-            # which excludes it with a clear message instead). Still
-            # apply the same traversal/control-character safety this
-            # segment would otherwise get, minus only the reserved-name
-            # rejection, so a bib file can't smuggle an unsafe name
-            # through under cover of this carve-out.
+            # Part 11 — an imported "references.bib" is a deliberate,
+            # EXPECTED, soft-excluded case, never a structural safety
+            # violation: validate_entry_name would otherwise reject it
+            # as a reserved name meant to guard against a MANUALLY-
+            # created file shadowing the generated bibliography — that
+            # concern doesn't apply here since this entry is never
+            # turned into a WritingProjectFile row at all (see the
+            # bibliography-detection pass in inspect_archive, which
+            # excludes it with a clear message instead). Still apply the
+            # same traversal/control-character safety this segment would
+            # otherwise get, minus only the reserved-name rejection, so
+            # a bib file can't smuggle an unsafe name through under
+            # cover of this carve-out.
             if any(bad in candidate for bad in ("/", "\\", "..")) or candidate in {".", ".."}:
                 return None
             segments.append(candidate)
@@ -393,28 +399,30 @@ def inspect_archive(data: bytes, *, max_archive_bytes: int) -> ImportInspection:
         if ext in _ARCHIVE_EXTENSIONS:
             raise ArchiveRejected(f"Archive contains a nested archive: {rel_path}")
 
-        if ext == ".bib":
-            # Part 11, generalized by Milestone 5.5.1 Part 21/24 — real-
-            # ZIP testing found this only matched the 3 hardcoded
-            # conventional names (references.bib/bibliography.bib/
-            # refs.bib), so a template's own differently-named .bib file
-            # (e.g. a Springer Nature template's "sn-bibliography.bib")
-            # fell through to the generic "Unsupported file type"
-            # warning instead of this specific, actionable one — true,
-            # but far less helpful, and Part 24 explicitly wants a
-            # meaningful diagnostic here, not just "unsupported". ANY
-            # .bib file gets the same treatment now: detected, reported,
-            # EXCLUDED. Never silently made canonical; EduM8's own
-            # references.bib remains the only bibliography source of
-            # truth.
+        if ext == ".bib" and name.lower() == "references.bib":
+            # Bibliography Source Detection milestone — narrowed from
+            # "every .bib file, always excluded" (Part 11/5.5.1 Part
+            # 21/24's original behavior) to just this ONE literal name.
+            # A real imported `.bib` database (e.g. a Springer Nature
+            # template's own "sn-bibliography.bib") is now a legitimate
+            # project file — see app/core/reference_mode.py, which
+            # detects that the project actually uses it and parses its
+            # entries for citation-key autocomplete, rather than EduM8
+            # silently steering every import toward its own generated
+            # references.bib regardless of what the template actually
+            # does. Only a file literally NAMED "references.bib" is
+            # still excluded here, because that exact name is reserved
+            # for EduM8's own synthesized virtual file (RESERVED_NAMES)
+            # and would otherwise collide with it.
             warnings.append(
                 ImportWarning(
                     path=rel_path,
                     reason=(
-                        "EduM8 generates references.bib from your Reference Library "
-                        "— this file was not imported. If your document uses "
-                        "\\bibliography{" + name.rsplit(".", 1)[0] + "}, update it to "
-                        "\\bibliography{references} after import."
+                        "\"references.bib\" is reserved for EduM8's own generated "
+                        "bibliography and was not imported. If your document uses "
+                        "\\bibliography{references}, either connect EduM8 references "
+                        "to this project, or rename your file and update the "
+                        "\\bibliography{...} argument to match."
                     ),
                 )
             )

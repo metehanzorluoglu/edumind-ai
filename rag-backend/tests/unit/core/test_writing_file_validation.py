@@ -94,6 +94,7 @@ class TestExtensionAndKind:
             ("journal.cls", "text"),
             ("custom.sty", "text"),
             ("notes.txt", "text"),
+            ("sn-bibliography.bib", "text"),
             ("figure.png", "binary"),
             ("figure.jpg", "binary"),
             ("figure.jpeg", "binary"),

@@ -182,7 +182,19 @@ WritingProjectFileKind = Literal["folder", "text", "binary"]
 #: docstring), and never embedded/indexed anywhere (writing-project
 #: files were never part of the RAG/vector pipeline to begin with,
 #: which only ever indexes Document Library uploads).
-TEXT_FILE_EXTENSIONS = frozenset({".tex", ".cls", ".sty", ".txt", ".md"})
+#:
+#: Bibliography Source Detection milestone — `.bib` support: a real
+#: imported `.bib` database (e.g. a Springer Nature template's own
+#: "sn-bibliography.bib") is a legitimate project file, not something to
+#: silently drop on import (see app/core/writing_project_import.py's own
+#: updated handling and app/core/reference_mode.py, which parses a real
+#: imported `.bib`'s entries deterministically for citation-key
+#: autocomplete). The one literal name "references.bib" stays reserved
+#: (app/core/writing_file_validation.py's RESERVED_NAMES) — that exact
+#: name is EduM8's own synthesized virtual file (see
+#: WritingProjectFile's own docstring below) and can never be a real row
+#: regardless of this set.
+TEXT_FILE_EXTENSIONS = frozenset({".tex", ".cls", ".sty", ".txt", ".md", ".bib"})
 BINARY_FILE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".pdf"})
 ALL_ALLOWED_EXTENSIONS = TEXT_FILE_EXTENSIONS | BINARY_FILE_EXTENSIONS
 
