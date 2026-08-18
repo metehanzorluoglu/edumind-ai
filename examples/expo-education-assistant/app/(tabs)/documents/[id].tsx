@@ -34,6 +34,7 @@ import { useClient } from '@/lib/ClientProvider';
 import { formatAuthorsCompact, safeText } from '@/lib/format';
 import { useTheme, type Theme } from '@/lib/Preferences';
 import { useReaderSelection, type ReaderSelection } from '@/lib/useReaderSelection';
+import { getSessionNavState, setSessionNavState } from '@/lib/sessionNavCache';
 
 const MOBILE_BREAKPOINT_PX = 760;
 const FLASH_DURATION_MS = 1600;
@@ -96,6 +97,21 @@ export default function DocumentReaderScreen() {
 
   const containerRef = useRef<HTMLElement | null>(null);
   const { selection: textSelection, clear: clearTextSelection } = useReaderSelection(containerRef);
+
+  // M5.5.3 continuation Part 10 — Reader continuity (zoom + page):
+  // sessionNavCache, the exact same session-scoped-only durability tier
+  // Writing's own cursor/scroll continuity already uses (never
+  // Preferences, never a hard-reload survivor — see that module's own
+  // docstring). Keyed per documentId, so switching between two PDFs
+  // keeps each one's own zoom/page independent (never a shared,
+  // last-document-wins slot). Read once per `id` change — PdfReader
+  // itself owns not overriding this after the user (or a fresh
+  // restore) sets a real zoom, same "never overrides a chosen zoom"
+  // rule its fit-width effect already follows.
+  const initialReaderState = useMemo(
+    () => getSessionNavState<{ scale: number; page: number }>(`reader-state:${id}`),
+    [id]
+  );
 
   const [noteEditorTarget, setNoteEditorTarget] = useState<NoteEditorTarget | null>(null);
   // Milestone 4.2 (Citation & BibTeX Foundation) Section 25 — an
@@ -486,6 +502,9 @@ export default function DocumentReaderScreen() {
             onSelectionChange={setPdfSelection}
             scrollToPageNumber={pdfScrollToPage}
             onScrolledToPage={() => setPdfScrollToPage(null)}
+            initialScale={initialReaderState?.scale}
+            initialPageNumber={initialReaderState?.page}
+            onReaderStateChange={(state) => setSessionNavState(`reader-state:${id}`, state)}
           />
         ) : (
           <ScrollView

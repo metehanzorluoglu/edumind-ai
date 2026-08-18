@@ -85,6 +85,20 @@ export interface PdfReaderProps {
    * copy after acting on it via onScrolledToPage. */
   scrollToPageNumber: number | null;
   onScrolledToPage: () => void;
+  /** M5.5.3 continuation Part 10 — Reader continuity: the zoom/page
+   * this same document was left at earlier THIS session (from
+   * sessionNavCache, the same session-scoped-only durability tier
+   * Writing's own cursor/scroll continuity already uses — never
+   * Preferences, never a hard-reload survivor). Undefined/null means
+   * "no prior session state" — falls through to the normal fit-width
+   * default and page 1, unchanged from before this feature existed. */
+  initialScale?: number | null;
+  initialPageNumber?: number | null;
+  /** Fired (debounced) whenever the zoom or the topmost-visible page
+   * changes, so the parent can keep sessionNavCache current. Never
+   * fired for the very first render (that would just echo back
+   * whatever initialScale/initialPageNumber already were). */
+  onReaderStateChange?: (state: { scale: number; page: number }) => void;
 }
 
 /**
@@ -112,6 +126,9 @@ export function PdfReader({
   onSelectionChange,
   scrollToPageNumber,
   onScrolledToPage,
+  initialScale,
+  initialPageNumber,
+  onReaderStateChange,
 }: PdfReaderProps) {
   const theme = useTheme();
   const styles = useMemo(() => buildStyles(theme), [theme]);
@@ -123,13 +140,17 @@ export function PdfReader({
     null
   );
   const [numPages, setNumPages] = useState(0);
-  const [scale, setScale] = useState(1);
+  const [scale, setScale] = useState(initialScale ?? 1);
   const [containerWidth, setContainerWidth] = useState<number | null>(null);
   const [pageJumpText, setPageJumpText] = useState('');
 
   const pageViewportsRef = useRef<Map<number, PdfViewportLike>>(new Map());
   const pageHostElsRef = useRef<Map<number, HTMLElement>>(new Map());
   const basePageWidthRef = useRef<number | null>(null); // page 1 width at scale=1
+  const scrollAreaRef = useRef<View>(null);
+  const onReaderStateChangeRef = useRef(onReaderStateChange);
+  onReaderStateChangeRef.current = onReaderStateChange;
+  const restoredInitialPageRef = useRef(false);
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -174,15 +195,78 @@ export function PdfReader({
   }, [documentId]);
 
   // Default to fit-width once both the container width and the page's
-  // own (unscaled) width are known.
+  // own (unscaled) width are known — UNLESS a saved zoom from earlier
+  // this session was already restored (Part 10: never overrides that
+  // restored choice any more than it overrides one the user just made
+  // themselves — the "never overrides a zoom the user has already
+  // chosen" rule below already covers both cases identically).
   useEffect(() => {
+    if (initialScale) return;
     if (containerWidth && basePageWidthRef.current && status === 'success') {
       const available = Math.max(240, containerWidth - PAGE_HORIZONTAL_PADDING_PX);
       setScale(Math.min(MAX_SCALE, available / basePageWidthRef.current));
     }
     // Only on first successful load / container-width-becoming-known —
     // never overrides a zoom the user has already chosen.
-  }, [containerWidth, status]);
+  }, [containerWidth, status, initialScale]);
+
+  // Part 10 — one-shot restore of the page the reader was left on
+  // earlier this session, the exact same "scroll a specific page into
+  // view" mechanism scrollToPageNumber already provides for the
+  // Highlights panel's "Go to", just self-triggered from a prop
+  // instead of a parent action. Guarded by a ref (not state) so it
+  // fires exactly once per mount even though the target element only
+  // becomes available a render or two after `status` turns 'success'.
+  useEffect(() => {
+    if (!initialPageNumber || status !== 'success' || restoredInitialPageRef.current) return;
+    const el = pageHostElsRef.current.get(initialPageNumber);
+    if (!el) return;
+    restoredInitialPageRef.current = true;
+    el.scrollIntoView({ behavior: 'auto', block: 'start' });
+  });
+
+  // Part 10 — reports the zoom whenever it changes, and the topmost
+  // visible page whenever the reader is scrolled (or the zoom change
+  // itself shifts what's topmost), so the parent can keep
+  // sessionNavCache current. A plain native `scroll` listener on the
+  // same div scrollArea's own overflowY: 'auto' already makes
+  // scrollable (Part 6's own established imperative-DOM-effect pattern
+  // for anything react-native-web's own props can't reach) — debounced
+  // so continuous scrolling doesn't spam the parent on every pixel; a
+  // zoom change reports immediately (not debounced — it's already a
+  // discrete, infrequent action, one button click or committed typed
+  // value at a time).
+  useEffect(() => {
+    if (Platform.OS !== 'web' || status !== 'success') return;
+    const el = scrollAreaRef.current as unknown as HTMLElement | null;
+    if (!el) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    function reportCurrentPage(): void {
+      const containerTop = (el as HTMLElement).getBoundingClientRect().top;
+      let closestPage: number | null = null;
+      let closestDistance = Infinity;
+      for (const [pageNumber, host] of pageHostElsRef.current) {
+        const distance = Math.abs(host.getBoundingClientRect().top - containerTop);
+        if (distance < closestDistance) {
+          closestDistance = distance;
+          closestPage = pageNumber;
+        }
+      }
+      if (closestPage != null) {
+        onReaderStateChangeRef.current?.({ scale, page: closestPage });
+      }
+    }
+    reportCurrentPage(); // the zoom itself just changed (or this is the first success)
+    function onScroll(): void {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(reportCurrentPage, 400);
+    }
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      if (timer) clearTimeout(timer);
+    };
+  }, [status, scale]);
 
   useEffect(() => {
     if (!scrollToPageNumber) return;
@@ -324,6 +408,7 @@ export function PdfReader({
       </View>
 
       <View
+        ref={scrollAreaRef}
         style={styles.scrollArea}
         onLayout={(e) => setContainerWidth(e.nativeEvent.layout.width)}
       >
