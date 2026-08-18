@@ -609,16 +609,66 @@ export default function WritingProjectEditorScreen() {
     });
   }
 
+  // M5.5.3 continuation — real-world finding: the compile sandbox
+  // always writes the project's root file as the literal "main.tex"
+  // (latex-compiler/app/compiler.py's own hardcoded entry point —
+  // extra_files never includes the root under its OWN name), so every
+  // diagnostic located in the root file itself reports `file: "main.tex"`
+  // regardless of what the project's real root is actually named.
+  // Reproduced live against the real Springer Nature fixture: a
+  // main.tex:309 diagnostic (the project's real root is "sn-article.tex")
+  // offered no "Go to line" action at all, silently, because a straight
+  // path comparison against the tree never matches "main.tex" to
+  // anything real. The EduM8 default blank-project template (whose own
+  // root genuinely IS named "main.tex") and the earlier UNLV validation
+  // (Abstract.tex — a \input-ed FILE, which keeps its own real name,
+  // never rewritten) both happened to avoid exercising this path, which
+  // is why it wasn't caught until this real-fixture walkthrough.
+  // Translating "main.tex" back to the tree's actual is_root node's real
+  // path — and passing any other filename through unchanged, since
+  // every non-root file already keeps its real project-relative path —
+  // fixes diagnostic navigation AND persistent gutter/editor decoration
+  // for the root file for every imported project whose root isn't
+  // literally named "main.tex" (i.e. nearly every real-world import).
+  function normalizeDiagnosticFile(rawFile: string | null | undefined): string | null {
+    if (!rawFile) return null;
+    if (rawFile !== 'main.tex') return rawFile;
+    if (treeState.status !== 'success') return rawFile;
+    const root = treeState.data.files.find((f) => f.is_root);
+    return root ? root.path : rawFile;
+  }
+
   // Milestone 5.5 Part 14 — resolves a compile diagnostic's `file` (a
   // project-relative path) against the CURRENT file tree; a diagnostic
   // from a stale compile (a file since renamed/deleted) simply gets no
   // match, and CompileDiagnostics never offers the action in that case.
+  // Callers always pass an already-normalized path (see
+  // normalizedDiagnostics below) — normalizeDiagnosticFile is a no-op
+  // on anything that isn't literally "main.tex", so this stays correct
+  // even if called with a raw diagnostic.file directly.
   function resolveDiagnosticFile(path: string): boolean {
+    const normalized = normalizeDiagnosticFile(path);
     return (
+      normalized != null &&
       treeState.status === 'success' &&
-      treeState.data.files.some((f) => f.path === path && f.kind === 'text')
+      treeState.data.files.some((f) => f.path === normalized && f.kind === 'text')
     );
   }
+
+  // M5.5.3 continuation — the compile result's diagnostics with `file`
+  // run through normalizeDiagnosticFile ONCE here, so every consumer
+  // (the Preview pane's CompileDiagnostics list — including its own
+  // "Go to line" vs "Open file" label choice, which compares `file`
+  // against the active file's real path — and the editor's persistent
+  // gutter/line decoration below) sees the project's real root filename
+  // consistently, never the compiler's internal "main.tex".
+  const normalizedDiagnostics =
+    compileState.status === 'result'
+      ? (compileState.data.diagnostics ?? []).map((d) => ({
+          ...d,
+          file: normalizeDiagnosticFile(d.file),
+        }))
+      : [];
 
   // Milestone 5.5.3 continuation — PERSISTENT editor error decoration
   // (LatexCodeEditor's own `errorLines` prop): the CURRENT compile's
@@ -633,19 +683,22 @@ export default function WritingProjectEditorScreen() {
   // here. Warnings are deliberately excluded — persistent IN-EDITOR
   // decoration is scoped to errors only (Part 9); warnings stay listed
   // in the Preview panel's own diagnostics list.
-  const activeFileErrorLines =
-    compileState.status === 'result' && activeFileNode
-      ? (compileState.data.diagnostics ?? [])
-          .filter(
-            (d): d is typeof d & { line: number } =>
-              d.severity === 'error' && d.file === activeFileNode.path && d.line != null
-          )
-          .map((d) => ({ line: d.line, message: d.message }))
-      : [];
+  const activeFileErrorLines = activeFileNode
+    ? normalizedDiagnostics
+        .filter(
+          (d): d is typeof d & { line: number } =>
+            d.severity === 'error' && d.file === activeFileNode.path && d.line != null
+        )
+        .map((d) => ({ line: d.line, message: d.message }))
+    : [];
 
   function handleOpenDiagnostic(diagnostic: { file?: string | null; line?: number | null }): void {
-    if (!diagnostic.file || treeState.status !== 'success') return;
-    const node = treeState.data.files.find((f) => f.path === diagnostic.file && f.kind === 'text');
+    // diagnostic.file is already normalized — it comes from
+    // normalizedDiagnostics via CompileDiagnostics' own onOpenDiagnostic
+    // callback, never a raw compile-result diagnostic directly.
+    const file = diagnostic.file;
+    if (!file || treeState.status !== 'success') return;
+    const node = treeState.data.files.find((f) => f.path === file && f.kind === 'text');
     if (!node) return;
     if (node.id === activeFileId) {
       // Already the open file — openFile() below would be a no-op (no
@@ -1210,11 +1263,10 @@ export default function WritingProjectEditorScreen() {
   // redundant PDF-area empty state underneath (see the `hidePdfArea`
   // check just below this).
   const diagnosticsPanel = compileState.status === 'result' &&
-    ((compileState.data.diagnostics?.length ?? 0) > 0 ||
-      compileState.data.status !== 'success') && (
+    (normalizedDiagnostics.length > 0 || compileState.data.status !== 'success') && (
       <CompileDiagnostics
         status={compileState.data.status}
-        diagnostics={compileState.data.diagnostics ?? []}
+        diagnostics={normalizedDiagnostics}
         logExcerpt={compileState.data.log_excerpt}
         resolveDiagnosticFile={resolveDiagnosticFile}
         activeFilePath={activeFileNode?.path ?? null}

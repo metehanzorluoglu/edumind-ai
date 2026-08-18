@@ -343,6 +343,98 @@ describe('WritingProjectEditorScreen — Compile (Milestone 5.1)', () => {
     expect(editor.props.selection).toEqual({ start: expectedOffset, end: expectedOffset });
   });
 
+  it('a diagnostic in the root file navigates even when the real root filename is not literally "main.tex" (M5.5.3 continuation)', async () => {
+    // Real-world regression, found via a live walkthrough of the actual
+    // Springer Nature journal fixture (real root: "sn-article.tex"):
+    // latex-compiler always writes the project's root under the
+    // hardcoded sandbox name "main.tex" (see compiler.py's own
+    // docstring), so every diagnostic located in the root file reports
+    // `file: "main.tex"` regardless of the project's real root name.
+    // The pre-existing "Go to line" test above never caught this
+    // because its own fixture project's root genuinely IS named
+    // "main.tex" — this test uses a differently-named root on purpose.
+    const thesisRootNode = {
+      id: 'thesis-root-id',
+      parent_id: null,
+      kind: 'text',
+      name: 'sn-article.tex',
+      path: 'sn-article.tex',
+      mime_type: null,
+      size_bytes: PROJECT.main_tex_content.length,
+      is_root: true,
+    };
+    const customTreeRoute: FetchRoute = {
+      method: 'GET',
+      matches: (u) => u.endsWith('/writing-projects/w-1/files'),
+      respond: () =>
+        jsonResponse({
+          files: [thesisRootNode],
+          generated: [
+            { name: 'references.bib', path: 'references.bib', read_only: true, reference_count: 0 },
+          ],
+          root_file_id: thesisRootNode.id,
+          total_size_bytes: PROJECT.main_tex_content.length,
+          file_count: 1,
+          max_files: 150,
+          max_total_bytes: 100_000_000,
+        }),
+    };
+    const customContentRoute: FetchRoute = {
+      method: 'GET',
+      matches: (u) => u.endsWith(`/writing-projects/w-1/files/${thesisRootNode.id}`),
+      respond: () => jsonResponse({ file: thesisRootNode, content_text: PROJECT.main_tex_content }),
+    };
+
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute('hash1'),
+      customTreeRoute,
+      customContentRoute,
+      compileRoute({
+        status: 'error',
+        diagnostics: [
+          // The compiler reports the sandbox-internal name, never the
+          // project's real root filename.
+          { severity: 'error', message: 'Undefined control sequence', line: 2, file: 'main.tex' },
+        ],
+        log_excerpt: '! Undefined control sequence.',
+        duration_ms: 100,
+        source_hash: 'hash1',
+      }),
+    ]);
+
+    await act(async () => {
+      findPressableByLabel(renderer.root, 'Compile').props.onPress();
+      await flushAsync();
+    });
+    act(() => {
+      findPressableByLabel(renderer.root, 'Preview').props.onPress();
+    });
+
+    // The action must be offered at all (this is exactly what silently
+    // failed before the fix — resolveDiagnosticFile compared "main.tex"
+    // against the real tree and never matched), and it must be labeled
+    // with the project's REAL root filename, not the sandbox's internal
+    // one.
+    const goToLineButtons = findAllPressablesByLabel(
+      renderer.root,
+      'Go to line: sn-article.tex, line 2'
+    );
+    expect(goToLineButtons.length).toBeGreaterThan(0);
+
+    await act(async () => {
+      goToLineButtons[0]!.props.onPress();
+      await flushAsync();
+    });
+
+    const editor = renderer.root.find((n) => n.type === LatexCodeEditor);
+    const expectedOffset = PROJECT.main_tex_content.split('\n')[0]!.length + 1; // start of line 2
+    expect(editor.props.selection).toEqual({ start: expectedOffset, end: expectedOffset });
+    // Persistent gutter/editor error decoration (Part 9/11) must also
+    // attach to the root file despite the "main.tex" name mismatch.
+    expect(editor.props.errorLines).toEqual([{ line: 2, message: 'Undefined control sequence' }]);
+  });
+
   it('a diagnostic with no file, or naming a file that no longer exists, offers no navigation action', async () => {
     const renderer = await renderScreen([
       getProjectRoute(),
