@@ -55,10 +55,37 @@ interface LatexCodeEditorProps {
    * few seconds. `line` is 1-indexed, matching every other line number
    * in this app (diagnostics, offsetForLine). */
   flashLine?: { line: number; token: number } | null;
+  /**
+   * Milestone 5.5.3 continuation — PERSISTENT compiler-error
+   * decoration, distinct from `flashLine` above (a temporary "you just
+   * navigated here" band that fades on its own). A compilation error
+   * is not merely a navigation event — the caller (already filtered to
+   * whichever diagnostics name THIS file, by path) passes the current
+   * failed compile's error lines here, and they stay decorated (a
+   * gutter marker plus a whole-line background/underline — never an
+   * invented character range) until the caller's own `compileState`
+   * changes: a successful compile naturally produces an empty array
+   * (clearing every mark), a different failed compile naturally
+   * produces the NEW set (replacing the old one) — this component
+   * itself does no lifecycle bookkeeping, it just renders whatever the
+   * caller currently passes. 1-indexed, matching flashLine.
+   */
+  errorLines?: { line: number; message: string }[];
 }
 
 const DROPDOWN_WIDTH = 280;
 const DROPDOWN_MAX_HEIGHT = 220;
+// Milestone 5.5.3 continuation — the editor's own fixed per-line
+// geometry, now that soft-wrapping is disabled (see the whiteSpace:
+// 'pre' effect below): every logical line occupies EXACTLY one visual
+// row of this height, at this top padding, so a line's Y position is
+// simple arithmetic rather than a DOM measurement — matching lines 537
+// / 557's own existing `paddingTop: 16` / `lineHeight: '20px'`
+// hardcoded values (kept as the same two named constants here so the
+// gutter, the flash band, and the persistent error decoration can
+// never silently drift out of sync with each other).
+const CONTENT_PADDING_TOP_PX = 16;
+const LINE_HEIGHT_PX = 20;
 
 /**
  * Milestone 5.5.1 Part 11-19 — the LaTeX source editor. Native (iOS/
@@ -95,6 +122,7 @@ export const LatexCodeEditor = forwardRef<LatexCodeEditorHandle, LatexCodeEditor
       autocompleteData,
       accessibilityLabel,
       flashLine,
+      errorLines,
     } = props;
 
     const nativeInputRef = useRef<TextInput>(null);
@@ -158,6 +186,32 @@ export const LatexCodeEditor = forwardRef<LatexCodeEditorHandle, LatexCodeEditor
       () => Array.from({ length: lineCount }, (_, i) => i + 1).join('\n'),
       [lineCount]
     );
+
+    // Milestone 5.5.3 continuation — persistent error decoration's own
+    // Y positions, computed the SAME way the gutter computes each
+    // number's row (fixed arithmetic, not a DOM measurement) — valid
+    // now that soft-wrapping is disabled, so one logical line really is
+    // one visual row. Clamped into [0, lineCount) so a stale diagnostic
+    // referencing a line past the CURRENT (edited-since) end of the
+    // file never renders below the real content. Recomputed whenever
+    // either the diagnostics themselves or the file's own line count
+    // changes (an edit can shift how many lines exist).
+    const errorLineMarks = useMemo(() => {
+      if (!errorLines || errorLines.length === 0) return [];
+      const seen = new Set<number>();
+      const marks: { line: number; top: number; message: string }[] = [];
+      for (const { line, message } of errorLines) {
+        const clamped = Math.max(1, Math.min(line, lineCount));
+        if (seen.has(clamped)) continue;
+        seen.add(clamped);
+        marks.push({
+          line: clamped,
+          top: CONTENT_PADDING_TOP_PX + (clamped - 1) * LINE_HEIGHT_PX,
+          message,
+        });
+      }
+      return marks;
+    }, [errorLines, lineCount]);
 
     useEffect(() => {
       setSelectedSuggestionIndex(0);
@@ -224,6 +278,47 @@ export const LatexCodeEditor = forwardRef<LatexCodeEditorHandle, LatexCodeEditor
       if (el) el.style.overflowY = 'auto';
     }, [textareaId]);
 
+    // Milestone 5.5.3 continuation — real-browser testing with a
+    // genuinely long line (a real .bib entry, a long \bibitem, a long
+    // comment — not just MANY short lines) found the line-number
+    // gutter drifting out of sync and eventually running out of
+    // numbers before the real end of the source. Root cause:
+    // react-simple-code-editor's own default style sets
+    // `white-space: pre-wrap` on BOTH the textarea and the highlighted
+    // <pre> (confirmed by reading its source — see the aria-label
+    // effect's own comment for why this can only be overridden
+    // imperatively, on the real DOM nodes, not via this component's
+    // own `style` prop). A logical line LONGER than the editor's width
+    // silently wraps into 2+ VISUAL rows — but the gutter lays out its
+    // numbers at a FIXED 20px per LOGICAL line (this editor's own
+    // line-height), correct only when every logical line occupies
+    // exactly one visual row. Once wrapping happens even once, the
+    // gutter's total height (lineCount * 20px) is SMALLER than the
+    // textarea's real scrollable content height, so scrolling to the
+    // true end of the file scrolls the gutter past its own last
+    // number while real text keeps going.
+    //
+    // Fix: disable soft-wrapping entirely — one row per logical line,
+    // always, with horizontal scroll for anything that overflows,
+    // matching how source-code editors (this feature's own explicit
+    // "Overleaf-style" target) handle long lines. This is what makes a
+    // fixed-height-per-line gutter geometrically correct at all. The
+    // existing scroll-sync effect above already transforms the <pre>
+    // by `-el.scrollLeft` too (previously dormant — wrapped content
+    // rarely needed horizontal scroll; now load-bearing).
+    useEffect(() => {
+      if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+      const el = document.getElementById(textareaId) as HTMLTextAreaElement | null;
+      const pre = wrapperRef.current?.querySelector('pre') ?? null;
+      if (el) {
+        el.style.whiteSpace = 'pre';
+        el.style.overflowX = 'auto';
+      }
+      if (pre) {
+        (pre as HTMLElement).style.whiteSpace = 'pre';
+      }
+    }, [textareaId]);
+
     // Milestone 5.5.2 Part 1 — real-browser validation with a document
     // long enough to actually scroll (M5.5.1's own testing never used
     // one) found the root cause of the reported "typed characters don't
@@ -255,6 +350,13 @@ export const LatexCodeEditor = forwardRef<LatexCodeEditorHandle, LatexCodeEditor
       // it's pinned to the wrapper's own left edge and must never
       // shift when a long line scrolls the textarea horizontally.
       const gutter = wrapEl.querySelector('[data-latex-gutter-lines]') as HTMLElement | null;
+      // Milestone 5.5.3 continuation — the persistent error-decoration
+      // layer (below) rides the SAME transform-sync as the gutter: a
+      // fixed-position band computed once from line arithmetic, then
+      // moved vertically by whatever the real scroll offset currently
+      // is — never an independently-scrolling copy of its own, same
+      // discipline as the gutter's own comment already documents.
+      const errorLayer = wrapEl.querySelector('[data-latex-error-lines]') as HTMLElement | null;
       // The <pre> has no `overflow`/fixed-height of its own — it's a
       // plain block sized to its FULL content height (confirmed via
       // real-browser inspection: a long document's <pre> measured
@@ -267,6 +369,7 @@ export const LatexCodeEditor = forwardRef<LatexCodeEditorHandle, LatexCodeEditor
       const sync = (): void => {
         pre.style.transform = `translate(${-el.scrollLeft}px, ${-el.scrollTop}px)`;
         if (gutter) gutter.style.transform = `translateY(${-el.scrollTop}px)`;
+        if (errorLayer) errorLayer.style.transform = `translateY(${-el.scrollTop}px)`;
       };
       sync();
       el.addEventListener('scroll', sync);
@@ -490,6 +593,40 @@ export const LatexCodeEditor = forwardRef<LatexCodeEditorHandle, LatexCodeEditor
           overflow: 'hidden',
         }}
       >
+        {/* Milestone 5.5.3 continuation — PERSISTENT compiler-error
+            decoration (distinct from the temporary flash band below):
+            a whole-line tint + bottom underline for every current
+            error line in THIS file, scroll-synced the same way the
+            gutter is (via `[data-latex-error-lines]`) — never an
+            invented character range, and never left stale: the caller
+            derives `errorLines` fresh from its own compile state on
+            every render, so a successful recompile or a different
+            failed one naturally replaces what's shown here. */}
+        {errorLineMarks.length > 0 && (
+          <div
+            data-latex-error-lines
+            aria-hidden="true"
+            style={{ position: 'absolute', left: 0, right: 0, top: 0, pointerEvents: 'none' }}
+          >
+            {errorLineMarks.map((mark) => (
+              <div
+                key={`error-line-${mark.line}`}
+                title={mark.message}
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  right: 0,
+                  top: mark.top,
+                  height: LINE_HEIGHT_PX,
+                  backgroundColor: theme.dangerSoft,
+                  borderBottomWidth: 2,
+                  borderBottomColor: theme.danger,
+                  borderBottomStyle: 'solid',
+                }}
+              />
+            ))}
+          </div>
+        )}
         {flashRect && (
           <div
             aria-hidden="true"
@@ -531,20 +668,42 @@ export const LatexCodeEditor = forwardRef<LatexCodeEditorHandle, LatexCodeEditor
             pointerEvents: 'none',
           }}
         >
-          <div
-            data-latex-gutter-lines
-            style={{
-              paddingTop: 16,
-              paddingRight: 8,
-              whiteSpace: 'pre',
-              fontSize: 13,
-              fontFamily: theme.fonts.mono,
-              lineHeight: '20px',
-              color: theme.faint,
-              textAlign: 'right',
-            }}
-          >
-            {gutterText}
+          {/* Milestone 5.5.3 continuation — the gutter's own persistent
+              error MARKER (a colored bar at the affected line's own
+              row number) — a sibling of the numbers text, both inside
+              this SAME `data-latex-gutter-lines` wrapper so one
+              transform assignment in the scroll-sync effect moves them
+              together; never a second, independently-tracked copy. */}
+          <div data-latex-gutter-lines style={{ position: 'relative' }}>
+            {errorLineMarks.map((mark) => (
+              <div
+                key={`gutter-mark-${mark.line}`}
+                aria-hidden="true"
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  top: mark.top,
+                  width: 4,
+                  height: LINE_HEIGHT_PX,
+                  backgroundColor: theme.danger,
+                }}
+              />
+            ))}
+            <div
+              data-latex-gutter-numbers
+              style={{
+                paddingTop: CONTENT_PADDING_TOP_PX,
+                paddingRight: 8,
+                whiteSpace: 'pre',
+                fontSize: 13,
+                fontFamily: theme.fonts.mono,
+                lineHeight: `${LINE_HEIGHT_PX}px`,
+                color: theme.faint,
+                textAlign: 'right',
+              }}
+            >
+              {gutterText}
+            </div>
           </div>
         </div>
         <Editor
@@ -554,7 +713,12 @@ export const LatexCodeEditor = forwardRef<LatexCodeEditorHandle, LatexCodeEditor
           disabled={!editable}
           textareaId={textareaId}
           placeholder={placeholder}
-          padding={{ top: 16, right: 16, bottom: 16, left: gutterWidth + 8 }}
+          padding={{
+            top: CONTENT_PADDING_TOP_PX,
+            right: 16,
+            bottom: 16,
+            left: gutterWidth + 8,
+          }}
           tabSize={2}
           // react-simple-code-editor's Props type extends BOTH
           // HTMLAttributes<HTMLDivElement> (its own wrapping div) AND

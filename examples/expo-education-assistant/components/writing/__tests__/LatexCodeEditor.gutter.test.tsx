@@ -69,15 +69,23 @@ function renderEditor(value: string): ReactTestRenderer {
 }
 
 function gutterDiv(renderer: ReactTestRenderer): ReactTestInstance {
-  const [found] = renderer.root.findAll((node) => 'data-latex-gutter-lines' in node.props);
-  if (!found) throw new Error('gutter div not found — did the component structure change?');
+  // Milestone 5.5.3 continuation — the numbers text block itself now
+  // lives one level deeper than the scroll-synced `[data-latex-gutter-
+  // lines]` wrapper (which also holds the persistent error-marker
+  // bands as siblings — see the component's own comment), so this
+  // queries the more specific `data-latex-gutter-numbers` attribute
+  // added for exactly this purpose.
+  const [found] = renderer.root.findAll((node) => 'data-latex-gutter-numbers' in node.props);
+  if (!found) throw new Error('gutter numbers div not found — did the component structure change?');
   return found;
 }
 
 function gutterOuterDiv(renderer: ReactTestRenderer): ReactTestInstance {
-  // The gutter's fixed-width wrapping div, one level up — carries the
-  // `width: gutterWidth` style asserted on below.
-  return gutterDiv(renderer).parent!;
+  // The gutter's fixed-width wrapping div, two levels up: numbers ->
+  // `[data-latex-gutter-lines]` (the scroll-synced wrapper) -> the
+  // fixed-width bordered outer div, which carries the `width:
+  // gutterWidth` style asserted on below.
+  return gutterDiv(renderer).parent!.parent!;
 }
 
 describe('LatexCodeEditor line-number gutter (Milestone 5.5.3)', () => {
