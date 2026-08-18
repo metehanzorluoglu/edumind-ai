@@ -18,6 +18,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 
+from app.core.reference_mode import detect_reference_mode, propose_edum8_switch
 from app.core.security import CurrentUserDep, get_current_user
 from app.core.writing_file_validation import kind_for_extension
 from app.db.models_writing import (
@@ -36,10 +37,15 @@ from app.deps import (
 from app.schemas.writing_files import (
     CreateFolderRequest,
     CreateTextFileRequest,
+    Edum8SwitchProposalResponse,
     GeneratedFileNodeResponse,
     MoveFileRequest,
+    ReferenceKeyResponse,
+    ReferenceModeResponse,
     RenameFileRequest,
     SetRootFileRequest,
+    SwitchToEdum8Request,
+    SwitchToEdum8Response,
     UpdateFileContentRequest,
     WritingProjectFileContentResponse,
     WritingProjectFileMutationResponse,
@@ -125,6 +131,24 @@ def _raise_for_outcome(outcome: str) -> None:
     raise HTTPException(mapped[0], detail=mapped[1])
 
 
+def _edum8_reference_count(
+    user_id: uuid.UUID,
+    project_id: uuid.UUID,
+    writing_projects_repository: WritingProjectsRepositoryDep,
+    documents_repository: DocumentsRepositoryDep,
+) -> int:
+    """Shared by list_files and get_reference_mode — the same "has a
+    usable citation" definition every endpoint here already uses (a
+    reference without a resolvable citation_key doesn't count)."""
+    refs = writing_projects_repository.list_references(user_id, project_id) or []
+    count = 0
+    for ref in refs:
+        record = documents_repository.get_or_create_citation_key(user_id, ref.document_id)
+        if record is not None and record.citation_key:
+            count += 1
+    return count
+
+
 @router.get("/{project_id}/files", response_model=WritingProjectFileTreeResponse)
 def list_files(
     project_id: str,
@@ -144,17 +168,10 @@ def list_files(
     # same live generation the /bibliography and /export endpoints use
     # (app/core/bibtex.export_bibtex over the project's current
     # references), never a stored row (see WritingProjectFile's own
-    # docstring). `export_bibtex`'s own return value is unused here —
-    # only the count is needed for this response — but calling it (not
-    # just counting refs) keeps this in lockstep with the OTHER
-    # endpoints' definition of "has a usable citation" (a reference
-    # without a resolvable citation_key doesn't count).
-    refs = writing_projects_repository.list_references(user.id, project_id_uuid) or []
-    reference_count = 0
-    for ref in refs:
-        record = documents_repository.get_or_create_citation_key(user.id, ref.document_id)
-        if record is not None and record.citation_key:
-            reference_count += 1
+    # docstring).
+    reference_count = _edum8_reference_count(
+        user.id, project_id_uuid, writing_projects_repository, documents_repository
+    )
 
     return WritingProjectFileTreeResponse(
         files=[_node_response(n) for n in tree.nodes],
@@ -165,6 +182,142 @@ def list_files(
         max_files=MAX_FILES_PER_PROJECT,
         max_total_bytes=MAX_PROJECT_TOTAL_STORAGE_BYTES,
     )
+
+
+@router.get("/{project_id}/reference-mode", response_model=ReferenceModeResponse)
+def get_reference_mode(
+    project_id: str,
+    user: CurrentUserDep,
+    files_repository: WritingProjectFilesRepositoryDep,
+    writing_projects_repository: WritingProjectsRepositoryDep,
+    documents_repository: DocumentsRepositoryDep,
+) -> ReferenceModeResponse:
+    """Bibliography Source Detection — how this project ACTUALLY manages
+    its citations/references, inspected fresh on every call from real
+    project content (see app/core/reference_mode.py's own docstring for
+    the full detection algorithm and why EDUM8_REFERENCE_LIBRARY is
+    never assumed just because references.bib exists)."""
+    project_id_uuid = _parse_uuid_or_404(project_id)
+    project = writing_projects_repository.get(user.id, project_id_uuid)
+    if project is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Writing project not found")
+
+    all_content = files_repository.get_all_content(user.id, project_id_uuid) or []
+    text_files = {
+        c.node.path: c.content_text
+        for c in all_content
+        if c.node.kind == "text" and c.content_text is not None
+    }
+    root_node = next((c.node for c in all_content if c.node.id == project.root_file_id), None)
+    # `project.main_tex_content` is kept write-through synced with the
+    # root file's own content_text (see update_text_content's own
+    # docstring) — used as the fallback only for the structurally
+    # impossible case of a root file row that's somehow missing from
+    # `all_content`, never as the primary source.
+    root_path = root_node.path if root_node is not None else "main.tex"
+    root_content = text_files.get(root_path, project.main_tex_content)
+
+    edum8_reference_count = _edum8_reference_count(
+        user.id, project_id_uuid, writing_projects_repository, documents_repository
+    )
+
+    result = detect_reference_mode(
+        root_path=root_path,
+        root_content=root_content,
+        text_files=text_files,
+        edum8_reference_count=edum8_reference_count,
+    )
+
+    switch_proposal = propose_edum8_switch(
+        mode=result.mode, root_path=root_path, root_content=root_content
+    )
+    switch_instructions: str | None = None
+    if result.mode != "edum8_library" and switch_proposal is None:
+        if result.mode == "imported_bib":
+            switch_instructions = (
+                f"Connect EduM8 references to this project, then update the "
+                f"\\bibliography{{...}} command in {root_path} to "
+                f"\\bibliography{{references}}."
+            )
+        else:
+            switch_instructions = (
+                f"This project's bibliography lives in {result.bibliography_source} as "
+                "manual entries. To use EduM8's Reference Library instead, replace that "
+                "content with \\bibliography{references} once your EduM8 references are "
+                "ready — EduM8 will not rewrite manual bibliography entries automatically."
+            )
+
+    return ReferenceModeResponse(
+        mode=result.mode,
+        bibliography_source=result.bibliography_source,
+        citation_key_source=result.citation_key_source,
+        keys=[ReferenceKeyResponse(key=k, title=t) for k, t in result.keys],
+        edum8_available=result.edum8_available,
+        no_key_source_reason=result.no_key_source_reason,
+        edum8_switch_proposal=(
+            Edum8SwitchProposalResponse(
+                file_path=switch_proposal.file_path,
+                find=switch_proposal.find,
+                replace=switch_proposal.replace,
+            )
+            if switch_proposal is not None
+            else None
+        ),
+        edum8_switch_instructions=switch_instructions,
+    )
+
+
+@router.post("/{project_id}/reference-mode/switch-to-edum8", response_model=SwitchToEdum8Response)
+def switch_to_edum8_references(
+    project_id: str,
+    request: SwitchToEdum8Request,
+    user: CurrentUserDep,
+    files_repository: WritingProjectFilesRepositoryDep,
+    writing_projects_repository: WritingProjectsRepositoryDep,
+) -> SwitchToEdum8Response:
+    """Applies EXACTLY the substitution the GET endpoint proposed —
+    never a general "switch to EduM8" action. Re-verifies `find` is
+    still present in the root file's CURRENT content first (409 if not
+    — the file changed since the proposal was shown, never silently
+    applied against stale text) and only ever touches the root file the
+    proposal named (422 if the project's root file has since changed).
+    Never deletes the old `.bib` file — it simply stops being
+    referenced."""
+    project_id_uuid = _parse_uuid_or_404(project_id)
+    project = writing_projects_repository.get(user.id, project_id_uuid)
+    if project is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Writing project not found")
+    if project.root_file_id is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Project has no root file set"
+        )
+
+    node = files_repository.get_node(user.id, project_id_uuid, project.root_file_id)
+    if node is None or node.path != request.file_path:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Target file has changed — refresh and try again",
+        )
+
+    content = files_repository.get_content(user.id, project_id_uuid, project.root_file_id)
+    if content is None or content.content_text is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Not a text file")
+
+    if request.find not in content.content_text:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail="This file has changed since the proposed change was shown — refresh and try again",
+        )
+
+    new_content = content.content_text.replace(request.find, request.replace, 1)
+    outcome = files_repository.update_text_content(
+        user.id, project_id_uuid, project.root_file_id, new_content
+    )
+    if outcome != "ok":
+        _raise_for_outcome(outcome)
+    updated_node = files_repository.get_node(user.id, project_id_uuid, project.root_file_id)
+    assert updated_node is not None
+    return SwitchToEdum8Response(file=_node_response(updated_node))
 
 
 @router.post("/{project_id}/files/folders", response_model=WritingProjectFileMutationResponse)

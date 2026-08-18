@@ -493,3 +493,182 @@ class TestUpdateContent:
         root_id = project["root_file_id"]
         file_resp = client.get(f"/writing-projects/{project['id']}/files/{root_id}")
         assert file_resp.json()["content_text"] == new_content
+
+
+def _set_root_content(client: TestClient, project_id: str, root_id: str, content: str) -> None:
+    resp = client.patch(
+        f"/writing-projects/{project_id}/files/{root_id}", json={"content_text": content}
+    )
+    assert resp.status_code == 200, resp.text
+
+
+class TestReferenceMode:
+    """Bibliography Source Detection — GET .../reference-mode and POST
+    .../reference-mode/switch-to-edum8, route-level (ownership,
+    HTTP-status mapping, end-to-end wiring against real project files
+    created through this same router) — the DETECTION algorithm itself
+    is unit-tested directly against real fixture content in
+    tests/unit/core/test_reference_mode.py; these tests deliberately
+    don't re-litigate that, only that the route wires it up correctly.
+    """
+
+    def test_a_blank_new_project_defaults_to_edum8_library_mode(self, harness) -> None:
+        client, *_ = harness
+        project = _create_project(client)
+        resp = client.get(f"/writing-projects/{project['id']}/reference-mode")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["mode"] == "edum8_library"
+        assert body["bibliography_source"] == "references.bib"
+        assert body["citation_key_source"] == "edum8"
+        assert body["keys"] == []
+        assert body["edum8_available"] is False
+        assert body["edum8_switch_proposal"] is None
+        assert body["edum8_switch_instructions"] is None
+
+    def test_imported_bib_database_is_detected_end_to_end(self, harness) -> None:
+        client, *_ = harness
+        project = _create_project(client)
+        root_id = project["root_file_id"]
+        _set_root_content(
+            client,
+            project["id"],
+            root_id,
+            "\\documentclass{article}\n\\bibliography{mydb}\n\\begin{document}\\end{document}",
+        )
+        _create_text_file(
+            client,
+            project["id"],
+            "mydb.bib",
+            content='@article{smith2020,\n  title = "A Real Title",\n  year = "2020"\n}\n',
+        )
+        resp = client.get(f"/writing-projects/{project['id']}/reference-mode")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["mode"] == "imported_bib"
+        assert body["bibliography_source"] == "mydb.bib"
+        assert body["citation_key_source"] == "bib_file"
+        assert body["keys"] == [{"key": "smith2020", "title": "A Real Title"}]
+        assert body["edum8_switch_proposal"] == {
+            "file_path": "main.tex",
+            "find": "\\bibliography{mydb}",
+            "replace": "\\bibliography{references}",
+        }
+        assert body["edum8_switch_instructions"] is None
+
+    def test_template_tex_bibliography_is_detected_end_to_end(self, harness) -> None:
+        client, *_ = harness
+        project = _create_project(client)
+        root_id = project["root_file_id"]
+        _set_root_content(
+            client,
+            project["id"],
+            root_id,
+            "\\documentclass{book}\n\\begin{document}\n\\include{Bibliography}\n\\end{document}",
+        )
+        _create_text_file(
+            client,
+            project["id"],
+            "Bibliography.tex",
+            content=(
+                "\\begin{thebibliography}{9}\n"
+                "\\bibitem{example1}\nAuthor, A. Title.\n"
+                "\\end{thebibliography}\n"
+            ),
+        )
+        resp = client.get(f"/writing-projects/{project['id']}/reference-mode")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["mode"] == "template_tex"
+        assert body["bibliography_source"] == "Bibliography.tex"
+        assert body["citation_key_source"] == "bibitem"
+        assert [k["key"] for k in body["keys"]] == ["example1"]
+        # No safe automatic rewrite exists for a thebibliography block —
+        # instructions only, never a proposal.
+        assert body["edum8_switch_proposal"] is None
+        assert body["edum8_switch_instructions"] is not None
+        assert "Bibliography.tex" in body["edum8_switch_instructions"]
+
+    def test_another_users_project_404s(self, harness) -> None:
+        client, app, _owner, other = harness
+        project = _create_project(client)
+        _as_user(app, other)
+        resp = client.get(f"/writing-projects/{project['id']}/reference-mode")
+        assert resp.status_code == 404
+
+    def test_switch_to_edum8_applies_exactly_the_proposed_substitution(self, harness) -> None:
+        client, *_ = harness
+        project = _create_project(client)
+        root_id = project["root_file_id"]
+        _set_root_content(
+            client,
+            project["id"],
+            root_id,
+            "\\documentclass{article}\n\\bibliography{mydb}\n\\begin{document}\\end{document}",
+        )
+        _create_text_file(client, project["id"], "mydb.bib", content="@article{x,\ntitle={y}\n}")
+        proposal = client.get(f"/writing-projects/{project['id']}/reference-mode").json()[
+            "edum8_switch_proposal"
+        ]
+        assert proposal is not None
+        resp = client.post(
+            f"/writing-projects/{project['id']}/reference-mode/switch-to-edum8", json=proposal
+        )
+        assert resp.status_code == 200, resp.text
+        updated_content = client.get(f"/writing-projects/{project['id']}/files/{root_id}").json()[
+            "content_text"
+        ]
+        assert "\\bibliography{references}" in updated_content
+        assert "mydb" not in updated_content
+        # The old .bib file is never deleted — it simply stops being
+        # referenced.
+        tree = client.get(f"/writing-projects/{project['id']}/files").json()
+        assert any(f["name"] == "mydb.bib" for f in tree["files"])
+        # Re-checking reference-mode now reports edum8_library.
+        mode_after = client.get(f"/writing-projects/{project['id']}/reference-mode").json()
+        assert mode_after["mode"] == "edum8_library"
+
+    def test_switch_to_edum8_409s_if_the_file_changed_since_the_proposal(self, harness) -> None:
+        client, *_ = harness
+        project = _create_project(client)
+        root_id = project["root_file_id"]
+        _set_root_content(
+            client,
+            project["id"],
+            root_id,
+            "\\documentclass{article}\n\\bibliography{mydb}\n\\begin{document}\\end{document}",
+        )
+        _create_text_file(client, project["id"], "mydb.bib", content="@article{x,\ntitle={y}\n}")
+        proposal = client.get(f"/writing-projects/{project['id']}/reference-mode").json()[
+            "edum8_switch_proposal"
+        ]
+        # The user edits the file themselves before confirming.
+        _set_root_content(
+            client,
+            project["id"],
+            root_id,
+            "\\documentclass{article}\n\\bibliography{somethingelse}\n\\begin{document}\\end{document}",
+        )
+        resp = client.post(
+            f"/writing-projects/{project['id']}/reference-mode/switch-to-edum8", json=proposal
+        )
+        assert resp.status_code == 409
+
+    def test_switch_to_edum8_422s_for_a_stale_file_path(self, harness) -> None:
+        client, *_ = harness
+        project = _create_project(client)
+        resp = client.post(
+            f"/writing-projects/{project['id']}/reference-mode/switch-to-edum8",
+            json={"file_path": "no-such-file.tex", "find": "x", "replace": "y"},
+        )
+        assert resp.status_code == 422
+
+    def test_switch_to_edum8_404s_for_another_users_project(self, harness) -> None:
+        client, app, _owner, other = harness
+        project = _create_project(client)
+        _as_user(app, other)
+        resp = client.post(
+            f"/writing-projects/{project['id']}/reference-mode/switch-to-edum8",
+            json={"file_path": "main.tex", "find": "x", "replace": "y"},
+        )
+        assert resp.status_code == 404

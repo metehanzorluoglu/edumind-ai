@@ -94,6 +94,71 @@ class WritingProjectFileMutationResponse(BaseModel):
     file: WritingProjectFileNodeResponse
 
 
+ReferenceModeType = Literal["edum8_library", "imported_bib", "template_tex", "inline_template"]
+CitationKeySourceType = Literal["edum8", "bib_file", "bibitem", "none"]
+
+
+class ReferenceKeyResponse(BaseModel):
+    """One resolved citation key, deterministically parsed — never an
+    EduM8-invented key. `title` is a best-effort DISPLAY label only
+    (from a real BibTeX `title` field or the text following a
+    `\\bibitem`), never itself used as the key."""
+
+    key: str
+    title: str | None = None
+
+
+class Edum8SwitchProposalResponse(BaseModel):
+    """A safe, single-substitution rewrite EduM8 can apply on explicit
+    user confirmation — see app/core/reference_mode.py's
+    propose_edum8_switch for exactly when this is (and is never)
+    offered."""
+
+    file_path: str
+    find: str
+    replace: str
+
+
+class ReferenceModeResponse(BaseModel):
+    """Bibliography Source Detection — how this project ACTUALLY manages
+    its citations/references right now, detected from real project
+    content (see app/core/reference_mode.py), never assumed from
+    references.bib merely existing (it always does, as a virtual file —
+    GeneratedFileNodeResponse above)."""
+
+    mode: ReferenceModeType
+    bibliography_source: str | None
+    citation_key_source: CitationKeySourceType
+    #: Empty for mode == "edum8_library" — the frontend already has its
+    #: own separately-fetched EduM8 reference list for that case.
+    keys: list[ReferenceKeyResponse]
+    edum8_available: bool
+    no_key_source_reason: str | None = None
+    #: Set only when a SAFE automatic rewrite exists (imported_bib mode
+    #: only). Never set for template_tex/inline_template — those get
+    #: `edum8_switch_instructions` instead.
+    edum8_switch_proposal: Edum8SwitchProposalResponse | None = None
+    #: Set when mode != "edum8_library" and no safe automatic proposal
+    #: exists — human-readable instructions, never an automatic rewrite.
+    edum8_switch_instructions: str | None = None
+
+
+class SwitchToEdum8Request(BaseModel):
+    """Echoes back the EXACT proposal the GET endpoint returned — the
+    apply endpoint re-verifies `find` is still present in the root
+    file's CURRENT content before writing anything, so a proposal
+    computed against stale content can never silently clobber a file
+    the user has since edited."""
+
+    file_path: str = Field(min_length=1)
+    find: str = Field(min_length=1)
+    replace: str = Field(min_length=1)
+
+
+class SwitchToEdum8Response(BaseModel):
+    file: WritingProjectFileNodeResponse
+
+
 class WritingProjectFileErrorResponse(BaseModel):
     """A structured, non-500 outcome for a create/rename/move/delete
     request that failed an ordinary, expected validation rule (Part 5/6/
