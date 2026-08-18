@@ -73,6 +73,17 @@ export interface UseWritingProjectFilesResult {
   deleteFile: (fileId: string) => Promise<void>;
   /** Part 15 — reassigns the project's root/main document. */
   setRootFile: (fileId: string) => Promise<void>;
+  /**
+   * Bibliography Source Detection — re-fetches the CURRENTLY ACTIVE
+   * file's content and replaces the editor buffer with it, for when
+   * something OTHER than this hook's own save loop mutated that file's
+   * content server-side (e.g. useWritingProjectReferenceMode's
+   * applyEdum8Switch, which rewrites a `\bibliography{...}` line
+   * directly). A no-op if there's no active file, or if the local
+   * buffer has unsaved edits (never discards a genuine in-progress
+   * edit — see this function's own implementation comment).
+   */
+  refreshActiveFileContent: () => Promise<void>;
 }
 
 function toAssistantError(error: unknown): EducationAssistantError {
@@ -377,6 +388,32 @@ export function useWritingProjectFiles(
     [client, projectId, refreshTree]
   );
 
+  const refreshActiveFileContent = useCallback(async (): Promise<void> => {
+    const fileId = activeFileIdRef.current;
+    if (!fileId) return;
+    // Never clobber a genuine in-progress edit — only refresh when the
+    // buffer exactly matches what was last saved. A caller invoking
+    // this right after their own out-of-band mutation (the only real
+    // use case today) runs into this window only if the user happened
+    // to be mid-edit in that SAME file at that exact instant; skipping
+    // in that rare case is far safer than silently discarding their
+    // typing.
+    if (contentRef.current !== savedContentRef.current) return;
+    try {
+      const content = await client.getWritingProjectFileContent(projectId, fileId);
+      if (!isMountedRef.current || activeFileIdRef.current !== fileId) return;
+      if (content.file.kind === 'folder') return;
+      const text = content.content_text ?? '';
+      contentRef.current = text;
+      savedContentRef.current = text;
+      setActiveFileContentState(text);
+    } catch {
+      // Best-effort only — a failed refresh just leaves the editor
+      // showing what it already had; the user's next explicit
+      // navigation away and back picks up the real content regardless.
+    }
+  }, [client, projectId]);
+
   return {
     treeState,
     refreshTree,
@@ -396,5 +433,6 @@ export function useWritingProjectFiles(
     moveFile,
     deleteFile,
     setRootFile,
+    refreshActiveFileContent,
   };
 }

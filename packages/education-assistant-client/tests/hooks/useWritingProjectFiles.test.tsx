@@ -302,4 +302,65 @@ describe('useWritingProjectFiles', () => {
     await act(() => result.current.openFile('folder-1'));
     expect(result.current.activeFileLoadState.status).toBe('error');
   });
+
+  describe('refreshActiveFileContent()', () => {
+    it('replaces the active buffer with freshly-fetched content when nothing is unsaved', async () => {
+      const listWritingProjectFiles = vi.fn().mockResolvedValue(makeTree());
+      const getWritingProjectFileContent = vi
+        .fn()
+        .mockResolvedValueOnce({ file: makeNode(), content_text: '\\bibliography{mydb}' })
+        .mockResolvedValueOnce({ file: makeNode(), content_text: '\\bibliography{references}' });
+      const client = {
+        listWritingProjectFiles,
+        getWritingProjectFileContent,
+      } as unknown as EducationAssistantClient;
+      const { result } = renderHook(() => useWritingProjectFiles(client, 'w1'));
+      await waitFor(() => expect(result.current.activeFileContent).toBe('\\bibliography{mydb}'));
+
+      await act(() => result.current.refreshActiveFileContent());
+
+      expect(result.current.activeFileContent).toBe('\\bibliography{references}');
+      expect(result.current.activeFileSaveStatus).not.toBe('editing');
+    });
+
+    it('never overwrites a genuine unsaved edit', async () => {
+      const listWritingProjectFiles = vi.fn().mockResolvedValue(makeTree());
+      const getWritingProjectFileContent = vi
+        .fn()
+        .mockResolvedValue({ file: makeNode(), content_text: 'original' });
+      const client = {
+        listWritingProjectFiles,
+        getWritingProjectFileContent,
+      } as unknown as EducationAssistantClient;
+      // A long autosaveDelayMs so the debounced PATCH never actually
+      // fires during this test — the buffer stays genuinely diverged
+      // from `savedContentRef` for the whole test, which is exactly the
+      // "unsaved edit in progress" condition being asserted on.
+      const { result } = renderHook(() =>
+        useWritingProjectFiles(client, 'w1', { autosaveDelayMs: 60_000 })
+      );
+      await waitFor(() => expect(result.current.activeFileContent).toBe('original'));
+
+      act(() => result.current.setActiveFileContent('the user is mid-typing'));
+      expect(result.current.activeFileContent).toBe('the user is mid-typing');
+
+      await act(() => result.current.refreshActiveFileContent());
+
+      // The in-progress edit is untouched — never silently discarded.
+      expect(result.current.activeFileContent).toBe('the user is mid-typing');
+    });
+
+    it('is a no-op when there is no active file', async () => {
+      const getWritingProjectFileContent = vi.fn();
+      const client = {
+        listWritingProjectFiles: vi.fn().mockResolvedValue({ ...makeTree(), root_file_id: null, files: [] }),
+        getWritingProjectFileContent,
+      } as unknown as EducationAssistantClient;
+      const { result } = renderHook(() => useWritingProjectFiles(client, 'w1'));
+      await waitFor(() => expect(result.current.treeState.status).toBe('success'));
+
+      await act(() => result.current.refreshActiveFileContent());
+      expect(getWritingProjectFileContent).not.toHaveBeenCalled();
+    });
+  });
 });

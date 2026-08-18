@@ -221,6 +221,7 @@ export default function WritingProjectEditorScreen() {
     moveFile,
     deleteFile,
     setRootFile,
+    refreshActiveFileContent,
   } = filesHook;
   const isActiveFileEditable = activeFileNode?.kind === 'text';
   const content = isActiveFileEditable ? activeFileContent : '';
@@ -716,6 +717,25 @@ export default function WritingProjectEditorScreen() {
     loadBibliography();
   }
 
+  // Bibliography Source Detection — applyEdum8Switch() rewrites the
+  // root file's `\bibliography{...}` line directly, server-side,
+  // out-of-band from this screen's own editor save loop. If the root
+  // file happens to be the one currently open in the editor, its local
+  // buffer would otherwise keep showing the OLD `\bibliography{...}`
+  // line — a real risk (found via real-browser testing, not assumed):
+  // the next autosave would silently overwrite the just-applied change
+  // right back to the old text. refreshActiveFileContent() re-fetches
+  // and replaces the buffer (never discarding a genuine unsaved edit —
+  // see its own docstring), so this only ever needs to run when the
+  // switch actually touched what's currently open.
+  async function handleSwitchToEdum8References(): Promise<unknown> {
+    const result = await applyEdum8Switch();
+    if (activeFileNode?.is_root) {
+      await refreshActiveFileContent();
+    }
+    return result;
+  }
+
   // Milestone 5.3 Part 10/11 — a safe, bounded project-asset upload.
   // Reuses the exact web/native DocumentPicker split Documents' own
   // upload flow established (see lib/writingFileUpload.ts's docstring);
@@ -1097,7 +1117,7 @@ export default function WritingProjectEditorScreen() {
             onViewBibliography={handleOpenBibliography}
             onOpenSource={handleOpenReferenceSource}
             referenceMode={referenceModeState.status === 'success' ? referenceModeState.data : null}
-            onSwitchToEdum8={applyEdum8Switch}
+            onSwitchToEdum8={handleSwitchToEdum8References}
           />
         </View>
         <View style={[styles.panelBodyPadded, { display: panelTab === 'notes' ? 'flex' : 'none' }]}>
