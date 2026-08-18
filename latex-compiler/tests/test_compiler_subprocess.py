@@ -100,6 +100,46 @@ async def test_bibtex_finds_a_project_bst_file_nested_in_a_subdirectory(tmp_path
     assert not any("citation" in d.message.lower() for d in outcome.diagnostics)
 
 
+async def test_bibtex_resolves_citations_against_a_real_imported_bib_file_by_its_own_name(
+    tmp_path,
+):
+    """M5.5.3 final acceptance Part 6/11/12 — audit finding, locked in as
+    a regression test: a project in imported_bib mode (the Springer
+    Nature fixture's own sn-bibliography.bib is the real case) has its
+    real .bib database delivered via `extra_files` under its OWN real
+    name — rag-backend's compile endpoint always sends `references_bib`
+    as EduM8's own generated bibliography (empty for a project with zero
+    EduM8 project references, exactly this fixture's real state), never
+    the project's actual imported .bib content. `\\bibliography{X}`
+    asks bibtex to open "X.bib" specifically — if a caller (a test, or
+    a hypothetical future code path) ever routed a real imported .bib's
+    content through the `references_bib` parameter instead of
+    `extra_files`, it would land at the wrong filename ("references.bib"
+    instead of "X.bib") and bibtex would fail with "I couldn't open
+    database file X.bib" — reproduced directly during this milestone's
+    own audit. This test proves the CORRECT path (extra_files, own
+    name) resolves cleanly, with an EMPTY references_bib (matching a
+    project with no EduM8 references) so success can only mean the
+    extra_files-delivered database was actually used."""
+    settings = _settings(working_root=str(tmp_path))
+    main_tex = (
+        "\\documentclass{article}\n\\begin{document}\nSee \\cite{Smith2020}.\n"
+        "\\bibliographystyle{plain}\n\\bibliography{sn-bibliography}\n\\end{document}\n"
+    )
+    bib = (
+        "@article{Smith2020, author={Smith, John}, title={A Paper}, "
+        "journal={J}, year={2020}}\n"
+    )
+    outcome = await run_compile_job(
+        main_tex=main_tex,
+        references_bib="",  # EduM8's own bibliography — empty, as for a project with 0 EduM8 references
+        settings=settings,
+        extra_files={"sn-bibliography.bib": bib.encode("utf-8")},
+    )
+    assert outcome.status == "success"
+    assert not any("undefined" in d.message.lower() for d in outcome.diagnostics)
+
+
 async def test_shell_escape_never_executes(tmp_path):
     settings = _settings(working_root=str(tmp_path))
     marker = tmp_path / "PWNED"
