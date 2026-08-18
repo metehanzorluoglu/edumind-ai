@@ -159,9 +159,10 @@ describe('WritingFileTree scroll restoration (Milestone 5.5.3)', () => {
     const key = 'writing-filetree-scroll:proj-3';
     const renderer = renderTree(baseProps({ scrollRestoreKey: key }));
 
-    const folderRow = renderer.root.findAll(
+    const [folderRow] = renderer.root.findAll(
       (node) => node.props.accessibilityLabel === 'Folder chapters, collapsed'
-    )[0];
+    );
+    if (!folderRow) throw new Error('folder row not found — did the accessibility label change?');
     act(() => {
       folderRow.props.onPress();
     });
@@ -177,7 +178,7 @@ describe('WritingFileTree scroll restoration (Milestone 5.5.3)', () => {
     // The restored folder should now be expanded, so its child file row
     // ("intro.tex") is present in the flattened row list.
     const introRow = renderer2.root.findAll(
-      (node) => node.type === 'Text' && node.children.includes('intro.tex')
+      (node) => String(node.type) === 'Text' && node.children.includes('intro.tex')
     );
     expect(introRow.length).toBeGreaterThan(0);
   });
