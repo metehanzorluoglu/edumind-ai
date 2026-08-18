@@ -16,6 +16,51 @@ export interface WritingProjectImportPanelProps {
 }
 
 /**
+ * M5.5.3 continuation Part 14 — a real academic-template ZIP (the
+ * Springer Nature journal fixture is the concrete case: many `.eps`
+ * figures the compiler can't safely rasterize, per this milestone's own
+ * EPS audit) can produce a dozen+ individually-identical warnings
+ * ("Unsupported file type — not imported", once per file). Rendering
+ * one full-size yellow Notice card per file made the review step an
+ * unreadable wall of repeated cards. Warnings whose `reason` text is
+ * one of these known, generic, per-file-identical messages are grouped
+ * into a single card ("Unsupported files (2)" + a bulleted path list).
+ * A warning whose reason ISN'T in this list (e.g. the much longer,
+ * scenario-specific "references.bib is reserved..." explanation) is
+ * always unique enough that grouping would only lose information, so
+ * it renders standalone with its full explanatory body, unchanged from
+ * before this milestone.
+ */
+const _GROUPABLE_WARNING_REASONS: readonly { reason: string; label: string }[] = [
+  { reason: 'Unsupported file type — not imported', label: 'Unsupported files' },
+  { reason: 'File is empty — not imported', label: 'Empty files' },
+  { reason: 'File is not valid UTF-8 text — not imported', label: 'Files with invalid text encoding' },
+  { reason: 'Repository metadata is not imported by EduM8.', label: 'Repository metadata not imported' },
+];
+
+export function groupImportWarnings(warnings: { path: string; reason: string }[]): {
+  groups: { label: string; paths: string[] }[];
+  standalone: { path: string; reason: string }[];
+} {
+  const groupsByLabel = new Map<string, { label: string; paths: string[] }>();
+  const standalone: { path: string; reason: string }[] = [];
+  for (const w of warnings) {
+    const known = _GROUPABLE_WARNING_REASONS.find((g) => g.reason === w.reason);
+    if (!known) {
+      standalone.push(w);
+      continue;
+    }
+    const existing = groupsByLabel.get(known.label);
+    if (existing) {
+      existing.paths.push(w.path);
+    } else {
+      groupsByLabel.set(known.label, { label: known.label, paths: [w.path] });
+    }
+  }
+  return { groups: [...groupsByLabel.values()], standalone };
+}
+
+/**
  * Milestone 5.4 (LaTeX Templates & Project Import) Part 5/9/14 — the
  * ZIP-import flow's UI: pick a .zip -> inspect (server-side security
  * pipeline) -> review the detected files/root/warnings -> confirm.
@@ -171,11 +216,23 @@ export function WritingProjectImportPanel({ onCreated, onCancel }: WritingProjec
     inspection.preselected_root === null && inspection.root_candidates.length > 1;
   const canConfirm = title.trim().length > 0 && (!needsRootChoice || rootPath !== null);
 
+  const { groups: warningGroups, standalone: standaloneWarnings } = groupImportWarnings(
+    inspection.warnings
+  );
+
   return (
     <View style={styles.previewWrap}>
       {inspection.warnings.length > 0 && (
         <View style={styles.warningsList}>
-          {inspection.warnings.map((w) => (
+          {warningGroups.map((g) => (
+            <Notice
+              key={g.label}
+              tone="warning"
+              title={`${g.label} (${g.paths.length})`}
+              body={g.paths.map((p) => `• ${p}`).join('\n')}
+            />
+          ))}
+          {standaloneWarnings.map((w) => (
             <Notice key={w.path} tone="warning" title={w.path} body={w.reason} />
           ))}
         </View>
