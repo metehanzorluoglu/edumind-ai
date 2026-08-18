@@ -468,6 +468,72 @@ describe('WritingProjectEditorScreen', () => {
     expect(editorAfter.props.value).toContain('\\cite{Doe2020Laser}');
   });
 
+  it('inserts an imported-bibliography citation (reference-mode key, not an EduM8 project reference) at the cursor (M5.5.3 final acceptance)', async () => {
+    // Real-world regression: a project in imported_bib mode (the
+    // Springer Nature fixture's own sn-bibliography.bib) lists its keys
+    // via reference-mode, not via EduM8 project references — this is
+    // the OTHER "Insert citation" source (ReferencesPanel's own
+    // bibliography-entries section), a distinct code path from the
+    // "Insert citation for Doe (2020)" test above (an EduM8 project
+    // reference), closing the gap between that test and
+    // ReferencesPanel.bibliographyEntries.test.tsx's own component-level
+    // "calls onInsertCitation with the right key" coverage — this one
+    // proves the SAME editor caret/focus/value-update behavior for the
+    // imported-bib source specifically, end to end.
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute([]),
+      {
+        method: 'GET',
+        matches: (u) => u.endsWith('/writing-projects/w-1/reference-mode'),
+        respond: () =>
+          jsonResponse({
+            mode: 'imported_bib',
+            bibliography_source: 'sn-bibliography.bib',
+            citation_key_source: 'bib_file',
+            keys: [{ key: 'bib1', title: 'The index of general nonlinear DAES' }],
+            edum8_available: false,
+            no_key_source_reason: null,
+            edum8_switch_proposal: null,
+            edum8_switch_instructions: null,
+          }),
+      },
+      patchFileRoute(),
+    ]);
+
+    act(() => {
+      findPressableByLabel(renderer.root, 'References').props.onPress();
+    });
+    expect(findByTextIncluding(renderer.root, 'The index of general nonlinear DAES')).toBeTruthy();
+
+    act(() => {
+      findPressableByLabel(renderer.root, 'Editor').props.onPress();
+    });
+    const editorBefore = findLatexEditor(renderer.root);
+    act(() => {
+      editorBefore.props.onSelectionChange({
+        start: editorBefore.props.value.length,
+        end: editorBefore.props.value.length,
+      });
+    });
+
+    act(() => {
+      findPressableByLabel(renderer.root, 'References').props.onPress();
+    });
+    act(() => {
+      findPressableByLabel(
+        renderer.root,
+        'Insert citation for The index of general nonlinear DAES'
+      ).props.onPress();
+    });
+
+    act(() => {
+      findPressableByLabel(renderer.root, 'Editor').props.onPress();
+    });
+    const editorAfter = findLatexEditor(renderer.root);
+    expect(editorAfter.props.value).toContain('\\cite{bib1}');
+  });
+
   it('References search filters the list, and "Open source" navigates to the Reader (Milestone 5.5 Part 15)', async () => {
     const SECOND_REFERENCE = {
       ...REFERENCE,
