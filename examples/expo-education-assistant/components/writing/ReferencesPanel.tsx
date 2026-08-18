@@ -137,98 +137,113 @@ export function ReferencesPanel({
 
   return (
     <View style={styles.container}>
-      <ReferenceModeCard referenceMode={referenceMode} onSwitchToEdum8={onSwitchToEdum8} />
+      {/* M5.5.3 final acceptance — real reproduction with the 13-entry
+          Springer Nature bibliography: this ScrollView previously
+          wrapped ONLY the project-references list at the bottom
+          (visibleReferences.map below); ReferenceModeCard and the
+          "Bibliography entries" list — the actual content a project
+          in imported_bib/template_tex/inline_template mode has, and
+          exactly what was unreachable in the real repro — sat OUTSIDE
+          it as un-scrolled siblings, so they simply grew the whole
+          container's height past the viewport with nothing to clip or
+          scroll it. Everything now shares ONE scroll region — mode
+          card, bibliography entries, toolbar, search, View BibTeX,
+          the unresolved-citations warning, the selection bar, and the
+          project-references list — matching what the spec's own
+          worked layout and the "must be able to scroll to reach: ...
+          Add / Select controls" requirement both call for. */}
+      <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
+        <ReferenceModeCard referenceMode={referenceMode} onSwitchToEdum8={onSwitchToEdum8} />
 
-      {showBibliographyEntries && referenceMode && (
-        <View style={styles.bibEntriesSection}>
-          <Text style={styles.bibEntriesLabel}>
-            Bibliography entries ({referenceMode.keys.length})
-          </Text>
-          <View style={styles.bibEntriesList}>
-            {referenceMode.keys.map((entry) => (
-              <View key={entry.key} style={styles.bibEntryRow}>
-                <View style={styles.bibEntryBody}>
-                  <Text style={styles.bibEntryTitle} numberOfLines={1}>
-                    {entry.title ?? entry.key}
-                  </Text>
-                  <Text style={styles.bibEntryKey} numberOfLines={1}>
-                    {entry.key}
-                  </Text>
+        {showBibliographyEntries && referenceMode && (
+          <View style={styles.bibEntriesSection}>
+            <Text style={styles.bibEntriesLabel}>
+              Bibliography entries ({referenceMode.keys.length})
+            </Text>
+            <View style={styles.bibEntriesList}>
+              {referenceMode.keys.map((entry) => (
+                <View key={entry.key} style={styles.bibEntryRow}>
+                  <View style={styles.bibEntryBody}>
+                    <Text style={styles.bibEntryTitle} numberOfLines={1}>
+                      {entry.title ?? entry.key}
+                    </Text>
+                    <Text style={styles.bibEntryKey} numberOfLines={1}>
+                      {entry.key}
+                    </Text>
+                  </View>
+                  <Pressable
+                    onPress={() => onInsertCitation(entry.key)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Insert citation for ${entry.title ?? entry.key}`}
+                    hitSlop={6}
+                  >
+                    <Text style={styles.actionText}>Insert citation</Text>
+                  </Pressable>
                 </View>
-                <Pressable
-                  onPress={() => onInsertCitation(entry.key)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Insert citation for ${entry.title ?? entry.key}`}
-                  hitSlop={6}
-                >
-                  <Text style={styles.actionText}>Insert citation</Text>
-                </Pressable>
-              </View>
-            ))}
+              ))}
+            </View>
+          </View>
+        )}
+
+        <View style={styles.toolbar}>
+          <Text style={styles.count}>
+            {references.length} {references.length === 1 ? 'reference' : 'references'}
+          </Text>
+          <View style={styles.toolbarActions}>
+            <Button label="+ Add" variant="secondary" size="sm" onPress={onAddReferences} />
+            <Button
+              label={selectMode ? 'Cancel' : 'Select'}
+              variant="ghost"
+              size="sm"
+              disabled={references.length === 0}
+              onPress={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
+            />
           </View>
         </View>
-      )}
 
-      <View style={styles.toolbar}>
-        <Text style={styles.count}>
-          {references.length} {references.length === 1 ? 'reference' : 'references'}
-        </Text>
-        <View style={styles.toolbarActions}>
-          <Button label="+ Add" variant="secondary" size="sm" onPress={onAddReferences} />
+        {references.length > 0 && (
+          <TextField
+            label="Search references"
+            value={searchText}
+            onChangeText={setSearchText}
+            placeholder="Search title, author, or filename…"
+          />
+        )}
+
+        {references.length > 0 && (
           <Button
-            label={selectMode ? 'Cancel' : 'Select'}
+            label="View BibTeX"
             variant="ghost"
             size="sm"
-            disabled={references.length === 0}
-            onPress={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
+            onPress={onViewBibliography}
+            style={styles.bibtexButton}
           />
-        </View>
-      </View>
+        )}
 
-      {references.length > 0 && (
-        <TextField
-          label="Search references"
-          value={searchText}
-          onChangeText={setSearchText}
-          placeholder="Search title, author, or filename…"
-        />
-      )}
-
-      {references.length > 0 && (
-        <Button
-          label="View BibTeX"
-          variant="ghost"
-          size="sm"
-          onPress={onViewBibliography}
-          style={styles.bibtexButton}
-        />
-      )}
-
-      {missingCitationKeys.length > 0 && (
-        <Notice
-          tone="warning"
-          title="Unresolved citations"
-          body={missingCitationKeys
-            .map((key) => `Citation key '${key}' is not in this project's references.`)
-            .join('\n')}
-        />
-      )}
-      {removeError && <Notice tone="danger" body={removeError} />}
-
-      {selectMode && (
-        <View style={styles.selectionBar}>
-          <Text style={styles.selectionText}>{selectedOrder.length} selected</Text>
-          <Button
-            label="Insert citations"
-            variant="primary"
-            size="sm"
-            disabled={selectedOrder.length === 0}
-            onPress={handleInsertSelected}
+        {missingCitationKeys.length > 0 && (
+          <Notice
+            tone="warning"
+            title="Unresolved citations"
+            body={missingCitationKeys
+              .map((key) => `Citation key '${key}' is not in this project's references.`)
+              .join('\n')}
           />
-        </View>
-      )}
+        )}
+        {removeError && <Notice tone="danger" body={removeError} />}
 
-      <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
+        {selectMode && (
+          <View style={styles.selectionBar}>
+            <Text style={styles.selectionText}>{selectedOrder.length} selected</Text>
+            <Button
+              label="Insert citations"
+              variant="primary"
+              size="sm"
+              disabled={selectedOrder.length === 0}
+              onPress={handleInsertSelected}
+            />
+          </View>
+        )}
+
         {loading && <ActivityIndicator color={theme.accent} style={styles.spinner} />}
         {!loading && loadError && <Notice tone="danger" body={loadError} />}
         {!loading && !loadError && references.length === 0 && (
@@ -319,7 +334,12 @@ export function ReferencesPanel({
 
 function buildStyles(theme: Theme) {
   return StyleSheet.create({
-    container: { flex: 1, gap: 10 },
+    // M5.5.3 final acceptance — minHeight: 0 on BOTH this and `list`
+    // below is load-bearing, not decorative: without it this panel's
+    // own ScrollView (list) never actually gets a bounded height to
+    // scroll within — it just grows to fit all content, same root
+    // cause as [id].tsx's own panelBodyPadded fix this pairs with.
+    container: { flex: 1, minHeight: 0, gap: 10 },
     bibEntriesSection: { gap: 6 },
     bibEntriesLabel: { fontSize: 12, fontFamily: theme.fonts.bodySemibold, color: theme.faint },
     bibEntriesList: { gap: 2 },
@@ -349,7 +369,7 @@ function buildStyles(theme: Theme) {
       paddingVertical: 8,
     },
     selectionText: { fontSize: 12, fontFamily: theme.fonts.bodySemibold, color: theme.accent },
-    list: { flex: 1 },
+    list: { flex: 1, minHeight: 0 },
     listContent: { gap: 2, paddingBottom: 12 },
     emptyText: {
       fontSize: 13,

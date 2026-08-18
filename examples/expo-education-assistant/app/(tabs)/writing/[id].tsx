@@ -1944,8 +1944,26 @@ function buildStyles(theme: Theme) {
     // tab's state — most importantly Ask EduM8's live conversation —
     // survives closing and reopening.
     panelHidden: { display: 'none' },
-    panelInner: { flex: 1, minWidth: 0 },
-    panelBodyPadded: { flex: 1, padding: 20 },
+    panelInner: { flex: 1, minWidth: 0, minHeight: 0 },
+    // M5.5.3 final acceptance — real reproduction with the 13-entry
+    // Springer Nature bibliography: this row (shared by the Files,
+    // References, and Notes tabs) had `flex: 1` but no `minHeight: 0`.
+    // On web, a flex item's default `min-height: auto` means it never
+    // shrinks below its OWN CONTENT's natural height, so it grows to
+    // fit everything instead of being clipped to the space actually
+    // available — the classic "flex container + child without
+    // minHeight:0 + nested overflow content" bug class this codebase
+    // already names elsewhere (see panelAskWrap below, which already
+    // has this). Confirmed via direct DOM measurement: with 13
+    // bibliography entries, every ancestor in the chain reported
+    // `overflowY: visible`, none scrollable, and bib11-13 plus the
+    // bottom controls were simply unreachable — not hidden, just
+    // rendered past the bottom of a container nothing ever clipped or
+    // scrolled. Files' own WritingFileTree happens to manage its own
+    // scroll region robustly enough to mostly mask this same missing
+    // constraint; References (ReferencesPanel's own `container`/`list`
+    // — see that file) and Notes do not.
+    panelBodyPadded: { flex: 1, minHeight: 0, padding: 20 },
     // The Ask EduM8 tab is full-bleed (AskEduM8Panel owns its own
     // internal padding/scroll regions), unlike the other three tabs.
     panelAskWrap: { flex: 1, minHeight: 0 },
