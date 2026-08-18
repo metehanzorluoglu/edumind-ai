@@ -7,6 +7,7 @@ the built Docker image, as the authoritative validation of this exact
 code path)."""
 
 import shutil
+import subprocess
 
 import pytest
 
@@ -51,6 +52,52 @@ async def test_citation_resolves_with_bibtex(tmp_path):
     outcome = await run_compile_job(main_tex=main_tex, references_bib=bib, settings=settings)
     assert outcome.status == "success"
     assert not any("undefined" in d.message.lower() for d in outcome.diagnostics)
+
+
+async def test_bibtex_finds_a_project_bst_file_nested_in_a_subdirectory(tmp_path):
+    """M5.5.3 continuation Part 15/16 — real-world reproduction: the
+    Springer Nature journal fixture ships its many `.bst` citation-style
+    files one level down, in a "bst/" subfolder next to the root .tex,
+    not as a direct sibling (unlike every `.cls`/`.sty` case this
+    compiler had previously been exercised against). Direct reproduction
+    against a running dev stack confirmed bibtex failed with "I couldn't
+    open style file <name>.bst" before _job_env() gave BSTINPUTS a
+    recursive "." entry — this test locks that fix in without needing a
+    live dev stack. Uses a real system-installed plain.bst's own bytes
+    (copied into extra_files under a name no system texmf tree has:
+    "no_such_style_in_system_texmf") so success can ONLY come from the
+    project's own subdirectory copy being found, never a same-named
+    system style silently masking a still-broken lookup."""
+    try:
+        located = subprocess.run(
+            ["kpsewhich", "plain.bst"], capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        located = None
+    if located is None or located.returncode != 0 or not located.stdout.strip():
+        pytest.skip("plain.bst not found via kpsewhich in this environment")
+    bst_bytes = open(located.stdout.strip(), "rb").read()
+
+    settings = _settings(working_root=str(tmp_path))
+    main_tex = (
+        "\\documentclass{article}\n\\begin{document}\nSee \\cite{Smith2020}.\n"
+        "\\bibliographystyle{no_such_style_in_system_texmf}\n"
+        "\\bibliography{references}\n\\end{document}\n"
+    )
+    bib = (
+        "@article{Smith2020, author={Smith, John}, title={A Paper}, "
+        "journal={J}, year={2020}}\n"
+    )
+    outcome = await run_compile_job(
+        main_tex=main_tex,
+        references_bib=bib,
+        settings=settings,
+        extra_files={"bst/no_such_style_in_system_texmf.bst": bst_bytes},
+    )
+    assert not any("couldn't open style file" in d.message.lower() for d in outcome.diagnostics)
+    assert "couldn't open style file" not in (outcome.log_excerpt or "").lower()
+    assert outcome.status == "success"
+    assert not any("citation" in d.message.lower() for d in outcome.diagnostics)
 
 
 async def test_shell_escape_never_executes(tmp_path):

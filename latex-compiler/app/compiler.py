@@ -90,6 +90,29 @@ class CompileOutcome:
 def _job_env(workdir: Path) -> dict[str, str]:
     env = dict(_BASE_ENV)
     env["HOME"] = str(workdir)
+    # M5.5.3 continuation — real-world finding from the Springer Nature
+    # journal fixture: its many `.bst` citation-style files ship nested
+    # one level down, in a "bst/" subfolder next to the root .tex, not
+    # as a direct sibling (unlike every `.cls`/`.sty` case seen so far).
+    # kpathsea's stock texmf.cnf gives BSTINPUTS a bare "." entry for
+    # the working directory — NOT recursive — so bibtex genuinely could
+    # not find `bst/sn-basic.bst` from a plain `\bibliographystyle
+    # {sn-basic}` (confirmed by direct reproduction: "I couldn't open
+    # style file sn-basic.bst"). The trailing "//" here means "this
+    # directory AND all its subdirectories"; the trailing bare ":"
+    # means "then fall through to the compiled-in default path" (so
+    # texmf-installed styles keep resolving exactly as before). This
+    # only widens the search *within* the job's own already-jailed
+    # workdir (still confined by safe_relative_path() at write time and
+    # by kpathsea's own openin_any=p for pdflatex) — no new directory
+    # outside the sandbox becomes reachable. BIBINPUTS/TEXINPUTS get the
+    # identical treatment for the same reason, even though no real
+    # fixture has needed it yet for `.bib`/`.cls`/`.sty` specifically —
+    # keeping all three consistent avoids this exact bug recurring for
+    # whichever one a future real template happens to nest first.
+    env["BSTINPUTS"] = ".//:"
+    env["BIBINPUTS"] = ".//:"
+    env["TEXINPUTS"] = ".//:"
     return env
 
 
