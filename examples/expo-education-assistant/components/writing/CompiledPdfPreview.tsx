@@ -6,6 +6,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { IconButton } from '@/components/ui/IconButton';
@@ -149,38 +150,20 @@ export function CompiledPdfPreview({
           <Text style={styles.staleBannerText}>Source changed since last compile</Text>
         </View>
       )}
-      <View style={styles.zoomBar}>
-        <IconButton
-          label="Zoom out"
-          icon={<Text style={styles.zoomGlyph}>−</Text>}
-          size="sm"
-          variant="outline"
-          disabled={scale <= MIN_SCALE}
-          onPress={() => setScale((s) => Math.max(MIN_SCALE, s - SCALE_STEP))}
-        />
-        <Text style={styles.zoomLabel}>{Math.round(scale * 100)}%</Text>
-        <IconButton
-          label="Zoom in"
-          icon={<Text style={styles.zoomGlyph}>+</Text>}
-          size="sm"
-          variant="outline"
-          disabled={scale >= MAX_SCALE}
-          onPress={() => setScale((s) => Math.min(MAX_SCALE, s + SCALE_STEP))}
-        />
-        <Pressable
-          onPress={() => {
-            if (containerWidth && basePageWidthRef.current) {
-              const available = Math.max(200, containerWidth - PAGE_HORIZONTAL_PADDING_PX);
-              setScale(Math.min(MAX_SCALE, available / basePageWidthRef.current));
-            }
-          }}
-          accessibilityRole="button"
-          accessibilityLabel="Fit width"
-          style={styles.fitWidthButton}
-        >
-          <Text style={styles.fitWidthText}>Fit width</Text>
-        </Pressable>
-      </View>
+      <PdfZoomBar
+        scale={scale}
+        minScale={MIN_SCALE}
+        maxScale={MAX_SCALE}
+        onZoomOut={() => setScale((s) => Math.max(MIN_SCALE, s - SCALE_STEP))}
+        onZoomIn={() => setScale((s) => Math.min(MAX_SCALE, s + SCALE_STEP))}
+        onSetScale={setScale}
+        onFitWidth={() => {
+          if (containerWidth && basePageWidthRef.current) {
+            const available = Math.max(200, containerWidth - PAGE_HORIZONTAL_PADDING_PX);
+            setScale(Math.min(MAX_SCALE, available / basePageWidthRef.current));
+          }
+        }}
+      />
 
       {status === 'error' && (
         <View style={styles.centerFill}>
@@ -210,6 +193,167 @@ export function CompiledPdfPreview({
       )}
     </View>
   );
+}
+
+/**
+ * M5.5.3 continuation Part 8 — the zoom bar's direct-percentage-entry
+ * interaction, extracted into its own presentational component (no PDF/
+ * canvas logic of its own) so it can be unit-tested directly: reaching
+ * `CompiledPdfPreview`'s own `status === 'success'` branch requires a
+ * real `document.createElement('canvas')` call this monorepo's jest
+ * environment (react-native's own jest-preset, not jsdom) has no
+ * substitute for — see CompiledPdfPreview.test.tsx's own docstring for
+ * why that file deliberately never exercises `pdfBlob !== null`. This
+ * component has no such dependency, so its own test file can render it
+ * standalone with plain numeric props.
+ */
+export function PdfZoomBar({
+  scale,
+  minScale,
+  maxScale,
+  onZoomOut,
+  onZoomIn,
+  onFitWidth,
+  onSetScale,
+}: {
+  scale: number;
+  minScale: number;
+  maxScale: number;
+  onZoomOut: () => void;
+  onZoomIn: () => void;
+  onFitWidth: () => void;
+  /** Applies a validated, already-clamped scale (0–1 fraction, not a
+   * percentage) chosen via direct percentage entry. */
+  onSetScale: (scale: number) => void;
+}) {
+  const theme = useTheme();
+  const styles = useMemo(() => buildZoomBarStyles(theme), [theme]);
+  // A separate string buffer (not derived from `scale` while editing)
+  // so a user can freely type/backspace through an intermediate
+  // invalid state ("1", "15", "150") without it being clamped/rejected
+  // mid-keystroke — validation only happens at commit (Enter/blur).
+  const [editingZoom, setEditingZoom] = useState(false);
+  const [zoomInputValue, setZoomInputValue] = useState('');
+  // Removing the TextInput from the tree (editingZoom -> false) fires
+  // its own blur as part of unmounting — without this guard, an
+  // Escape-triggered cancel would immediately be followed by onBlur
+  // re-committing the very value Escape was meant to discard.
+  const suppressNextBlurCommitRef = useRef(false);
+
+  function beginEditingZoom(): void {
+    setZoomInputValue(String(Math.round(scale * 100)));
+    setEditingZoom(true);
+  }
+
+  function commitZoomInput(): void {
+    if (suppressNextBlurCommitRef.current) {
+      suppressNextBlurCommitRef.current = false;
+      setEditingZoom(false);
+      return;
+    }
+    const parsed = Number(zoomInputValue.trim());
+    // Invalid input (empty, non-numeric, zero/negative) leaves the
+    // current zoom unchanged — never falls back to a guessed value.
+    if (Number.isFinite(parsed) && parsed > 0) {
+      const clamped = Math.min(maxScale, Math.max(minScale, parsed / 100));
+      onSetScale(clamped);
+    }
+    setEditingZoom(false);
+  }
+
+  function cancelZoomInput(): void {
+    suppressNextBlurCommitRef.current = true;
+    setEditingZoom(false);
+  }
+
+  return (
+    <View style={styles.zoomBar}>
+      <IconButton
+        label="Zoom out"
+        icon={<Text style={styles.zoomGlyph}>−</Text>}
+        size="sm"
+        variant="outline"
+        disabled={scale <= minScale}
+        onPress={onZoomOut}
+      />
+      {editingZoom ? (
+        <TextInput
+          style={styles.zoomInput}
+          value={zoomInputValue}
+          onChangeText={setZoomInputValue}
+          onSubmitEditing={commitZoomInput}
+          onBlur={commitZoomInput}
+          onKeyPress={(e) => {
+            if (e.nativeEvent.key === 'Escape') cancelZoomInput();
+          }}
+          keyboardType="number-pad"
+          autoFocus
+          selectTextOnFocus
+          accessibilityLabel="Zoom percentage"
+        />
+      ) : (
+        <Pressable
+          onPress={beginEditingZoom}
+          accessibilityRole="button"
+          accessibilityLabel={`Zoom level: ${Math.round(scale * 100)}%. Tap to edit.`}
+        >
+          <Text style={styles.zoomLabel}>{Math.round(scale * 100)}%</Text>
+        </Pressable>
+      )}
+      <IconButton
+        label="Zoom in"
+        icon={<Text style={styles.zoomGlyph}>+</Text>}
+        size="sm"
+        variant="outline"
+        disabled={scale >= maxScale}
+        onPress={onZoomIn}
+      />
+      <Pressable
+        onPress={onFitWidth}
+        accessibilityRole="button"
+        accessibilityLabel="Fit width"
+        style={styles.fitWidthButton}
+      >
+        <Text style={styles.fitWidthText}>Fit width</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+function buildZoomBarStyles(theme: Theme) {
+  return StyleSheet.create({
+    zoomBar: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: theme.border,
+    },
+    zoomGlyph: { fontSize: 16, color: theme.subtext, fontFamily: theme.fonts.bodySemibold },
+    zoomLabel: {
+      fontSize: 12.5,
+      color: theme.subtext,
+      fontFamily: theme.fonts.body,
+      minWidth: 40,
+      textAlign: 'center',
+    },
+    zoomInput: {
+      fontSize: 12.5,
+      color: theme.text,
+      fontFamily: theme.fonts.body,
+      minWidth: 40,
+      textAlign: 'center',
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.accent,
+      borderRadius: 4,
+      paddingVertical: 2,
+      paddingHorizontal: 4,
+    },
+    fitWidthButton: { paddingHorizontal: 8, paddingVertical: 6 },
+    fitWidthText: { fontSize: 12.5, color: theme.accent, fontFamily: theme.fonts.bodySemibold },
+  });
 }
 
 function CompiledPdfPage({
@@ -295,25 +439,6 @@ function buildStyles(theme: Theme) {
       fontFamily: theme.fonts.bodySemibold,
       color: theme.text,
     },
-    zoomBar: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 8,
-      paddingHorizontal: 12,
-      paddingVertical: 8,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: theme.border,
-    },
-    zoomGlyph: { fontSize: 16, color: theme.subtext, fontFamily: theme.fonts.bodySemibold },
-    zoomLabel: {
-      fontSize: 12.5,
-      color: theme.subtext,
-      fontFamily: theme.fonts.body,
-      minWidth: 40,
-      textAlign: 'center',
-    },
-    fitWidthButton: { paddingHorizontal: 8, paddingVertical: 6 },
-    fitWidthText: { fontSize: 12.5, color: theme.accent, fontFamily: theme.fonts.bodySemibold },
     scroll: { flex: 1 },
     scrollContent: { padding: 16, alignItems: 'center' },
   });
