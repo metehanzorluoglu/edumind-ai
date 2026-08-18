@@ -21,6 +21,7 @@ from app.core.compile_rate_limiter import enforce_compile_rate_limit
 from app.core.latex_citations import parse_cite_keys
 from app.core.latex_compiler_client import Diagnostic as ClientDiagnostic
 from app.core.latex_source_hash import compute_source_hash
+from app.core.reference_mode import detect_reference_mode
 from app.core.security import CurrentUserDep, get_current_user
 from app.db.documents_repository import DocumentRecord, DocumentsRepository
 from app.db.models_writing import MAX_PROJECT_TOTAL_STORAGE_BYTES
@@ -403,6 +404,42 @@ def list_writing_project_references(
                 **_bibliographic_fields(record),  # type: ignore[arg-type]
             )
         )
+
+    # M5.5.3 final acceptance — real reproduction with the Springer
+    # Nature fixture (imported_bib mode, sn-bibliography.bib): this
+    # endpoint's own "missing" computation only ever checked `used_keys`
+    # against EduM8's OWN project-reference documents (`known_keys`
+    # above), never against whatever the project's ACTUAL reference
+    # mode (app/core/reference_mode.py — the exact same module the
+    # /reference-mode endpoint and citation autocomplete already use)
+    # says the real key source is. A real `\cite{bib1}` naming a real
+    # entry in the project's own imported .bib file was reported
+    # "Citation key 'bib1' is not in this project's references" even
+    # though EduM8 correctly detects and lists bib1 elsewhere in the
+    # same UI — two different endpoints disagreeing about the same
+    # fact. Folding reference-mode's own resolved keys into the known
+    # set here — the identical detect_reference_mode() call the other
+    # endpoint makes, same inputs — makes this one semantic source of
+    # truth, per the spec's own explicit requirement.
+    all_content = files_repository.get_all_content(user.id, project_id_uuid) or []
+    text_files = {
+        c.node.path: c.content_text
+        for c in all_content
+        if c.node.kind == "text" and c.content_text is not None
+    }
+    root_node = next((c.node for c in all_content if c.node.id == project.root_file_id), None)
+    root_path = root_node.path if root_node is not None else "main.tex"
+    root_content = text_files.get(root_path, project.main_tex_content)
+    reference_mode_result = detect_reference_mode(
+        root_path=root_path,
+        root_content=root_content,
+        text_files=text_files,
+        # "Has a usable citation" — the same definition
+        # _edum8_reference_count (routes_writing_files.py) uses; already
+        # equivalent to len(known_keys) here, no second DB pass needed.
+        edum8_reference_count=len(known_keys),
+    )
+    known_keys |= {key for key, _title in reference_mode_result.keys}
 
     missing = sorted(used_keys - known_keys)
     bibtex_text, _count = _generate_bibliography(

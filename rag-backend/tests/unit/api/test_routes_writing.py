@@ -389,6 +389,52 @@ class TestReferences:
         listed = client.get(f"/writing-projects/{project['id']}/references").json()
         assert listed["missing_citation_keys"] == ["NotInProjectYet2024"]
 
+    def test_missing_citation_keys_uses_reference_mode_not_just_edum8_references(
+        self, harness
+    ) -> None:
+        """M5.5.3 final acceptance — real reproduction with the Springer
+        Nature fixture (imported_bib mode, sn-bibliography.bib): this
+        endpoint's own "missing" computation previously checked used
+        \\cite keys ONLY against EduM8's own project-reference documents,
+        never against whatever the project's ACTUAL reference mode
+        (app/core/reference_mode.py — the same module the /reference-mode
+        endpoint and citation autocomplete already use) says the real key
+        source is. A real \\cite{bib1} naming a real entry in the
+        project's own imported .bib file was reported "not in this
+        project's references" even though EduM8 correctly detects and
+        lists bib1 elsewhere — two endpoints disagreeing about the same
+        fact. This project has ZERO EduM8 project references (proving the
+        fix isn't accidentally reusing that path) — bib1's resolution
+        comes entirely from reference-mode's own imported_bib detection."""
+        client, *_ = harness
+        project = _create_project(client)
+        client.post(
+            f"/writing-projects/{project['id']}/files/text",
+            json={
+                "name": "sn-bibliography.bib",
+                "parent_id": None,
+                "content_text": "@article{bib1, title={A Paper}, author={Doe, Jane}, year={2020}}\n",
+            },
+        )
+        client.patch(
+            f"/writing-projects/{project['id']}",
+            json={
+                "main_tex_content": (
+                    "\\cite{bib1}\n\\bibliographystyle{plain}\n"
+                    "\\bibliography{sn-bibliography}\n"
+                ),
+            },
+        )
+        # Confirms the fixture itself really has zero EduM8 references —
+        # bib1's resolution can only have come from reference-mode.
+        listed = client.get(f"/writing-projects/{project['id']}/references").json()
+        assert listed["references"] == []
+        assert listed["missing_citation_keys"] == []
+
+        mode = client.get(f"/writing-projects/{project['id']}/reference-mode").json()
+        assert mode["mode"] == "imported_bib"
+        assert {k["key"] for k in mode["keys"]} == {"bib1"}
+
     def test_add_reference_is_idempotent(self, harness) -> None:
         client, *_ = harness
         project = _create_project(client)
