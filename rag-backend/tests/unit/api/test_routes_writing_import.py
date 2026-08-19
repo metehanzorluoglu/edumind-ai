@@ -277,16 +277,29 @@ class TestConfirm:
         """M5.5.3 continuation Part 20 — canonical-manifest-consistency
         regression: one archive, shaped like the real Springer Nature
         fixture (a common wrapper folder; a nested-subdirectory `.bst`;
-        a project `.pdf` asset; an `.eps` figure that stays a warned,
-        NOT-imported unsupported type), asserts the three path sets the
-        spec requires never drift apart: inspection's own accepted
-        `files`, confirm's created project tree, and — implicitly, since
-        this is the same `paths` set — the staged binary-content re-read
-        that `test_confirm_with_a_wrapper_folder_and_a_binary_file`
-        covers for the narrower wrapper+binary case alone. Also asserts
-        the warned `.eps` never appears in the created project (a
-        warning is an explanation for an omission, never a partial or
-        silent import)."""
+        a project `.pdf` asset; an `.eps` figure; and a genuinely
+        unsupported file type that stays a warned, NOT-imported
+        extension), asserts the three path sets the spec requires never
+        drift apart: inspection's own accepted `files`, confirm's
+        created project tree, and — implicitly, since this is the same
+        `paths` set — the staged binary-content re-read that
+        `test_confirm_with_a_wrapper_folder_and_a_binary_file` covers
+        for the narrower wrapper+binary case alone. Also asserts the
+        warned `.docx` never appears in the created project (a warning
+        is an explanation for an omission, never a partial or silent
+        import).
+
+        Milestone 5.5.4 (LaTeX Template Compatibility Gate) — `.eps` is
+        no longer the "stays warned" example here: real reproduction
+        against the actual Springer Nature fixture found `fig.eps`/
+        `empty.eps` were silently skipped on import (BINARY_FILE_
+        EXTENSIONS didn't include `.eps`), which was the true upstream
+        blocker for that fixture's figure — a separate, earlier bug
+        than the compiler's own inability to place a raw EPS in a PDF
+        (see latex-compiler/app/compiler.py's `_convert_eps_assets`).
+        `.eps` now belongs in the accepted set, asserted below; `.docx`
+        takes over as the "genuinely unsupported, stays warned" case
+        this test still needs."""
         client, *_ = harness
         data = _zip_bytes(
             {
@@ -298,6 +311,7 @@ class TestConfirm:
                 "sn-article-template/bst/sn-basic.bst": b"ENTRY { } {} {} FUNCTION {x} {} READ",
                 "sn-article-template/sn-article.pdf": b"%PDF-1.4" + b"0" * 40,
                 "sn-article-template/fig.eps": b"%!PS-Adobe-3.0 EPSF-3.0" + b"0" * 40,
+                "sn-article-template/notes.docx": b"PK" + b"0" * 40,
             }
         )
         inspect_resp = _upload(client, data)
@@ -311,11 +325,12 @@ class TestConfirm:
             "sn-bibliography.bib",
             "bst/sn-basic.bst",
             "sn-article.pdf",
+            "fig.eps",
         }
         # Warnings retain the raw (pre-wrapper-strip) archive path —
         # only the accepted `files` manifest is wrapper-normalized;
         # this test's own concern is that manifest, not warning display.
-        assert warned_paths == {"sn-article-template/fig.eps"}
+        assert warned_paths == {"sn-article-template/notes.docx"}
 
         resp = client.post(
             f"/writing-projects/import/{session_id}/confirm",
@@ -330,7 +345,8 @@ class TestConfirm:
         # an implicit folder, not a project file) — excluded from both
         # sides of the comparison, not just asserted away.
         assert created_paths - {"bst"} == inspected_paths
-        assert "fig.eps" not in created_paths
+        assert "fig.eps" in created_paths
+        assert "notes.docx" not in created_paths
         assert "bst/sn-basic.bst" in created_paths
 
     def test_confirm_deletes_the_session_and_staged_bytes(self, harness) -> None:

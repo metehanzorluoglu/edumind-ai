@@ -59,6 +59,15 @@ export function WritingAssetPreview({
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
   const isImage = node.mime_type === 'image/png' || node.mime_type === 'image/jpeg';
+  // Milestone 5.5.4 — BINARY_FILE_EXTENSIONS grew a third kind (`.eps`,
+  // `application/postscript`) that is neither an image nor a real PDF.
+  // The pre-M5.5.4 code here assumed "not an image" meant "must be a
+  // PDF" (true when PNG/JPEG/PDF were the only three), which would have
+  // fed raw EPS bytes into the PDF.js-based CompiledPdfPreview and
+  // failed to render — real academic templates ship `.eps` figures
+  // (the Springer Nature fixture's own `fig.eps`/`empty.eps`), so this
+  // is a real, reachable case now, not a hypothetical.
+  const isPdf = node.mime_type === 'application/pdf';
 
   useEffect(() => {
     let cancelled = false;
@@ -143,11 +152,7 @@ export function WritingAssetPreview({
       {status === 'success' && isImage && previewUri && (
         <Image source={{ uri: previewUri }} style={styles.image} resizeMode="contain" />
       )}
-      {/* Every binary project file that ISN'T an image is a PDF (the
-          only other kind BINARY_FILE_EXTENSIONS allows — see
-          models_writing.py) — real view/zoom/fit-width/scroll via the
-          same reused component this pane's own docstring explains. */}
-      {status === 'success' && !isImage && (
+      {status === 'success' && isPdf && (
         <View style={styles.pdfViewerArea}>
           <CompiledPdfPreview
             pdfBlob={blob}
@@ -157,6 +162,15 @@ export function WritingAssetPreview({
             emptyMessage="No preview available."
           />
         </View>
+      )}
+      {/* Milestone 5.5.4 — a binary asset that's neither an image nor a
+          PDF (currently: `.eps`). No fake preview — an honest "download
+          to view" state, never a PDF viewer silently fed non-PDF bytes. */}
+      {status === 'success' && !isImage && !isPdf && (
+        <Notice
+          tone="neutral"
+          body="No inline preview is available for this file type. Use Download below to view it in another application."
+        />
       )}
 
       {downloadError && <Notice tone="danger" body={downloadError} />}

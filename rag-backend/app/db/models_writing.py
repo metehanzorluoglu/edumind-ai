@@ -209,8 +209,21 @@ WritingProjectFileKind = Literal["folder", "text", "binary"]
 #: name is EduM8's own synthesized virtual file (see
 #: WritingProjectFile's own docstring below) and can never be a real row
 #: regardless of this set.
+#: Milestone 5.5.4 (LaTeX Template Compatibility Gate) — `.eps` joins
+#: the binary set. Real academic templates (the Springer Nature journal
+#: fixture is the concrete case: `fig.eps`/`empty.eps`) ship figures as
+#: EPS with an explicit extension; before this milestone `kind_for_
+#: extension()` returned None for it, so writing_project_import.py
+#: silently skipped every `.eps` file on ZIP import with "Unsupported
+#: file type — not imported" — the figure never became a project file
+#: at all, which is a DIFFERENT (upstream) failure from the compiler's
+#: own inability to place a raw EPS in a PDF (see latex-compiler/app/
+#: compiler.py's `_convert_eps_assets` for that half of the fix). Both
+#: halves are required for the real fixture to compile with its figure
+#: intact. Treated as opaque binary content (never text-edited),
+#: exactly like PDF/PNG/JPG.
 TEXT_FILE_EXTENSIONS = frozenset({".tex", ".cls", ".sty", ".txt", ".md", ".bib", ".bst"})
-BINARY_FILE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".pdf"})
+BINARY_FILE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".pdf", ".eps"})
 ALL_ALLOWED_EXTENSIONS = TEXT_FILE_EXTENSIONS | BINARY_FILE_EXTENSIONS
 
 #: Milestone 5.3 Part 12 — reasonable, measured limits (see this

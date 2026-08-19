@@ -258,4 +258,10 @@ def _mime_for_path(path: str) -> str:
         "jpg": "image/jpeg",
         "jpeg": "image/jpeg",
         "pdf": "application/pdf",
+        # Milestone 5.5.4 — the real MIME type for EPS (RFC/IANA
+        # "application/postscript"), so WritingAssetPreview's frontend
+        # branch can distinguish "not an image, but also not a real
+        # PDF" instead of the pre-M5.5.4 code's incorrect blanket "any
+        # non-image binary must be a PDF" assumption.
+        "eps": "application/postscript",
     }.get(ext, "application/octet-stream")
