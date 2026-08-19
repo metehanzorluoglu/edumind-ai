@@ -18,6 +18,19 @@ pytestmark = pytest.mark.skipif(
     shutil.which("pdflatex") is None, reason="pdflatex not installed in this environment"
 )
 
+# Milestone 5.5.4 — a minimal, hand-written, valid Level-1-compatible EPS
+# (deliberately NOT extracted from the real Springer fixture, so this
+# test suite stays self-contained/portable — the real fixture is
+# exercised separately via real-browser + a direct-script validation
+# documented in the M5.5.4 report). A real `\includegraphics{...eps}`
+# with an EXPLICIT `.eps` extension is exactly the shape the Springer
+# template (and real academic manuscripts generally) use.
+_MINIMAL_EPS = (
+    b"%!PS-Adobe-3.0 EPSF-3.0\n"
+    b"%%BoundingBox: 0 0 100 100\n"
+    b"newpath\n10 10 moveto\n90 90 lineto\nstroke\n%%EOF\n"
+)
+
 
 def _settings(**overrides) -> Settings:
     merged = {"working_root": "/tmp", **overrides}
@@ -226,6 +239,84 @@ async def test_includegraphics_resolves_an_uploaded_figure(tmp_path):
     """Scenario E — a real, tiny valid PNG."""
     settings = _settings(working_root=str(tmp_path))
     # 1x1 transparent PNG.
+    png_bytes = bytes.fromhex(
+        "89504e470d0a1a0a0000000d494844520000000100000001080600000"
+        "01f15c4890000000a49444154789c6300010000050001"
+        "0d0a2db40000000049454e44ae426082"
+    )
+    main_tex = (
+        "\\documentclass{article}\\usepackage{graphicx}\\begin{document}"
+        "\\includegraphics[width=1cm]{figures/framework.png}\\end{document}"
+    )
+    outcome = await run_compile_job(
+        main_tex=main_tex,
+        references_bib="",
+        settings=settings,
+        extra_files={"figures/framework.png": png_bytes},
+    )
+    assert outcome.status == "success"
+    assert outcome.pdf_bytes is not None
+
+
+# --- Milestone 5.5.4 (LaTeX Template Compatibility Gate) — EPS->PDF ---
+
+
+@pytest.mark.skipif(shutil.which("gs") is None, reason="ghostscript not installed in this environment")
+async def test_eps_figure_with_explicit_extension_compiles_via_deterministic_conversion(tmp_path):
+    """Reproduces the real, unmodified Springer Nature fixture's own
+    figure call — `\\includegraphics[...]{fig.eps}` with an EXPLICIT
+    `.eps` extension, which pdflatex cannot place directly. Locks in
+    the M5.5.4 fix: a sandboxed Ghostscript pre-conversion (never
+    LaTeX shell-escape) plus a narrow, exact-match rewrite of the
+    `.eps` reference to the generated `.pdf`."""
+    settings = _settings(working_root=str(tmp_path))
+    main_tex = (
+        "\\documentclass{article}\\usepackage{graphicx}\\begin{document}"
+        "\\begin{figure}[h]\\centering"
+        "\\includegraphics[width=0.9\\textwidth]{fig.eps}"
+        "\\caption{A widefig.}\\end{figure}"
+        "\\end{document}"
+    )
+    outcome = await run_compile_job(
+        main_tex=main_tex,
+        references_bib="",
+        settings=settings,
+        extra_files={"fig.eps": _MINIMAL_EPS},
+    )
+    assert outcome.status == "success"
+    assert outcome.pdf_bytes is not None
+    assert outcome.pdf_bytes.startswith(b"%PDF")
+    assert not any("unknown graphics extension" in d.message.lower() for d in outcome.diagnostics)
+
+
+@pytest.mark.skipif(shutil.which("gs") is None, reason="ghostscript not installed in this environment")
+async def test_corrupt_eps_produces_a_clear_diagnostic_not_a_fake_success(tmp_path):
+    """Part 11 of the M5.5.4 spec: 'No fake Compiled successfully
+    state.' A genuinely malformed EPS must fail the job with an honest
+    diagnostic, never be silently skipped or reported as success."""
+    settings = _settings(working_root=str(tmp_path))
+    main_tex = (
+        "\\documentclass{article}\\usepackage{graphicx}\\begin{document}"
+        "\\includegraphics{broken.eps}\\end{document}"
+    )
+    outcome = await run_compile_job(
+        main_tex=main_tex,
+        references_bib="",
+        settings=settings,
+        extra_files={"broken.eps": b"this is not valid postscript at all \x00\x01\x02"},
+    )
+    assert outcome.status == "error"
+    assert any("eps" in d.message.lower() for d in outcome.diagnostics)
+
+
+async def test_non_eps_projects_are_unaffected_by_the_eps_conversion_pass(tmp_path):
+    """Regression guard (Part 13 of the M5.5.4 spec): a project with NO
+    `.eps` assets — the overwhelming majority, including every
+    PDF/PNG/JPG-based project already covered elsewhere in this file —
+    must take zero extra passes and behave identically to before this
+    milestone. No `gs` skip here: this path must not even attempt to
+    invoke Ghostscript when there is nothing to convert."""
+    settings = _settings(working_root=str(tmp_path))
     png_bytes = bytes.fromhex(
         "89504e470d0a1a0a0000000d494844520000000100000001080600000"
         "01f15c4890000000a49444154789c6300010000050001"

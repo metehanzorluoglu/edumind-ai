@@ -55,6 +55,34 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
 # texlive-science:          Milestone 5.5.2 — verified to provide algorithm.sty/
 #                            algorithmic.sty, required by the journal fixture (pseudocode
 #                            listings are a common need in CS/engineering papers).
+# ghostscript:               Milestone 5.5.4 — the real, unmodified Springer Nature
+#                            fixture (and real academic manuscripts generally) embed
+#                            figures as `.eps` with an EXPLICIT extension
+#                            (`\includegraphics{fig.eps}`). pdflatex cannot rasterize/
+#                            place EPS directly (its own default graphics-extension
+#                            search for the pdftex driver doesn't even include `.eps`)
+#                            — standard TeX Live/Overleaf handle this via the
+#                            `epstopdf` LaTeX package, which auto-converts EPS->PDF
+#                            *by shelling out to Ghostscript* the first time pdflatex
+#                            hits an `\includegraphics{...eps}` call. That package-level
+#                            hook requires TeX's own shell-escape, which this service
+#                            deliberately never enables (Part 4 of the original M5.1
+#                            spec: `-no-shell-escape` on every pdflatex invocation, no
+#                            exceptions). Verified via `apt-cache rdepends` that
+#                            `ghostscript` is NOT pulled in transitively by any package
+#                            already in this list under `--no-install-recommends` (it's
+#                            a Recommends-only pull of texlive-base upstream) — so it is
+#                            listed explicitly here. `gs` is invoked directly by THIS
+#                            SERVICE's own Python orchestration code (app/compiler.py),
+#                            as a small, fixed, argv-only subprocess call — completely
+#                            outside of and never reachable from the manuscript's own
+#                            TeX code — with `-dPARANOIDSAFER` (Ghostscript's own
+#                            strictest sandboxing flag, forbidding file/network I/O
+#                            outside the two paths this service passes it) and the same
+#                            no-shell/own-session/timeout/killpg discipline as every
+#                            other subprocess phase in this file. Installed size ~230KB
+#                            for the `gs` binary itself plus its `libgs10` dependency —
+#                            negligible next to texlive-latex-extra's ~82MB.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         texlive-latex-base \
@@ -63,6 +91,7 @@ RUN apt-get update \
         texlive-latex-extra \
         texlive-science \
         lmodern \
+        ghostscript \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /var/cache/apt/archives/*

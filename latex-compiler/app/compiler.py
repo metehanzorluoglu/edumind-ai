@@ -31,6 +31,22 @@ lives in this one module:
 * Part 19 (correct BibTeX pipeline): pdflatex -> [bibtex if the .aux
   file actually requests one] -> pdflatex -> pdflatex. Never assumed —
   see `_needs_bibtex`.
+
+Milestone 5.5.4 (LaTeX Template Compatibility Gate) added one more
+pre-pass, ahead of pass 1: deterministic EPS->PDF conversion (see
+`_convert_eps_assets`/`_rewrite_eps_includegraphics`). The real,
+unmodified Springer Nature fixture (and real academic manuscripts in
+general) embed figures as `\includegraphics{fig.eps}` with an EXPLICIT
+`.eps` extension — pdflatex cannot place EPS directly, and standard
+TeX Live's own answer to this (the `epstopdf` package) requires
+TeX-level shell-escape, which Part 4 above permanently forbids. Instead
+this service converts every EPS asset to PDF itself, via a small, fixed
+Ghostscript subprocess call it owns and controls directly (never
+reachable from the manuscript's own TeX code, never routed through
+`\write18`), then rewrites only the exact, literal `.eps` references it
+just converted to point at the generated `.pdf` — never a blind/guessed
+substitution. This keeps `-no-shell-escape` intact and adds no new
+capability the manuscript itself can invoke.
 """
 
 from __future__ import annotations
@@ -216,6 +232,108 @@ def _extract_page_count(log: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+async def _convert_eps_assets(
+    workdir: Path,
+    extra_files: dict[str, bytes],
+    env: dict[str, str],
+    timeout_seconds: float,
+) -> tuple[dict[str, str], list[Diagnostic]]:
+    """Milestone 5.5.4 — deterministic, sandboxed EPS->PDF pre-conversion.
+
+    Converts every `.eps`/`.EPS` file already written under `workdir`
+    (from `extra_files`) into a sibling `.pdf` via a single, fixed
+    Ghostscript invocation per file — no LaTeX/`\\write18` involvement,
+    same subprocess discipline as pdflatex/bibtex (`_run_phase`: own
+    session, `killpg`-able, hard per-call timeout, argv-only, no shell).
+    `-dPARANOIDSAFER` is Ghostscript's own strictest sandbox flag —
+    forbids the EPS content itself from doing file/network I/O outside
+    the two paths this call passes it. `-dEPSCrop` matches standard
+    `epstopdf` behavior (crop to the EPS's own BoundingBox, the same
+    visual result a real epstopdf-package conversion would produce).
+
+    Returns (conversions, diagnostics) where `conversions` maps each
+    original EPS's relative path to its new PDF's relative path (empty
+    if there were no EPS files at all — the overwhelmingly common case,
+    left as a no-op), and `diagnostics` is non-empty only if a real
+    conversion failure occurred (a genuinely malformed/corrupt EPS) —
+    the caller treats that as a hard compile error (Part 18's "never
+    mislead the user about what the job actually did"), never a silent
+    skip that would later surface as a confusing missing-figure PDF."""
+    conversions: dict[str, str] = {}
+    diagnostics: list[Diagnostic] = []
+    eps_rel_paths = [p for p in extra_files if p.lower().endswith(".eps")]
+    for rel_path in eps_rel_paths:
+        eps_file = safe_relative_path(rel_path, workdir)
+        if eps_file is None or not eps_file.exists():
+            # Already rejected (unsafe path) or never written — nothing
+            # to convert; the unsafe-path case already produced its own
+            # hard error earlier in run_compile_job.
+            continue
+        pdf_file = eps_file.with_suffix(".pdf")
+        result = await _run_phase(
+            [
+                "gs",
+                "-q",
+                "-dNOPAUSE",
+                "-dBATCH",
+                "-dPARANOIDSAFER",
+                "-dEPSCrop",
+                "-sDEVICE=pdfwrite",
+                f"-sOutputFile={pdf_file.name}",
+                eps_file.name,
+            ],
+            cwd=eps_file.parent,
+            env=env,
+            timeout_seconds=timeout_seconds,
+        )
+        if result.timed_out or result.exit_code != 0 or not pdf_file.exists():
+            diagnostics.append(
+                Diagnostic(
+                    severity="error",
+                    message=(
+                        f"Could not convert embedded EPS figure {rel_path!r} to a "
+                        "PDF-LaTeX-compatible format."
+                    ),
+                )
+            )
+            continue
+        pdf_rel = rel_path[: -len(Path(rel_path).suffix)] + ".pdf"
+        conversions[rel_path] = pdf_rel
+    return conversions, diagnostics
+
+
+_INCLUDEGRAPHICS_RE = re.compile(r"(\\includegraphics\s*(?:\[[^\]\n]*\])?\s*\{)([^}]*)(\})")
+
+
+def _rewrite_eps_includegraphics(tex_source: str, conversions: dict[str, str]) -> str:
+    """Milestone 5.5.4 — rewrites ONLY `\\includegraphics{...}` arguments
+    that literally, exactly match an EPS file this job just converted
+    (by its full relative path or bare basename — both common ways a
+    manuscript references a root-level figure) to point at the new
+    `.pdf` instead. Deliberately narrow: never touches an
+    extensionless reference (pdflatex's own kpathsea extension search
+    already finds the new sibling `.pdf` automatically once it exists
+    on disk — no rewrite needed there) and never touches unrelated text
+    (e.g. the real Springer fixture's own `\\verb+\\includegraphics
+    {<eps-file>}+` documentation example inside a `verbatim` block,
+    which can never match a real filename)."""
+    if not conversions:
+        return tex_source
+    lookup: dict[str, str] = {}
+    for eps_rel, pdf_rel in conversions.items():
+        lookup[eps_rel.lower()] = pdf_rel
+        lookup[Path(eps_rel).name.lower()] = Path(pdf_rel).name
+
+    def _replace(match: re.Match[str]) -> str:
+        prefix, arg, suffix = match.group(1), match.group(2), match.group(3)
+        replacement = lookup.get(arg.strip().lower())
+        if replacement is None:
+            return match.group(0)
+        return f"{prefix}{replacement}{suffix}"
+
+    return _INCLUDEGRAPHICS_RE.sub(_replace, tex_source)
+
+
 _PDFLATEX_ARGS = [
     "pdflatex",
     "-no-shell-escape",
@@ -259,7 +377,6 @@ async def run_compile_job(
     all_log_parts: list[str] = []
 
     try:
-        (workdir / "main.tex").write_text(main_tex, encoding="utf-8")
         (workdir / "references.bib").write_text(references_bib, encoding="utf-8")
 
         for rel_path, data in (extra_files or {}).items():
@@ -281,6 +398,53 @@ async def run_compile_job(
                 )
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(data)
+
+        # Milestone 5.5.4 — deterministic EPS->PDF pre-conversion, ahead of
+        # pass 1 (see the module docstring and _convert_eps_assets' own
+        # docstring for the full rationale). A no-op for the overwhelming
+        # majority of projects (no .eps among extra_files).
+        eps_conversions, eps_diagnostics = await _convert_eps_assets(
+            workdir, extra_files or {}, env, settings.phase_timeout_seconds
+        )
+        if eps_diagnostics:
+            return CompileOutcome(
+                status="error",
+                diagnostics=eps_diagnostics,
+                duration_ms=(time.perf_counter() - start) * 1000,
+            )
+
+        main_tex_final = (
+            _rewrite_eps_includegraphics(main_tex, eps_conversions)
+            if eps_conversions
+            else main_tex
+        )
+        (workdir / "main.tex").write_text(main_tex_final, encoding="utf-8")
+
+        if eps_conversions:
+            # Also rewrite any OTHER already-written .tex source (a
+            # \input/\include'd file may be the one that actually embeds
+            # the figure, not main.tex itself) — re-reading from disk
+            # rather than the original extra_files bytes keeps this a
+            # single code path regardless of where the file came from.
+            for rel_path in extra_files or {}:
+                if not rel_path.lower().endswith(".tex"):
+                    continue
+                dest = safe_relative_path(rel_path, workdir)
+                if dest is None:
+                    continue
+                try:
+                    original = dest.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    # Not valid UTF-8 text — leave it untouched rather
+                    # than risk corrupting a file we can't safely
+                    # round-trip (Part 18: never silently damage project
+                    # content). This has no bearing on the real Springer
+                    # fixture, whose only EPS reference is in the root
+                    # main.tex.
+                    continue
+                rewritten = _rewrite_eps_includegraphics(original, eps_conversions)
+                if rewritten != original:
+                    dest.write_text(rewritten, encoding="utf-8")
 
         pass1 = await _run_phase(
             _PDFLATEX_ARGS, cwd=workdir, env=env, timeout_seconds=settings.phase_timeout_seconds
