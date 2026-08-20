@@ -159,6 +159,32 @@ describe('parseChatEvent', () => {
       citations: [],
       citation_warnings: [],
       insufficient_evidence: true,
+      writing_context_summary: null,
+    });
+  });
+
+  it('parses a "done" event\'s writing_context_summary when present (Milestone 6.2)', () => {
+    const result = parseChatEvent({
+      event: 'message',
+      data:
+        '{"type":"done","insufficient_evidence":false,"writing_context_summary":' +
+        '{"policy":"local_edit","selection_included":true,"section_included":false,' +
+        '"notes_included":0,"highlights_included":0,"reference_metadata_included":0}}',
+      id: null,
+    });
+    expect(result).toEqual({
+      type: 'done',
+      citations: [],
+      citation_warnings: [],
+      insufficient_evidence: false,
+      writing_context_summary: {
+        policy: 'local_edit',
+        selection_included: true,
+        section_included: false,
+        notes_included: 0,
+        highlights_included: 0,
+        reference_metadata_included: 0,
+      },
     });
   });
 });

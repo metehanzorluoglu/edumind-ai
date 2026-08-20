@@ -48,11 +48,35 @@ export interface ChatSourcesEvent {
   sources: RetrievedChunk[];
 }
 
+/**
+ * Milestone 6.2 Parts 11/12 — the compact, honest context indicator the
+ * Writing Ask EduM8 panel renders (e.g. "Current selection · Current
+ * section · Reference metadata"). Mirrors app/schemas/chat.py's
+ * WritingContextSummaryResponse exactly: counts/booleans only, reflecting
+ * what THIS turn's WritingContextPacket actually included — never a
+ * debug dump of manuscript/evidence text, and never conflated with real
+ * RAG evidence (that's reported separately via ChatSourcesEvent/
+ * ChatResult.sources, unchanged by this field's addition). `undefined`
+ * for every ordinary Chat message, and for a Writing turn replayed from
+ * a reconnect/history-replay request that didn't itself just build the
+ * packet (see _final_reply_events' own docstring) — an honest "we don't
+ * know" for that turn, never a guess.
+ */
+export interface WritingContextSummary {
+  policy: string;
+  selection_included: boolean;
+  section_included: boolean;
+  notes_included: number;
+  highlights_included: number;
+  reference_metadata_included: number;
+}
+
 export interface ChatDoneEvent {
   type: 'done';
   citations: Citation[];
   citation_warnings: string[];
   insufficient_evidence: boolean;
+  writing_context_summary?: WritingContextSummary | null;
 }
 
 export interface ChatErrorEvent {
@@ -93,4 +117,6 @@ export interface ChatResult {
   /** Wall-clock ms from request start to stream completion, measured client-side. */
   clientElapsedMs: number;
   requestId: string | null;
+  /** Milestone 6.2 Parts 11/12 — see WritingContextSummary above. */
+  writingContextSummary: WritingContextSummary | null;
 }

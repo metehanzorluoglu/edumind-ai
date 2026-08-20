@@ -238,6 +238,7 @@ export type {
   ChatDoneEvent,
   ChatErrorEvent,
   ChatResult,
+  WritingContextSummary,
 } from './types/chat';
 export type { HealthResponse, ReadinessResponse } from './types/health';
 export type { StatusResponse } from './types/status';
@@ -274,6 +275,7 @@ export type {
   PostConversationMessageRequest,
   SendVisionMessageRequest,
   UpdateConversationScopeRequest,
+  WritingAskContextRequest,
 } from './types/conversations';
 export type {
   CreateProjectRequest,

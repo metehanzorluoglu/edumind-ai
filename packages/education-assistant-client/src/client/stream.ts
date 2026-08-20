@@ -208,6 +208,10 @@ export function parseChatEvent(raw: ParsedSseEvent): ChatEvent | null {
           ? (record.citation_warnings as string[])
           : [],
         insufficient_evidence: record.insufficient_evidence === true,
+        writing_context_summary:
+          record.writing_context_summary && typeof record.writing_context_summary === 'object'
+            ? (record.writing_context_summary as never)
+            : null,
       };
       return event;
     }

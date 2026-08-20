@@ -2677,6 +2677,7 @@ function assembleChatResult(events: ChatEvent[], clientElapsedMs: number): ChatR
   let citations: ChatResult['citations'] = [];
   let citationWarnings: string[] = [];
   let insufficientEvidence = false;
+  let writingContextSummary: ChatResult['writingContextSummary'] = null;
   let sawDone = false;
 
   for (const event of events) {
@@ -2691,6 +2692,7 @@ function assembleChatResult(events: ChatEvent[], clientElapsedMs: number): ChatR
         citations = event.citations;
         citationWarnings = event.citation_warnings;
         insufficientEvidence = event.insufficient_evidence;
+        writingContextSummary = event.writing_context_summary ?? null;
         sawDone = true;
         break;
       case 'error':
@@ -2712,6 +2714,7 @@ function assembleChatResult(events: ChatEvent[], clientElapsedMs: number): ChatR
     insufficientEvidence,
     clientElapsedMs,
     requestId: null,
+    writingContextSummary,
   };
 }
 

@@ -106,10 +106,37 @@ export interface MessageAttachmentUpload {
   pageRange?: { start: number; end: number };
 }
 
+/**
+ * Milestone 6.2 (Context-Aware Ask EduM8) — the live-request counterpart
+ * to the M6.1 Writing Context Engine's own request contract (rag-backend's
+ * app/core/writing_context_schemas.py WritingContextRequest / app/schemas/
+ * conversations.py WritingContextRequestFields — field names/shapes are
+ * intentionally identical). Embedding this directly in a message avoids a
+ * separate round trip to POST /writing-projects/{id}/context first, so the
+ * researcher can type -> select text -> immediately Ask EduM8 without
+ * waiting for autosave (the backend reconstructs selected text from real
+ * content at these offsets — never trusts `selectedText` on its own, see
+ * that schema's own docstring).
+ */
+export interface WritingAskContextRequest {
+  project_id: string;
+  active_file_id?: string | null;
+  cursor_position?: number | null;
+  selection_start?: number | null;
+  selection_end?: number | null;
+  selected_text?: string | null;
+  /** The live, possibly-unsaved editor buffer for `active_file_id` — when
+   * given, the backend reconstructs selection/section context from THIS,
+   * never the last-saved copy. */
+  active_file_unsaved_content?: string | null;
+}
+
 export interface PostConversationMessageRequest {
   query: string;
   top_k?: number;
   filters?: RetrievalFilters | null;
+  /** Milestone 6.2 — present only for a Writing Ask EduM8 turn. */
+  writing_context?: WritingAskContextRequest | null;
   /**
    * Idempotency key for this send: mint one per logical submission attempt
    * (e.g. via `crypto.randomUUID()`-equivalent) and reuse the same value

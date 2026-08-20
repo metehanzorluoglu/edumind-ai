@@ -133,6 +133,7 @@ export function useEducationAssistant(
                   insufficientEvidence: event.insufficient_evidence,
                   clientElapsedMs: Date.now() - startedAt,
                   requestId: null,
+                  writingContextSummary: event.writing_context_summary ?? null,
                 };
                 setState(terminalStateFromResult(result));
                 return;
