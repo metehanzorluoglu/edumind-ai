@@ -200,6 +200,35 @@ them."""
 
 _NO_SOURCES_MESSAGE = "No sources were found in the corpus for this query."
 
+# Milestone 6.2 (Context-Aware Ask EduM8) Part 6 — a SINGLE, small,
+# centralized addendum, appended only when a `writing_context` block is
+# actually present (i.e. only for a real Writing Ask EduM8 turn — every
+# other conversation's prompt is byte-for-byte unaffected). Deliberately
+# NOT a giant academic-writing mega-prompt (Part 6's own explicit
+# warning) — it states the rules once, here, rather than repeating them
+# across multiple prompt layers. The grounding/citation rules already
+# stated in _SYSTEM_PROMPT/_SYSTEM_PROMPT_COMPACT above are NOT restated
+# — this addendum only adds what's specific to Writing: the manuscript-
+# vs-evidence distinction (Part 16/17) and the hard product rule that
+# the model never edits the manuscript itself (Part 34 — that's M6.3).
+_WRITING_CONTEXT_ADDENDUM = """
+
+You are assisting a researcher inside their LaTeX manuscript editor. A \
+"writing_context" block above (if present) describes their current \
+manuscript position — selected text, surrounding context, structure, \
+notes, highlights, and/or reference metadata. Treat writing_context as \
+the researcher's OWN material, never as published evidence: a note or \
+highlight is the researcher's own record, not a finding you may \
+attribute to a published source, and reference metadata (a title/author/\
+year) means only that a bibliography entry exists — it is never itself \
+evidence that you have read that paper, and you must not describe what \
+that paper "found" or "argues" unless separate, numbered source \
+evidence for it is also supplied below. Preserve the meaning of any \
+selected manuscript text unless the researcher explicitly asks you to \
+change it. You may propose rewritten text directly in your response, \
+but you never modify the manuscript yourself — the researcher decides \
+whether to use what you write."""
+
 _QUARTILE_LABELS: dict[str, str] = {"Q1": "Q1", "Q2": "Q2"}
 
 _DOCUMENT_TYPE_LABELS: dict[DocumentType, str] = {
@@ -230,6 +259,7 @@ def build_chat_prompt(
     *,
     prompt_variant: PromptVariant = "current",
     strict_mode: bool = False,
+    writing_context: str | None = None,
 ) -> tuple[str, str]:
     """`project_context` (see app/core/project_context.py) is optional and
     additive — omitting it (the default) produces byte-for-byte the same
@@ -237,6 +267,17 @@ def build_chat_prompt(
     as its own <project_context> block, entirely separate from the
     numbered <source> block, so it can never be confused with — or cited
     as — a source.
+
+    `writing_context` (Milestone 6.2 — see app/core/
+    writing_context_prompt_formatter.py's format_writing_context_block,
+    the only producer of this string) is likewise optional and additive:
+    omitting it produces byte-for-byte the same prompt as before M6.2
+    existed. When present, it is added as its OWN `<writing_context>`
+    block — structurally separate from `<project_context>` (a different,
+    unrelated feature) and from the numbered `<source>` block (Part 14:
+    a manuscript-selection/note/highlight/reference-metadata item is
+    never itself a citable source) — and the small, centralized
+    _WRITING_CONTEXT_ADDENDUM is appended to the system prompt.
 
     `prompt_variant` (Settings.rag_prompt_variant, default "current")
     selects between the original system prompt above and the shorter
@@ -274,6 +315,8 @@ def build_chat_prompt(
     byte-for-byte unchanged prompt for every non-Zoom-In call site."""
     context = _NO_SOURCES_MESSAGE if not sources else format_sources_block(sources)
     blocks = [format_project_context_block(project_context)] if project_context else []
+    if writing_context:
+        blocks.append(f"<writing_context>\n{writing_context}\n</writing_context>")
     blocks.append(context)
     coverage_note = _source_coverage_note(sources)
     if coverage_note:
@@ -290,12 +333,16 @@ def build_chat_prompt(
             system_prompt += _INSTRUCTIONAL_DESIGN_ADDENDUM
         if strict_mode:
             system_prompt += _ZOOM_IN_ADDENDUM
+        if writing_context:
+            system_prompt += _WRITING_CONTEXT_ADDENDUM
         return system_prompt, user_prompt
     system_prompt = _SYSTEM_PROMPT
     if instructional_design:
         system_prompt += _INSTRUCTIONAL_DESIGN_ADDENDUM
     if strict_mode:
         system_prompt += _ZOOM_IN_ADDENDUM
+    if writing_context:
+        system_prompt += _WRITING_CONTEXT_ADDENDUM
     return system_prompt, user_prompt
 
 

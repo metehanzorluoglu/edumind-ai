@@ -259,6 +259,7 @@ class RagService:
         conversation_id: str | None = None,
         project_ids: tuple[str, ...] = (),
         project_context: str | None = None,
+        writing_context: str | None = None,
         include_chat: bool = True,
         include_project: bool = True,
         include_general: bool = True,
@@ -301,6 +302,7 @@ class RagService:
                 project_context=project_context,
                 prompt_variant=self._prompt_variant,
                 strict_mode=strict_mode,
+                writing_context=writing_context,
             )
         _record_prompt_metadata(
             get_current_timer(),

@@ -205,6 +205,35 @@ class UpdateConversationScopeRequest(BaseModel):
     zoom_in_mode: bool | None = None
 
 
+class WritingContextRequestFields(BaseModel):
+    """Milestone 6.2 — the live-request counterpart to M6.1's
+    WritingContextRequest (app/core/writing_context_schemas.py), embedded
+    directly in a conversation message rather than requiring a separate
+    round trip to POST /writing-projects/{id}/context first (Part 3: "the
+    user should be able to type -> select text -> immediately Ask EduM8
+    without waiting for autosave"). Field names/shapes are intentionally
+    identical to WritingContextRequest so _build_writing_context_request
+    (routes_conversations.py) is a straight field-for-field mapping, not
+    a second contract to keep in sync.
+
+    Entirely optional at the top level (PostConversationMessageRequest.
+    writing_context) — a normal Chat message omits this whole object and
+    is completely unaffected, byte-for-byte, by every field below."""
+
+    project_id: str
+    active_file_id: str | None = None
+    cursor_position: int | None = None
+    selection_start: int | None = None
+    selection_end: int | None = None
+    selected_text: str | None = None
+    # Part 3/21 — the live, possibly-unsaved editor buffer for the active
+    # file. When present, this is what M6.1's engine reconstructs
+    # selection/section context from — never the saved DB copy, and
+    # never `selected_text` above taken on faith (see
+    # WritingContextRequest's own docstring in writing_context_schemas.py).
+    active_file_unsaved_content: str | None = None
+
+
 class PostConversationMessageRequest(BaseModel):
     query: str = Field(min_length=1, max_length=2000)
     top_k: int = Field(default=8, ge=1, le=20)
@@ -220,3 +249,6 @@ class PostConversationMessageRequest(BaseModel):
     # app/core/model_routing.py's choose_model): a text-only message
     # always retrieves regardless of this flag, exactly as it always has.
     use_corpus: bool = False
+    # Milestone 6.2 — present only for a Writing Ask EduM8 turn. See
+    # WritingContextRequestFields above.
+    writing_context: WritingContextRequestFields | None = None

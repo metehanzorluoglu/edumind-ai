@@ -14,9 +14,9 @@ from sqlalchemy.orm import Session
 from starlette.datastructures import UploadFile
 
 from app.config import Settings
+from app.core import generation_manager
 from app.core.answer_transparency import build_transparency_snapshot, transparency_to_dict
 from app.core.citation import Citation, build_attachment_citations
-from app.core.citation_validation import validate_citations
 from app.core.conversation_title import generate_title, sanitize_title
 from app.core.document_scoping import (
     InvalidDocumentIdsError,
@@ -24,10 +24,9 @@ from app.core.document_scoping import (
     remove_document_from_conversation,
     replace_conversation_documents,
 )
-from app.core.errors import AttachmentValidationError, LLMProviderError, VisionServiceError
+from app.core.errors import AttachmentValidationError, VisionServiceError
 from app.core.evidence_client import EvidenceClient
 from app.core.evidence_shadow import maybe_schedule_evidence_shadow
-from app.core import generation_manager
 from app.core.generation_events import GenerationUpdate, GenProgress
 from app.core.intent_detection import is_instructional_design_request
 from app.core.llm_provider import LLMProvider
@@ -40,6 +39,13 @@ from app.core.request_timing import RequestTimer, bind_timer, unbind_timer
 from app.core.retrieval_schemas import RetrievalFilters, RetrievedChunk
 from app.core.security import CurrentUserDep, get_current_user
 from app.core.vision_prompt_builder import build_vision_prompt
+from app.core.writing_context_engine import (
+    WritingContextAuthorizationError,
+    build_writing_context,
+)
+from app.core.writing_context_policy import POLICY_LAYERS
+from app.core.writing_context_prompt_formatter import format_writing_context_block
+from app.core.writing_context_schemas import WritingContextRequest
 from app.db.conversation_scope_repository import (
     ConversationScopeRecord,
     ConversationScopeRepository,
@@ -51,13 +57,15 @@ from app.db.conversations_repository import (
     MessageSourceRecord,
     NewAttachment,
 )
+from app.db.documents_repository import DocumentRecord, DocumentsRepository
 from app.db.models_auth import User
 from app.db.models_conversations import Message
+from app.db.notebooks_repository import NotebooksRepository
 from app.db.project_knowledge_repository import ProjectKnowledgeRecord, ProjectKnowledgeRepository
 from app.db.project_profile_repository import ProjectProfileRecord, ProjectProfileRepository
 from app.db.projects_repository import ProjectsRepository
-from app.db.documents_repository import DocumentRecord, DocumentsRepository
 from app.db.scopes_repository import ConversationDocumentRecord, ScopesRepository
+from app.db.writing_project_files_repository import WritingProjectFilesRepository
 from app.deps import (
     AttachmentStorageDep,
     ChatRateLimiterDep,
@@ -66,6 +74,7 @@ from app.deps import (
     DocumentsRepositoryDep,
     EvidenceClientDep,
     LLMProviderDep,
+    NotebooksRepositoryDep,
     ProjectKnowledgeRepositoryDep,
     ProjectProfileRepositoryDep,
     ProjectsRepositoryDep,
@@ -77,6 +86,7 @@ from app.deps import (
     SettingsDep,
     VectorStoreDep,
     VisionServiceDep,
+    WritingProjectFilesRepositoryDep,
 )
 from app.schemas.chat import (
     ChatDoneEvent,
@@ -86,6 +96,7 @@ from app.schemas.chat import (
     ChatSourcesEvent,
     ChatTokenEvent,
     TransparencyResponse,
+    WritingContextSummaryResponse,
 )
 from app.schemas.conversations import (
     AddConversationDocumentsRequest,
@@ -103,6 +114,7 @@ from app.schemas.conversations import (
     RenameConversationRequest,
     ReplaceConversationDocumentsRequest,
     UpdateConversationScopeRequest,
+    WritingContextRequestFields,
 )
 from app.services.attachment_storage import (
     AttachmentStorage,
@@ -224,9 +236,7 @@ def _freshened_citations(
             freshened.append(citation)
             continue
         document_id = citation.get("document_id")
-        canonical = (
-            canonical_documents.get(document_id) if isinstance(document_id, str) else None
-        )
+        canonical = canonical_documents.get(document_id) if isinstance(document_id, str) else None
         if canonical is None:
             freshened.append(citation)
             continue
@@ -742,9 +752,7 @@ def replace_conversation_documents_route(
     return _conversation_document_list_response(records)
 
 
-@router.delete(
-    "/{conversation_id}/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT
-)
+@router.delete("/{conversation_id}/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 def remove_conversation_document(
     conversation_id: uuid.UUID,
     document_id: str,
@@ -786,6 +794,11 @@ class ParsedMessageRequest:
     # PostConversationMessageRequest.use_corpus.
     use_corpus: bool = False
     attachments: list[ParsedAttachmentUpload] = field(default_factory=list)
+    # Milestone 6.2 — present only for a Writing Ask EduM8 turn (JSON
+    # requests only; Writing never sends attachments, so the multipart
+    # parse path below never sets this — a Writing turn is always
+    # text-only).
+    writing_context: WritingContextRequestFields | None = None
 
 
 @dataclass
@@ -843,6 +856,7 @@ async def _parse_json_message_request(request: Request) -> ParsedMessageRequest:
         filters=parsed.filters,
         client_message_id=parsed.client_message_id,
         use_corpus=parsed.use_corpus,
+        writing_context=parsed.writing_context,
     )
 
 
@@ -979,14 +993,29 @@ def _message_source_to_chunk(source: object) -> RetrievedChunk:
 
 
 def _final_reply_events(
-    repository: ConversationsRepository, assistant_message_id: uuid.UUID, timer: RequestTimer
+    repository: ConversationsRepository,
+    assistant_message_id: uuid.UUID,
+    timer: RequestTimer,
+    *,
+    writing_context_summary: WritingContextSummaryResponse | None = None,
 ) -> Iterator[str]:
     """Reads the authoritative, already-persisted final row for
     `assistant_message_id` and yields the sources/done (or error) SSE
     event(s) for it — the common tail shared by a live generation that
     just finished, a reconnect that caught up to one already finished, and
     a full replay of one that finished before this request even began
-    (see _replay_finished_reply)."""
+    (see _replay_finished_reply).
+
+    `writing_context_summary` (Milestone 6.2 Parts 11/12) is NOT persisted
+    anywhere — it's only ever available to the SAME request that just
+    built the WritingContextPacket this turn used (see
+    _handle_conversation_message), so it's passed in as a plain optional
+    kwarg rather than threaded through generation_manager's background-
+    worker persistence (which would mean touching every one of its several
+    call sites for a compact UI indicator, real risk for little value).
+    A later reconnect or a full history replay therefore shows no context
+    indicator for that turn — an honest "we don't know," never a
+    fabricated guess at what an earlier request actually used."""
     final = repository.get_message(assistant_message_id)
     if final is None:
         yield _sse(ChatErrorEvent(message="This message could not be found."))
@@ -1020,6 +1049,7 @@ def _final_reply_events(
                 else None
             ),
             debug_timings=timer.as_dict() or None,
+            writing_context_summary=writing_context_summary,
         )
     )
 
@@ -1064,6 +1094,9 @@ def _stream_text_reply(
     attachment_storage: AttachmentStorage,
     session_factory: Callable[[], Session],
     evidence_client: EvidenceClient,
+    writing_context_text: str | None = None,
+    writing_policy_layers: dict[str, bool] | None = None,
+    writing_context_summary: WritingContextSummaryResponse | None = None,
 ) -> StreamingResponse:
     """Streams (or attaches to) one assistant reply. The actual LLM call
     now runs on a detached background thread (see
@@ -1104,11 +1137,28 @@ def _stream_text_reply(
             yield _sse(ChatProgressEvent(stage="generating"))
             for delta in generation_manager.poll_until_done(assistant_message.id):
                 yield _sse(ChatTokenEvent(content=delta))
-            yield from _final_reply_events(repository, assistant_message.id, timer)
+            yield from _final_reply_events(
+                repository,
+                assistant_message.id,
+                timer,
+                writing_context_summary=writing_context_summary,
+            )
             return
 
         yield _sse(ChatProgressEvent(stage="retrieving"))
         include_chat, include_project, include_general = _effective_scope_flags(scope_settings)
+        # Milestone 6.2 Part 4/24 — the M6.1 policy is the AUTHORITY on
+        # whether this turn retrieves at all, overriding the
+        # conversation's own scope toggles for local_edit/explanation
+        # turns specifically ("Fix the grammar" must never RAG merely
+        # because the conversation's Project/General toggles happen to
+        # be on). Only ever narrows retrieval (never widens it beyond
+        # what the toggles already allow) — a policy that DOES want
+        # evidence (reference_question/cross_source_synthesis) leaves
+        # include_chat/project/general exactly as the toggles already
+        # say, unchanged from today's behavior.
+        if writing_policy_layers is not None and not writing_policy_layers["evidence"]:
+            include_chat = include_project = include_general = False
         token = bind_timer(timer)
         try:
             prepared = rag_service.prepare(
@@ -1119,6 +1169,7 @@ def _stream_text_reply(
                 conversation_id=str(conversation_id),
                 project_ids=tuple(str(p) for p in project_ids),
                 project_context=project_context,
+                writing_context=writing_context_text,
                 include_chat=include_chat,
                 include_project=include_project,
                 include_general=include_general,
@@ -1126,6 +1177,33 @@ def _stream_text_reply(
             )
         finally:
             unbind_timer(token)
+        # Milestone 6.2 — `insufficient_evidence` (RagService.prepare's
+        # own `len(evidence.sources) == 0`) means "the researcher asked
+        # something requiring evidence and none was found," which today
+        # skips the model entirely and returns a canned NO_EVIDENCE_
+        # ANSWER (see generation_manager.run_text_generation). That is
+        # wrong for a Writing turn in two distinct ways:
+        #   1. local_edit/explanation/manuscript_question deliberately
+        #      never retrieve at all (include_* forced False above) — zero
+        #      sources there means "not applicable," never "insufficient."
+        #   2. reference_question/cross_source_synthesis CAN have real
+        #      writing_context (e.g. reference metadata for a bibliography
+        #      entry with no connected source document — Part 16's own
+        #      worked example) even when real RAG evidence is empty; the
+        #      model should still run and can honestly say "you have a
+        #      reference with this title" using that metadata, rather
+        #      than being bypassed in favor of a canned reply that
+        #      ignores it entirely (Part 15: "reuse... where appropriate"
+        #      — appropriate here means the MODEL states insufficiency
+        #      using the _WRITING_CONTEXT_ADDENDUM's own rules, not that
+        #      generation is skipped outright).
+        # The model is therefore always called for a Writing turn that has
+        # ANY writing_context to offer; only a Writing turn with neither
+        # writing_context nor real evidence falls through to today's
+        # ordinary canned-reply behavior, same as any other empty Chat
+        # query.
+        if writing_context_text is not None:
+            prepared.insufficient_evidence = False
         yield _sse(ChatProgressEvent(stage="processing_context"))
 
         if timer.enabled:
@@ -1190,7 +1268,12 @@ def _stream_text_reply(
 
         for delta in generation_manager.poll_until_done(assistant_message.id):
             yield _sse(ChatTokenEvent(content=delta))
-        yield from _final_reply_events(repository, assistant_message.id, timer)
+        yield from _final_reply_events(
+            repository,
+            assistant_message.id,
+            timer,
+            writing_context_summary=writing_context_summary,
+        )
 
         # Milestone 11 §21: strictly AFTER the SSE stream has already
         # yielded every event above — this line runs once the consumer
@@ -1496,6 +1579,8 @@ def _handle_conversation_message(
     session_factory: Callable[[], Session],
     llm_provider: LLMProvider,
     evidence_client: EvidenceClient,
+    writing_files_repository: WritingProjectFilesRepository,
+    notebooks_repository: NotebooksRepository,
 ) -> StreamingResponse:
     # Checked before any DB/validation work (milestone V4 — see
     # app/core/rate_limiter.py): the cheapest possible rejection for a
@@ -1505,9 +1590,7 @@ def _handle_conversation_message(
         retry_after = rate_limiter.seconds_until_next_slot(str(user.id))
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=(
-                "Too many messages sent recently. Please wait a moment and try again."
-            ),
+            detail=("Too many messages sent recently. Please wait a moment and try again."),
             headers={"Retry-After": str(max(1, round(retry_after)))},
         )
 
@@ -1536,9 +1619,7 @@ def _handle_conversation_message(
         # below as the project-scope tier(s), priority-ordered above the
         # general corpus (see app/core/scoped_retrieval.py). [] for a
         # conversation in zero projects, the common case today.
-        project_ids = projects_repository.get_project_ids_for_conversation(
-            user.id, conversation_id
-        )
+        project_ids = projects_repository.get_project_ids_for_conversation(user.id, conversation_id)
         selected_document_count = scopes_repository.count_conversation_documents(
             user.id, conversation_id
         )
@@ -1583,6 +1664,72 @@ def _handle_conversation_message(
             if item.project_id not in project_ids
         ]
     project_context = format_project_context(approved_items, profiles)
+
+    # Milestone 6.2 (Context-Aware Ask EduM8) — present only for a
+    # Writing Ask EduM8 turn (parsed.writing_context is None for every
+    # other conversation, which is completely unaffected by this block).
+    # Reuses M6.1's engine as-is (Part 0: "DO NOT rebuild it") — this is
+    # the ONE place a live request calls build_writing_context. Passes
+    # `retriever=None` deliberately: real evidence retrieval for the
+    # live answer continues to flow through the EXISTING conversation-
+    # scoped RAG pipeline just below (retriever/include_* flags), which
+    # is already how Writing Ask EduM8 scopes retrieval to the project's
+    # connected reference documents (via replaceConversationDocuments —
+    # unchanged) — calling the Retriever a SECOND time here, inside the
+    # M6.1 engine, would just be duplicate retrieval for the exact same
+    # turn. M6.1's own internal evidence-retrieval capability remains
+    # used only by its own /context inspection endpoint.
+    writing_context_text: str | None = None
+    writing_policy_layers: dict[str, bool] | None = None
+    writing_context_summary: WritingContextSummaryResponse | None = None
+    if parsed.writing_context is not None:
+        try:
+            writing_packet = build_writing_context(
+                WritingContextRequest(
+                    project_id=parsed.writing_context.project_id,
+                    active_file_id=parsed.writing_context.active_file_id,
+                    cursor_position=parsed.writing_context.cursor_position,
+                    selection_start=parsed.writing_context.selection_start,
+                    selection_end=parsed.writing_context.selection_end,
+                    selected_text=parsed.writing_context.selected_text,
+                    active_file_unsaved_content=parsed.writing_context.active_file_unsaved_content,
+                    user_request=parsed.query,
+                ),
+                user_id=user.id,
+                files_repo=writing_files_repository,
+                notebooks_repo=notebooks_repository,
+                retriever=None,
+            )
+        except WritingContextAuthorizationError as exc:
+            # Same "404, not 403" convention as every other cross-user
+            # access attempt in this codebase (Part 37: "No context from
+            # another user may enter a model request" — refusing outright,
+            # never silently proceeding without Writing context).
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND, detail="Writing project not found"
+            ) from exc
+        writing_context_text = format_writing_context_block(writing_packet)
+        writing_policy_layers = POLICY_LAYERS[writing_packet.policy]
+        # Parts 11/12 — the compact, honest context indicator the Ask
+        # EduM8 panel renders. Counts/booleans only, mirroring the
+        # WritingContextPacket this turn actually built — never a debug
+        # dump of manuscript/evidence text (see WritingContextSummaryResponse).
+        writing_context_summary = WritingContextSummaryResponse(
+            policy=writing_packet.policy,
+            selection_included=writing_packet.selection is not None,
+            section_included=writing_packet.section is not None,
+            notes_included=len(writing_packet.notes),
+            highlights_included=len(writing_packet.highlights),
+            reference_metadata_included=len(writing_packet.reference_metadata),
+        )
+        if timer.enabled:
+            # Part 22 — safe: policy name and counts only, never
+            # manuscript/evidence text.
+            timer.record_tag("writing_policy", writing_packet.policy)
+            timer.record_metric(
+                "writing_context_tokens_est",
+                float(writing_packet.diagnostics.estimated_total_tokens),
+            )
 
     if len(parsed.attachments) > settings.chat_attachment_max_files_per_message:
         raise HTTPException(
@@ -1654,7 +1801,8 @@ def _handle_conversation_message(
                 plan = plan_pdf_batches(
                     single_pdf.data,
                     batch_size=min(
-                        settings.vision_batch_pages_per_batch, settings.vision_max_images_per_message
+                        settings.vision_batch_pages_per_batch,
+                        settings.vision_max_images_per_message,
                     ),
                     max_pages=settings.vision_batch_max_pages,
                     text_min_chars=settings.vision_batch_text_min_chars,
@@ -1826,6 +1974,9 @@ def _handle_conversation_message(
         attachment_storage=attachment_storage,
         session_factory=session_factory,
         evidence_client=evidence_client,
+        writing_context_text=writing_context_text,
+        writing_policy_layers=writing_policy_layers,
+        writing_context_summary=writing_context_summary,
     )
 
 
@@ -1850,6 +2001,8 @@ async def post_conversation_message(
     session_factory: SessionFactoryDep,
     llm_provider: LLMProviderDep,
     evidence_client: EvidenceClientDep,
+    writing_files_repository: WritingProjectFilesRepositoryDep,
+    notebooks_repository: NotebooksRepositoryDep,
 ) -> StreamingResponse:
     """Accepts either `application/json` (the original, text-only shape —
     see PostConversationMessageRequest) or `multipart/form-data` (adds
@@ -1900,6 +2053,8 @@ async def post_conversation_message(
         session_factory,
         llm_provider,
         evidence_client,
+        writing_files_repository,
+        notebooks_repository,
     )
 
 
@@ -1928,11 +2083,7 @@ def cancel_message_generation(
     if conversation is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     message = repository.get_message(message_id)
-    if (
-        message is None
-        or message.conversation_id != conversation_id
-        or message.role != "assistant"
-    ):
+    if message is None or message.conversation_id != conversation_id or message.role != "assistant":
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Message not found")
     if message.status != "generating":
         # Nothing to cancel — already finished, failed, or already

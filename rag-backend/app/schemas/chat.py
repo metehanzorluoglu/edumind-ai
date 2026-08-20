@@ -87,6 +87,25 @@ class TransparencyResponse(BaseModel):
     profile_fields_used: list[str] = Field(default_factory=list)
 
 
+class WritingContextSummaryResponse(BaseModel):
+    """Milestone 6.2 Parts 11/12 — the compact, honest, non-debug context
+    indicator the Ask EduM8 panel renders (e.g. "Current selection ·
+    Current section · Reference metadata"). Reflects exactly what THIS
+    turn's WritingContextPacket actually included — never a guess at what
+    the model probably used, and never conflated with real RAG evidence
+    (that continues to be reported via the separate `sources` SSE event/
+    ChatResult.sources, exactly as it already was before M6.2). Present
+    only on a Writing Ask EduM8 turn; absent (None) for every ordinary
+    Chat message, which is completely unaffected by this field."""
+
+    policy: str
+    selection_included: bool
+    section_included: bool
+    notes_included: int
+    highlights_included: int
+    reference_metadata_included: int
+
+
 class ChatDoneEvent(BaseModel):
     type: Literal["done"] = "done"
     citations: list[Citation] = Field(default_factory=list)
@@ -102,6 +121,8 @@ class ChatDoneEvent(BaseModel):
     # stream is about to end, and ChatDoneEvent is already the one event
     # guaranteed to be emitted exactly once at that point.
     debug_timings: dict[str, float] | None = None
+    # Milestone 6.2 Parts 11/12 — see WritingContextSummaryResponse above.
+    writing_context_summary: WritingContextSummaryResponse | None = None
 
 
 class ChatErrorEvent(BaseModel):
