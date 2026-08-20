@@ -6,6 +6,7 @@ import {
   type DisplaySource,
   type NotebookEntry,
   type RetrievedChunk,
+  type WritingContextSummary,
 } from 'education-assistant-client';
 import { useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -19,10 +20,13 @@ import { TextField } from '@/components/ui/TextField';
 import { ReferencePickerModal } from '@/components/writing/ReferencePickerModal';
 import { ResearchNotesPickerModal } from '@/components/writing/ResearchNotesPickerModal';
 import { WritingEvidenceCard } from '@/components/writing/WritingEvidenceCard';
-import { useClient } from '@/lib/ClientProvider';
 import { useTheme, type Theme } from '@/lib/Preferences';
-import { type TransientAIContextEntry } from '@/lib/transientAIContext';
-import { type WritingAskScopeKind, type WritingAskTurn, useWritingAsk } from '@/lib/useWritingAsk';
+import {
+  type UseWritingAskResult,
+  type WritingAskEditorContext,
+  type WritingAskScopeKind,
+  type WritingAskTurn,
+} from '@/lib/useWritingAsk';
 
 // Writing's requests are always text-only (no attachments) and always
 // retrieval-backed (a scope with zero documents is refused up front by
@@ -57,6 +61,43 @@ function ElapsedIndicator({ startedAt }: { startedAt: number }) {
   return <Text style={styles.elapsedLabel}>Generating… {seconds.toFixed(0)}s</Text>;
 }
 
+/** Milestone 6.2 Parts 11/12 — the compact, honest, non-debug context
+ * indicator: exactly what this turn's WritingContextPacket actually
+ * included (see WritingContextSummary's own docstring), plus the real
+ * RAG evidence count already carried on the turn (`turn.sources`, always
+ * genuine retrieved evidence — reference-metadata items never appear
+ * there, see WritingEvidenceCard/mapSourcesToCitations). Never says
+ * "Evidence from a paper" for a metadata-only reference — that case
+ * shows the separate, honestly-worded "Reference metadata" label
+ * instead. Returns null (renders nothing) when there's genuinely
+ * nothing to report, rather than forcing an empty indicator line. */
+function writingContextIndicatorLabel(
+  summary: WritingContextSummary | null,
+  evidenceCount: number
+): string | null {
+  const parts: string[] = [];
+  if (summary?.selection_included) parts.push('Current selection');
+  if (summary?.section_included) parts.push('Current section');
+  if (summary && summary.notes_included > 0) {
+    parts.push(`${summary.notes_included} research note${summary.notes_included === 1 ? '' : 's'}`);
+  }
+  if (summary && summary.highlights_included > 0) {
+    parts.push(
+      `${summary.highlights_included} highlight${summary.highlights_included === 1 ? '' : 's'}`
+    );
+  }
+  if (summary && summary.reference_metadata_included > 0) parts.push('Reference metadata');
+  // Real RAG evidence (turn.sources) is tracked independently of the
+  // writing_context_summary field's own presence (see this turn's own
+  // `sources` SSE event) — a summary-less turn (e.g. a reconnect/replay
+  // that couldn't reconstruct it, see _final_reply_events' docstring)
+  // still honestly reports genuine evidence if there is any.
+  if (evidenceCount > 0) {
+    parts.push(`Evidence from ${evidenceCount} source${evidenceCount === 1 ? '' : 's'}`);
+  }
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
 /** A short, honest "answered in Ns" caption — Part 4's "record time to
  * first token / time to completed answer" surfaced as a small transparency
  * note, not a prominent metric. */
@@ -82,8 +123,29 @@ export interface AskEduM8PanelProps {
   /** The editor's CURRENT text selection, or '' when nothing is
    * selected — read fresh from the parent on every render so the
    * manuscript-context checkbox always reflects what's actually
-   * selected right now (Part 3). */
+   * selected right now (Part 3). Display-only in this panel; the actual
+   * context sent to the model is built from the structured fields below
+   * and reconstructed server-side by the M6.1 engine (Milestone 6.2
+   * Part 2 — this string is never itself sent as/folded into the query
+   * text anymore). */
   manuscriptSelectionText: string;
+  /** Milestone 6.2 Part 3 — the current Writing project/file/selection
+   * state, sent structured on every Ask so the M6.1 engine can build
+   * (and validate) manuscript context server-side. `activeFileContent`
+   * is the LIVE editor buffer (possibly unsaved) for `activeFileId` —
+   * always sent so a question never has to wait for autosave (Part 21). */
+  projectId: string;
+  activeFileId: string | null;
+  selectionStart: number;
+  selectionEnd: number;
+  activeFileContent: string;
+  /** Milestone 6.2 Part 10 — lifted up to the parent screen (was
+   * previously instantiated internally via useWritingAsk()) so the
+   * selection-aware quick-action bar next to the editor can share the
+   * exact same turns/asking state and conversation as this panel. See
+   * writing/[id].tsx's own comment on why this is still exactly as
+   * durable as the old internal call (the parent never unmounts). */
+  ask: UseWritingAskResult;
   onOpenSource: (source: DisplaySource) => void;
   onAddReference: (documentId: string) => Promise<void>;
   onInsertCitation: (documentId: string) => Promise<void>;
@@ -110,6 +172,12 @@ export function AskEduM8Panel({
   onClose,
   projectReferenceDocumentIds,
   manuscriptSelectionText,
+  projectId,
+  activeFileId,
+  selectionStart,
+  selectionEnd,
+  activeFileContent,
+  ask,
   onOpenSource,
   onAddReference,
   onInsertCitation,
@@ -117,8 +185,6 @@ export function AskEduM8Panel({
 }: AskEduM8PanelProps) {
   const theme = useTheme();
   const styles = useMemo(() => buildStyles(theme), [theme]);
-  const { client } = useClient();
-  const ask = useWritingAsk(client, projectReferenceDocumentIds);
 
   const [question, setQuestion] = useState('');
   const [includeManuscriptSelection, setIncludeManuscriptSelection] = useState(true);
@@ -133,17 +199,21 @@ export function AskEduM8Panel({
   const hasManuscriptSelection = manuscriptSelectionText.trim().length > 0;
 
   function handleAsk(): void {
-    const manuscriptEntry: TransientAIContextEntry | null =
-      hasManuscriptSelection && includeManuscriptSelection
-        ? {
-            sourceType: 'manuscript-selection',
-            documentId: null,
-            documentTitle: null,
-            pageNumber: null,
-            excerpt: manuscriptSelectionText.trim(),
-          }
-        : null;
-    void ask.ask(question, manuscriptEntry).then(() => setQuestion(''));
+    // Milestone 6.2 Part 2/3 — the manuscript-context checkbox still
+    // lets the researcher opt OUT of sending their current selection
+    // (matching the pre-M6.2 UX exactly); when included, the actual
+    // selection range/content travel structured, not as flattened text.
+    const includeSelection = hasManuscriptSelection && includeManuscriptSelection;
+    const editorContext: WritingAskEditorContext = {
+      projectId,
+      activeFileId,
+      cursorPosition: includeSelection ? selectionStart : selectionEnd,
+      selectionStart: includeSelection ? selectionStart : selectionEnd,
+      selectionEnd: includeSelection ? selectionEnd : selectionEnd,
+      selectedText: includeSelection ? manuscriptSelectionText : '',
+      activeFileUnsavedContent: activeFileContent,
+    };
+    void ask.ask(question, editorContext).then(() => setQuestion(''));
   }
 
   if (!visible) return null;
@@ -308,10 +378,13 @@ function AskTurnView({
   // Chat's own thinking-preview lifecycle (ThinkingPlaceholder's docs).
   const showThinking = turn.status === 'sending' || (turn.status === 'streaming' && !turn.answer);
 
+  const contextIndicator = writingContextIndicatorLabel(turn.contextSummary, turn.sources.length);
+
   return (
     <View style={styles.turn}>
       <Text style={styles.question}>{turn.question}</Text>
       <Text style={styles.turnScope}>Asked using: {turn.scopeLabel}</Text>
+      {contextIndicator && <Text style={styles.contextIndicator}>{contextIndicator}</Text>}
 
       <ThinkingPlaceholder
         context={WRITING_THINKING_CONTEXT}
@@ -440,6 +513,14 @@ function buildStyles(theme: Theme) {
     turn: { gap: 6 },
     question: { fontSize: 13.5, fontFamily: theme.fonts.bodySemibold, color: theme.text },
     turnScope: { fontSize: 11, fontFamily: theme.fonts.body, color: theme.faint },
+    // Milestone 6.2 Parts 11/12 — deliberately styled as quietly as
+    // turnScope (a fact about the request, not a headline metric).
+    contextIndicator: {
+      fontSize: 11,
+      fontFamily: theme.fonts.body,
+      color: theme.faint,
+      marginTop: -2,
+    },
     spinner: { marginVertical: 12 },
     liveRow: {
       flexDirection: 'row',

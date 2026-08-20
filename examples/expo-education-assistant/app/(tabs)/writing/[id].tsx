@@ -37,6 +37,7 @@ import { LatexCodeEditor, type LatexCodeEditorHandle } from '@/components/writin
 import { NotesPanel } from '@/components/writing/NotesPanel';
 import { ReferencePickerModal } from '@/components/writing/ReferencePickerModal';
 import { ReferencesPanel } from '@/components/writing/ReferencesPanel';
+import { SelectionQuickActions } from '@/components/writing/SelectionQuickActions';
 import { WritingAssetPreview } from '@/components/writing/WritingAssetPreview';
 import { WritingFileTree } from '@/components/writing/WritingFileTree';
 import { useClient } from '@/lib/ClientProvider';
@@ -49,6 +50,7 @@ import { useDragResizeWidth } from '@/lib/useDragResizeWidth';
 import { useFeatureFlags } from '@/lib/FeatureFlags';
 import { registerNavigationFlush } from '@/lib/navigationFlushGuard';
 import { getSessionNavState, setSessionNavState } from '@/lib/sessionNavCache';
+import { useWritingAsk } from '@/lib/useWritingAsk';
 import {
   useTheme,
   usePreferences,
@@ -996,6 +998,17 @@ export default function WritingProjectEditorScreen() {
   // transient context prefix (see AskEduM8Panel/useWritingAsk).
   const manuscriptSelectionText = content.slice(selection.start, selection.end);
 
+  // Milestone 6.2 Part 10 — lifted up from AskEduM8Panel (which used to
+  // call useWritingAsk() itself) so the selection-aware quick-action bar
+  // below can share the exact same turns/asking state and conversation —
+  // a quick action's answer appears in the SAME Ask EduM8 turn history a
+  // manually-typed question would, never a second parallel thread. This
+  // is safe for the "never lose the conversation on tab switch" guarantee
+  // (see the panelTab display-toggle comment below): [id].tsx itself
+  // never unmounts on a tab switch, so this hook call is exactly as
+  // durable as AskEduM8Panel's own used to be.
+  const ask = useWritingAsk(client, referenceDocumentIds);
+
   // Milestone 5.5.1 Part 15-19 — real completion data for the editor's
   // autocomplete: citation keys from the project's ACTUAL added
   // references (never invented) and .tex file paths (extension
@@ -1072,6 +1085,20 @@ export default function WritingProjectEditorScreen() {
         : 'Compile failed'
       : 'Compile';
 
+  // Milestone 6.2 Part 10 — shared by the Cmd/Ctrl+K shortcut below and
+  // the selection-aware quick-action bar next to the editor: switches to
+  // (and, on desktop, un-collapses) the Ask EduM8 tab so a request's
+  // answer is immediately visible, without duplicating this branching
+  // logic at each call site.
+  const openAskPanel = useCallback((): void => {
+    if (isWide) {
+      setPanelTab('ask');
+      setResearchDrawerOpen(true);
+    } else {
+      setMobileTab('ask');
+    }
+  }, [isWide, setPanelTab, setMobileTab, setResearchDrawerOpen]);
+
   // Milestone 5.5 Part 12 — safe, conventional keyboard shortcuts, scoped
   // to this screen's lifetime. Same Platform.OS==='web' &&
   // document-exists guard + document.addEventListener('keydown', ...)
@@ -1107,24 +1134,10 @@ export default function WritingProjectEditorScreen() {
         }
       } else if (key === 'k') {
         e.preventDefault();
-        if (isWide) {
-          setPanelTab('ask');
-          setResearchDrawerOpen(true);
-        } else {
-          setMobileTab('ask');
-        }
+        openAskPanel();
       }
     },
-    [
-      flushActiveFile,
-      flush,
-      latexCompilation,
-      compiling,
-      isWide,
-      setPanelTab,
-      setMobileTab,
-      setResearchDrawerOpen,
-    ]
+    [flushActiveFile, flush, latexCompilation, compiling, openAskPanel]
   );
   useEffect(() => {
     if (
@@ -1296,6 +1309,12 @@ export default function WritingProjectEditorScreen() {
             onClose={() => setPanelTab('references')}
             projectReferenceDocumentIds={referenceDocumentIds}
             manuscriptSelectionText={manuscriptSelectionText}
+            projectId={project.id}
+            activeFileId={activeFileId}
+            selectionStart={selection.start}
+            selectionEnd={selection.end}
+            activeFileContent={content}
+            ask={ask}
             onOpenSource={handleOpenEvidenceSource}
             onAddReference={(documentId) => addReferences([documentId]).then(() => undefined)}
             onInsertCitation={handleInsertCitationForDocument}
@@ -1724,30 +1743,47 @@ export default function WritingProjectEditorScreen() {
             ) : activeFileLoadState.status === 'loading' && !isActiveFileEditable ? (
               <ActivityIndicator style={styles.spinner} color={theme.accent} />
             ) : (
-              <LatexCodeEditor
-                ref={editorRef}
-                value={content}
-                onValueChange={setActiveFileContent}
-                selection={selection}
-                onSelectionChange={handleSelectionChange}
-                editable={isActiveFileEditable}
-                theme={theme}
-                placeholder="\\documentclass{article}…"
-                autocompleteData={autocompleteData}
-                flashLine={flashLine}
-                errorLines={activeFileErrorLines}
-                accessibilityLabel="LaTeX source editor"
-                // Milestone 5.5 Part 12 — see handleShortcutKey's own
-                // comment: a raw DOM <textarea> doesn't stop keydown from
-                // reaching the document-level listener above the way
-                // react-native-web's old TextInput did, but this is wired
-                // explicitly anyway — see LatexCodeEditor's own comment on
-                // never depending on unforced event bubbling for a
-                // release-critical shortcut path.
-                onShortcutKeyDown={(e) =>
-                  handleShortcutKey(e as unknown as Parameters<typeof handleShortcutKey>[0])
-                }
-              />
+              <>
+                <SelectionQuickActions
+                  visible={isActiveFileEditable && manuscriptSelectionText.trim().length > 0}
+                  selectedText={manuscriptSelectionText}
+                  disabled={!ask.canAsk}
+                  ask={ask}
+                  editorContext={{
+                    projectId: project.id,
+                    activeFileId,
+                    cursorPosition: selection.end,
+                    selectionStart: selection.start,
+                    selectionEnd: selection.end,
+                    activeFileUnsavedContent: content,
+                  }}
+                  onOpenAskPanel={openAskPanel}
+                />
+                <LatexCodeEditor
+                  ref={editorRef}
+                  value={content}
+                  onValueChange={setActiveFileContent}
+                  selection={selection}
+                  onSelectionChange={handleSelectionChange}
+                  editable={isActiveFileEditable}
+                  theme={theme}
+                  placeholder="\\documentclass{article}…"
+                  autocompleteData={autocompleteData}
+                  flashLine={flashLine}
+                  errorLines={activeFileErrorLines}
+                  accessibilityLabel="LaTeX source editor"
+                  // Milestone 5.5 Part 12 — see handleShortcutKey's own
+                  // comment: a raw DOM <textarea> doesn't stop keydown from
+                  // reaching the document-level listener above the way
+                  // react-native-web's old TextInput did, but this is wired
+                  // explicitly anyway — see LatexCodeEditor's own comment on
+                  // never depending on unforced event bubbling for a
+                  // release-critical shortcut path.
+                  onShortcutKeyDown={(e) =>
+                    handleShortcutKey(e as unknown as Parameters<typeof handleShortcutKey>[0])
+                  }
+                />
+              </>
             )}
           </View>
         )}
@@ -1791,6 +1827,12 @@ export default function WritingProjectEditorScreen() {
             onClose={() => setMobileTab('editor')}
             projectReferenceDocumentIds={referenceDocumentIds}
             manuscriptSelectionText={manuscriptSelectionText}
+            projectId={project.id}
+            activeFileId={activeFileId}
+            selectionStart={selection.start}
+            selectionEnd={selection.end}
+            activeFileContent={content}
+            ask={ask}
             onOpenSource={handleOpenEvidenceSource}
             onAddReference={(documentId) => addReferences([documentId]).then(() => undefined)}
             onInsertCitation={handleInsertCitationForDocument}

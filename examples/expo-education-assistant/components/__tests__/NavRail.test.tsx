@@ -26,7 +26,9 @@ function findByLabel(root: ReactTestInstance, label: string): ReactTestInstance 
   return matches[0] ?? null;
 }
 
-async function renderRail(overrides: { onLogoPress?: () => void } = {}): Promise<ReactTestRenderer> {
+async function renderRail(
+  overrides: { onLogoPress?: () => void } = {}
+): Promise<ReactTestRenderer> {
   let renderer!: ReactTestRenderer;
   await act(async () => {
     renderer = create(

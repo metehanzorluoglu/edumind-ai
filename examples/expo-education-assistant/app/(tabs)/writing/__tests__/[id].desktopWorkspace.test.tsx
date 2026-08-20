@@ -276,9 +276,7 @@ describe('WritingProjectEditorScreen — desktop Research panel (Milestone 5.5)'
       const panelWrap = renderer.root.findAll(
         (n) =>
           Array.isArray(n.props.style) &&
-          n.props.style.some(
-            (s: unknown) => !!s && (s as { display?: string }).display === 'none'
-          )
+          n.props.style.some((s: unknown) => !!s && (s as { display?: string }).display === 'none')
       );
       expect(panelWrap.length).toBeGreaterThan(0);
 
@@ -399,7 +397,12 @@ describe('WritingProjectEditorScreen — desktop Research panel (Milestone 5.5)'
       const preventDefault = jest.fn();
 
       await act(async () => {
-        editor.props.onShortcutKeyDown({ key: 's', ctrlKey: false, metaKey: false, preventDefault });
+        editor.props.onShortcutKeyDown({
+          key: 's',
+          ctrlKey: false,
+          metaKey: false,
+          preventDefault,
+        });
         await flushAsync();
       });
 

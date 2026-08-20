@@ -7,6 +7,8 @@ import {
   type DisplaySource,
   type EducationAssistantClient,
   type NotebookEntry,
+  type WritingAskContextRequest,
+  type WritingContextSummary,
 } from 'education-assistant-client';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { generateClientMessageId } from '@/lib/clientMessageId';
@@ -15,6 +17,31 @@ import {
   transientEntryFromNotebookEntry,
   type TransientAIContextEntry,
 } from '@/lib/transientAIContext';
+
+/**
+ * Milestone 6.2 (Context-Aware Ask EduM8) Part 2 — the CURRENT editor
+ * state a Writing Ask EduM8 question is submitted with. Replaces the old
+ * client-side 'manuscript-selection' TransientAIContextEntry prefix
+ * (M5.2): manuscript context is no longer flattened into text on this
+ * side at all — it's sent structured, and the M6.1 Writing Context
+ * Engine (rag-backend) builds/validates/formats it server-side (Part 2:
+ * "That architecture must no longer be the authoritative Writing
+ * manuscript context mechanism"). Research-Notes transient context
+ * (a DIFFERENT, still-valid mechanism — Part 2's own explicit
+ * distinction) is untouched below.
+ */
+export interface WritingAskEditorContext {
+  projectId: string;
+  activeFileId: string | null;
+  cursorPosition: number;
+  selectionStart: number;
+  selectionEnd: number;
+  selectedText: string;
+  /** The live, possibly-unsaved buffer for `activeFileId` — always sent
+   * so the backend never has to fall back to a possibly-stale saved
+   * copy while autosave is still in flight (Part 3/21). */
+  activeFileUnsavedContent: string;
+}
 
 /**
  * Milestone 5.2 Part 4 — the three research-context scopes Ask EduM8 can
@@ -81,6 +108,15 @@ export interface WritingAskTurn {
   citations: Citation[];
   citationWarnings: string[];
   insufficientEvidence: boolean;
+  /** Milestone 6.2 Parts 11/12 — the compact, honest context indicator
+   * (see WritingContextSummary's own docstring). Null while the turn is
+   * still 'sending'/'streaming' (only known once the backend's 'done'
+   * event arrives) and for any non-Writing turn — this hook is only ever
+   * used by Writing, but a plain Chat-style question through it (no
+   * editorContext passed to ask()) still legitimately gets null back,
+   * same as the backend's own "absent for every ordinary Chat message"
+   * contract. */
+  contextSummary: WritingContextSummary | null;
   errorMessage: string | null;
   /** A truthful backend-reported status line (batched-PDF pipeline only,
    * same field Chat's ThinkingContext/progressDetail already surfaces) —
@@ -124,7 +160,7 @@ export interface UseWritingAskResult {
   setResearchNotesScope: (entries: NotebookEntry[]) => void;
   turns: WritingAskTurn[];
   asking: boolean;
-  ask: (question: string, manuscriptSelection?: TransientAIContextEntry | null) => Promise<void>;
+  ask: (question: string, editorContext?: WritingAskEditorContext | null) => Promise<void>;
   /** Aborts the in-flight stream (if any) both locally (stops rendering
    * further tokens) and on the backend (POST .../cancel, best-effort —
    * mirrors Chat's cancelPersistedGeneration) so the generation thread
@@ -262,20 +298,20 @@ export function useWritingAsk(
   }, [client]);
 
   const ask = useCallback(
-    async (
-      question: string,
-      manuscriptSelection?: TransientAIContextEntry | null
-    ): Promise<void> => {
+    async (question: string, editorContext?: WritingAskEditorContext | null): Promise<void> => {
       const trimmed = question.trim();
       if (!trimmed || asking || !canAsk) return;
 
-      const noteContextEntries =
+      // Milestone 6.2 Part 2 — manuscript selection/section context is no
+      // longer folded into the query text here at all; it travels
+      // structured (see `writingContext` below) straight to the M6.1
+      // engine. Research Notes transient context is untouched — a
+      // genuinely different, still-valid mechanism (Part 2's own
+      // explicit "may continue using existing architecture" distinction).
+      const transientEntries: TransientAIContextEntry[] =
         scopeKind === 'research-notes'
           ? selectedNoteEntries.map(transientEntryFromNotebookEntry)
           : [];
-      const transientEntries: TransientAIContextEntry[] = manuscriptSelection
-        ? [manuscriptSelection, ...noteContextEntries]
-        : noteContextEntries;
       const prefix = buildTransientContextPrefix(transientEntries);
       const fullQuery = `${prefix}${trimmed}`;
 
@@ -294,6 +330,7 @@ export function useWritingAsk(
           citations: [],
           citationWarnings: [],
           insufficientEvidence: false,
+          contextSummary: null,
           errorMessage: null,
           progressDetail: null,
           startedAt,
@@ -350,7 +387,22 @@ export function useWritingAsk(
           lastSyncedRef.current = { documentIds: activeDocumentIds, zoomIn };
         }
 
-        const request = { query: fullQuery, client_message_id: turnId };
+        const writingContext: WritingAskContextRequest | undefined = editorContext
+          ? {
+              project_id: editorContext.projectId,
+              active_file_id: editorContext.activeFileId,
+              cursor_position: editorContext.cursorPosition,
+              selection_start: editorContext.selectionStart,
+              selection_end: editorContext.selectionEnd,
+              selected_text: editorContext.selectedText,
+              active_file_unsaved_content: editorContext.activeFileUnsavedContent,
+            }
+          : undefined;
+        const request = {
+          query: fullQuery,
+          client_message_id: turnId,
+          writing_context: writingContext,
+        };
         let sawDone = false;
 
         try {
@@ -390,6 +442,7 @@ export function useWritingAsk(
                   citations: event.citations,
                   citationWarnings: event.citation_warnings,
                   insufficientEvidence: event.insufficient_evidence,
+                  contextSummary: event.writing_context_summary ?? null,
                   completedAt: Date.now(),
                 }));
                 break;
@@ -414,6 +467,7 @@ export function useWritingAsk(
               citations: result.citations,
               citationWarnings: result.citationWarnings,
               insufficientEvidence: result.insufficientEvidence,
+              contextSummary: result.writingContextSummary,
               completedAt: Date.now(),
             }));
           } else if (streamError instanceof RequestCancelledError) {

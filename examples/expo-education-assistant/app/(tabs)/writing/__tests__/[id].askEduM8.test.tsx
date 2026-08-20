@@ -24,6 +24,7 @@ import { LatexCodeEditor } from '@/components/writing/LatexCodeEditor';
 import { AuthProvider } from '@/lib/AuthProvider';
 import { ClientProvider } from '@/lib/ClientProvider';
 import { FeatureFlagsProvider } from '@/lib/FeatureFlags';
+import { __resetSessionNavCacheForTests } from '@/lib/sessionNavCache';
 import WritingProjectEditorScreen from '../[id]';
 
 jest.mock('expo-secure-store', () => ({
@@ -258,10 +259,15 @@ function patchScopeRoute(conversationId = 'conv-1'): FetchRoute {
 
 function messagesRoute(
   conversationId = 'conv-1',
-  options: { answer?: string; insufficientEvidence?: boolean } = {}
+  options: {
+    answer?: string;
+    insufficientEvidence?: boolean;
+    writingContextSummary?: Record<string, unknown> | null;
+  } = {}
 ): FetchRoute {
   const answer = options.answer ?? 'Teachers reported increased autonomy [S1].';
   const insufficientEvidence = options.insufficientEvidence ?? false;
+  const writingContextSummary = options.writingContextSummary ?? null;
   return {
     method: 'POST',
     matches: (u) => u.endsWith(`/conversations/${conversationId}/messages`),
@@ -277,6 +283,7 @@ function messagesRoute(
                 citations: [CITATION],
                 citation_warnings: [],
                 insufficient_evidence: false,
+                writing_context_summary: writingContextSummary,
               },
             ]
       ),
@@ -378,7 +385,9 @@ function filesTreeRoute(): FetchRoute {
     respond: () =>
       jsonResponse({
         files: [rootFileNode()],
-        generated: [{ name: 'references.bib', path: 'references.bib', read_only: true, reference_count: 0 }],
+        generated: [
+          { name: 'references.bib', path: 'references.bib', read_only: true, reference_count: 0 },
+        ],
         root_file_id: ROOT_FILE_ID,
         total_size_bytes: PROJECT.main_tex_content.length,
         file_count: 1,
@@ -432,7 +441,24 @@ async function renderScreen(routes: FetchRoute[]): Promise<ReactTestRenderer> {
 
 function openAskPanel(renderer: ReactTestRenderer): void {
   act(() => {
-    findPressableWithText(renderer.root, 'Ask EduM8').props.onPress();
+    // Milestone 6.2 Part 10 — targeted by accessibilityRole="tab", not a
+    // generic "Ask EduM8" text search: the selection-aware quick-action
+    // bar's own bare "Ask EduM8" action (role="button", opens the panel
+    // without asking anything — see SelectionQuickActions.tsx) visibly
+    // says the same words when a manuscript selection is active, so a
+    // plain findPressableWithText(root, 'Ask EduM8') is now genuinely
+    // ambiguous between "the tab that opens this panel" and "a quick
+    // action that also opens this panel." Both really do open the same
+    // panel, but only the tab is what this helper means to click.
+    renderer.root
+      .find(
+        (node) =>
+          typeof node.props.onPress === 'function' &&
+          node.props.accessibilityRole === 'tab' &&
+          node.findAll((n) => String(n.type) === 'Text' && textOf(n).includes('Ask EduM8')).length >
+            0
+      )
+      .props.onPress();
   });
 }
 
@@ -465,6 +491,18 @@ describe('Writing workspace — Ask EduM8 (Milestone 5.2)', () => {
   beforeEach(() => {
     mockPush.mockClear();
     activeRenderers = [];
+    // Milestone 6.2 Part 10 — without this, a real selection set by one
+    // test (onSelectionChange) leaks into every later test via the
+    // module-level session-nav cache ([id].tsx seeds cursorMemoryRef's
+    // initial value from getSessionNavState, keyed by this same fixture
+    // project id in every test here), since a fresh renderer's initial
+    // mount still reads back a PRIOR test's remembered cursor for the
+    // same file id. Harmless before the selection-aware quick-action bar
+    // existed (nothing rendered differently based on stray leftover
+    // selection state); now that something does, this reset — the same
+    // one [id].continuity.test.tsx already applies for the same reason —
+    // is required for true per-test isolation.
+    __resetSessionNavCacheForTests();
   });
 
   afterEach(async () => {
@@ -817,7 +855,11 @@ describe('Writing workspace — Ask EduM8 (Milestone 5.2)', () => {
     });
   });
 
-  it('a selected manuscript passage is included as transient context, worded as "my manuscript" (Part 3)', async () => {
+  it('a selected manuscript passage is sent as structured writing_context, not a query-text prefix (Milestone 6.2 Part 2)', async () => {
+    // Replaces the old M5.2 assertion (a client-side "Regarding this
+    // passage from my manuscript" text prefix) now that manuscript
+    // context is sent structured to the M6.1 Writing Context Engine
+    // instead — see lib/useWritingAsk.ts's own module docstring.
     const renderer = await renderScreen([
       getProjectRoute(),
       referencesRoute([REFERENCE]),
@@ -838,8 +880,165 @@ describe('Writing workspace — Ask EduM8 (Milestone 5.2)', () => {
     await askQuestion(renderer, 'Does my draft claim hold up?');
 
     const messageBody = bodyOf(findCall('POST', '/conversations/conv-1/messages'));
-    expect(String(messageBody.query)).toContain('Regarding this passage from my manuscript');
-    expect(String(messageBody.query)).not.toContain('the selected source');
+    expect(String(messageBody.query)).toBe('Does my draft claim hold up?');
+    expect(String(messageBody.query)).not.toContain('Regarding this passage from my manuscript');
+    const writingContext = messageBody.writing_context as Record<string, unknown>;
+    expect(writingContext).toBeTruthy();
+    expect(writingContext.project_id).toBe(PROJECT.id);
+    expect(typeof writingContext.selected_text).toBe('string');
+    expect((writingContext.selected_text as string).length).toBeGreaterThan(0);
+    expect(writingContext.selection_start).toBe(0);
+    expect(writingContext.selection_end).toBe(15);
+  });
+
+  it('the selection-aware quick-action bar is hidden when nothing is selected (Milestone 6.2 Part 10)', async () => {
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute([REFERENCE]),
+      createConversationRoute(),
+      putDocumentsRoute(),
+      patchScopeRoute(),
+      messagesRoute(),
+    ]);
+
+    const toolbar = renderer.root.findAll((n) => n.props.testID === 'selection-quick-actions');
+    expect(toolbar).toHaveLength(0);
+  });
+
+  it('Grammar quick action sends its controlled prompt with the current selection, landing in the same turn history (Milestone 6.2 Part 10)', async () => {
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute([REFERENCE]),
+      createConversationRoute(),
+      putDocumentsRoute(),
+      patchScopeRoute(),
+      messagesRoute(),
+    ]);
+
+    const editor = renderer.root.find((n) => n.type === LatexCodeEditor);
+    act(() => {
+      editor.props.onSelectionChange({ start: 0, end: 15 });
+    });
+
+    // Real (non-collapsed) selection now present — the bar appears (a
+    // single `.find()` throws unless exactly one match exists, so this
+    // doubles as the uniqueness check `renderer.root.findAll(...).length`
+    // alone can't safely make — see findPressableWithText's own note on
+    // findAll's default `deep: true` also matching react-native-web's
+    // composite View wrapper AND its underlying host node separately).
+    expect(() =>
+      renderer.root.find((n) => n.props.testID === 'selection-quick-actions')
+    ).not.toThrow();
+
+    // ...and pressing Grammar sends a controlled, non-editable prompt —
+    // never a free-text field the researcher has to fill in themselves,
+    // and never an automatic manuscript edit (Part 10/34: a rewrite is
+    // something to read and copy, not something applied for them).
+    await act(async () => {
+      findPressableByLabel(
+        renderer.root,
+        'Grammar — ask EduM8 about the selection'
+      ).props.onPress();
+      await flushAsync();
+    });
+
+    const messageBody = bodyOf(findCall('POST', '/conversations/conv-1/messages'));
+    expect(String(messageBody.query)).toContain('Check the grammar and spelling');
+    const writingContext = messageBody.writing_context as Record<string, unknown>;
+    expect(writingContext.selection_start).toBe(0);
+    expect(writingContext.selection_end).toBe(15);
+
+    // The quick action's own answer shows up in the SAME Ask EduM8 turn
+    // history a manually-typed question would — not a second, separate
+    // AI surface (Part 10's own "reuse, never duplicate" requirement).
+    expect(findByTextIncluding(renderer.root, 'Teachers reported increased autonomy')).toBeTruthy();
+  });
+
+  it('the bare "Ask EduM8" quick action only opens the panel — it never sends a request by itself (Milestone 6.2 Part 34)', async () => {
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute([REFERENCE]),
+      createConversationRoute(),
+      putDocumentsRoute(),
+      patchScopeRoute(),
+      messagesRoute(),
+    ]);
+
+    const editor = renderer.root.find((n) => n.type === LatexCodeEditor);
+    act(() => {
+      editor.props.onSelectionChange({ start: 0, end: 15 });
+    });
+
+    const toolbar = renderer.root.find((n) => n.props.testID === 'selection-quick-actions');
+    act(() => {
+      toolbar
+        .find(
+          (n) => typeof n.props.onPress === 'function' && n.props.accessibilityLabel === 'Ask EduM8'
+        )
+        .props.onPress();
+    });
+    await act(async () => {
+      await flushAsync();
+    });
+
+    expect(findCall('POST', '/conversations/conv-1/messages')).toBeUndefined();
+    expect(findByTextIncluding(renderer.root, 'Research context')).toBeTruthy();
+  });
+
+  it('renders the compact, honest context indicator from writing_context_summary (Milestone 6.2 Parts 11/12)', async () => {
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute([REFERENCE]),
+      createConversationRoute(),
+      putDocumentsRoute(),
+      patchScopeRoute(),
+      messagesRoute('conv-1', {
+        writingContextSummary: {
+          policy: 'reference_question',
+          selection_included: false,
+          section_included: true,
+          notes_included: 2,
+          highlights_included: 0,
+          reference_metadata_included: 1,
+        },
+      }),
+    ]);
+
+    openAskPanel(renderer);
+    await askQuestion(renderer, 'What does the literature say about this?');
+
+    // Real evidence (from the `sources` SSE event, via CHUNK/CITATION) AND
+    // reference metadata both surface — worded distinctly, per Part 12's
+    // "never say Evidence from a paper for metadata alone" rule: the
+    // metadata label here is its own separate "Reference metadata" phrase,
+    // never merged into the "Evidence from N sources" phrase.
+    expect(findByTextIncluding(renderer.root, 'Current section')).toBeTruthy();
+    expect(findByTextIncluding(renderer.root, '2 research notes')).toBeTruthy();
+    expect(findByTextIncluding(renderer.root, 'Reference metadata')).toBeTruthy();
+    expect(findByTextIncluding(renderer.root, 'Evidence from 1 source')).toBeTruthy();
+  });
+
+  it('omits selection/section/metadata from the indicator when writing_context_summary is absent, but still honestly reports real evidence', async () => {
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute([REFERENCE]),
+      createConversationRoute(),
+      putDocumentsRoute(),
+      patchScopeRoute(),
+      // No writing_context_summary at all (e.g. a reconnect/replay that
+      // couldn't reconstruct it — see _final_reply_events' own
+      // docstring) — the turn's real evidence (from the `sources` SSE
+      // event, tracked independently) must still show honestly.
+      messagesRoute('conv-1', { writingContextSummary: null }),
+    ]);
+
+    openAskPanel(renderer);
+    await askQuestion(renderer, 'What does the literature say about this?');
+
+    expect(queryByTextIncluding(renderer.root, 'Current selection')).toBeNull();
+    expect(queryByTextIncluding(renderer.root, 'Current section')).toBeNull();
+    expect(queryByTextIncluding(renderer.root, 'Reference metadata')).toBeNull();
+    expect(findByTextIncluding(renderer.root, 'Evidence from 1 source')).toBeTruthy();
   });
 
   // --- Milestone 5.5 Part 2/3/4: streaming ---------------------------
@@ -880,7 +1079,9 @@ describe('Writing workspace — Ask EduM8 (Milestone 5.2)', () => {
           // runtime this app actually ships to.
           init?.signal?.addEventListener('abort', () => {
             try {
-              controllerRef.error(Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' }));
+              controllerRef.error(
+                Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' })
+              );
             } catch {
               // already closed/errored — fine, nothing left to cancel
             }
@@ -899,7 +1100,8 @@ describe('Writing workspace — Ask EduM8 (Milestone 5.2)', () => {
   function cancelMessageRoute(conversationId = 'conv-1'): FetchRoute {
     return {
       method: 'POST',
-      matches: (u) => u.includes(`/conversations/${conversationId}/messages/`) && u.endsWith('/cancel'),
+      matches: (u) =>
+        u.includes(`/conversations/${conversationId}/messages/`) && u.endsWith('/cancel'),
       respond: () => new Response(null, { status: 204 }),
     };
   }
