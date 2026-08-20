@@ -192,6 +192,33 @@ class NotebooksRepository:
         )
         return [_to_entry_record(row) for row in rows], total
 
+    def list_all_entries_for_user(
+        self, user_id: uuid.UUID, *, limit: int = 500
+    ) -> list[NotebookEntryRecord]:
+        """Milestone 6.1 (Writing Context Engine) — every one of the
+        caller's own entries across ALL of their notebooks, newest
+        first, bounded by `limit` (a Writing context request never
+        needs more than a handful of the most relevant ones — see
+        app/core/writing_context_engine.py's own relevance ranking,
+        which further narrows this down; this cap exists only so a
+        power user with thousands of accumulated entries doesn't turn
+        one context-build into an unbounded table scan). Scoped to
+        `user_id` alone, never a specific notebook_id — the one new
+        query this repository needed for context-building (Part 27:
+        "most M6.1 data already exists" — no new table, one new
+        read-only query against the existing notebook_entries table)."""
+        rows = (
+            self._db.execute(
+                select(NotebookEntry)
+                .where(NotebookEntry.user_id == user_id)
+                .order_by(NotebookEntry.created_at.desc())
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
+        return [_to_entry_record(row) for row in rows]
+
     def get_entry(
         self, user_id: uuid.UUID, notebook_id: uuid.UUID, entry_id: uuid.UUID
     ) -> NotebookEntryRecord | None:
