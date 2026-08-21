@@ -400,7 +400,7 @@ Oracle backend container -> host's tailscale0 -> Tailscale -> MS-S1 -> vLLM -> Q
 
 | Setting | Purpose |
 |---|---|
-| `LLM_PROVIDER` | `openai_compatible` in production; `ollama` falls back to the sibling Ollama container for chat too, with no code change |
+| `LLM_PROVIDER` | `failover` in production (see "MS-S1 automatic failover" below) — `openai_compatible` alone (MS-S1 only, no automatic fallback) and `ollama` (sibling container only) both remain available with no code change |
 | `LLM_BASE_URL` | MS-S1's Tailscale address, e.g. `http://100.x.x.x:8000/v1` — a real address belongs **only** here and in `.env.oracle`/`.env.oracle.example`, never in source code |
 | `LLM_MODEL` | `Qwen/Qwen3-4B-Instruct-2507` |
 | `LLM_API_KEY` | vLLM's required Bearer token — rotate on MS-S1 itself; never committed, logged, or echoed in an error response |
@@ -417,9 +417,198 @@ docker exec edumind-oracle-backend-1 python -c \
 
 A host that *can* reach Tailscale peers does not guarantee a container can — always verify with a real `docker exec` request like the one above after any host-level Tailscale/firewall change, rather than assuming host connectivity implies container connectivity.
 
-**If MS-S1 is unreachable:** `GET /health/ready` and `GET /status` report `llm_reachable: false` (see `app/core/readiness.py`) without crashing the backend; an in-flight chat request gets a clear "could not reach the inference server" error (`app/core/llm_provider.py`'s `OpenAICompatibleLLMProvider`) instead of a raw exception. Recovery is automatic — no backend restart needed — once MS-S1 answers again, since every chat request opens its own connection.
+**If MS-S1 is unreachable:** `GET /health/ready` and `GET /status` report `llm_reachable: false` (see `app/core/readiness.py`) without crashing the backend; an in-flight chat request gets a clear "could not reach the inference server" error (`app/core/llm_provider.py`'s `OpenAICompatibleLLMProvider`) instead of a raw exception. With `LLM_PROVIDER=openai_compatible` (no automatic fallback — see the next section for the recommended alternative), recovery is automatic once MS-S1 answers again, since every chat request opens its own connection — no backend restart needed.
 
 **Rollback:** set `LLM_PROVIDER=ollama` in `.env.oracle` and restart the `backend` service (`OLLAMA_LLM_MODEL` above is always kept current for exactly this fallback).
+
+---
+
+## MS-S1 automatic failover
+
+**`LLM_PROVIDER=failover`** (recommended over plain `openai_compatible` above) wraps MS-S1/vLLM and the local Ollama sibling container in `app/core/llm_provider.py`'s `FailoverLLMProvider`, so a temporary MS-S1 outage no longer surfaces as a chat error at all: chat generation automatically and transparently continues on Ollama, then automatically prefers MS-S1 again the moment it's healthy — no restart, no manual env change, no deploy.
+
+```
+MS-S1 healthy   -> Edum8 -> MS-S1/vLLM
+MS-S1 down      -> Edum8 -> Oracle Ollama (automatic, same request)
+MS-S1 recovers  -> Edum8 -> MS-S1/vLLM again (automatic, next request)
+```
+
+**Design — no pre-flight health check.** `FailoverLLMProvider` never makes a separate health-check request before a chat call: doing so would add a round trip to every single normal (MS-S1-healthy) request and would still race the real call that follows it (healthy-at-check-time, dead-a-moment-later). Instead, the real generation attempt against MS-S1 **is** the health check — `stream_chat` pulls exactly one token from MS-S1 before deciding anything:
+
+- **MS-S1 fails before producing any token**, classified `INFRASTRUCTURE` (connection refused, DNS failure, connect/read timeout, upstream 5xx — see `app/core/errors.py`'s `LLMErrorCategory`) → the whole request is served by Ollama instead. Logged once, plainly, with no secret: `Primary LLM (openai_compatible) unavailable before generation; using fallback provider (ollama)`.
+- **MS-S1 fails before producing any token**, classified `CONFIGURATION` (401/403 bad API key, a malformed request, an unrecognized model) or unclassified (`OTHER`) → **never** silently routed to Ollama — the error surfaces exactly as it would with no failover at all, so a real misconfiguration is never hidden behind "it happened to still work via the fallback."
+- **MS-S1 has already produced at least one token, then fails** → **no failover, ever, under any classification.** The rest of the stream propagates the failure exactly like the plain `openai_compatible` mode above (partial answer persisted, message marked `error`) — restarting the answer on Ollama after real output already reached the user could deliver a duplicated or contradictory answer, which this design explicitly refuses to risk.
+- **Cancellation** is untouched: whichever provider is actively streaming at the moment a message is cancelled is torn down exactly as it always was (see `app/core/generation_manager.py`) — failover adds no cancellation logic of its own.
+
+**Bounded cooldown, not a permanent kill switch.** After an `INFRASTRUCTURE` failure, MS-S1 is skipped entirely (Ollama used immediately, no attempt) for `LLM_FAILOVER_COOLDOWN_SECONDS` (default 20s) — this bounds the worst case where MS-S1 is silently unreachable (packets dropped, not refused) and a real connect attempt would otherwise block for the full `LLM_REQUEST_TIMEOUT_SECONDS` on *every* request during the outage. The very next chat request after the cooldown elapses retries MS-S1 directly — again, the real request is the only health check that ever runs — so recovery needs no restart and MS-S1 is never marked permanently dead after one failure.
+
+**Environment variables** (only read when `LLM_PROVIDER=failover`; every `LLM_*`/`OLLAMA_*` setting above is reused unchanged for each role):
+
+| Setting | Purpose |
+|---|---|
+| `LLM_PRIMARY_PROVIDER` | `openai_compatible` (default) — which provider is preferred |
+| `LLM_FALLBACK_PROVIDER` | `ollama` (default) — must differ from `LLM_PRIMARY_PROVIDER`, refused at startup otherwise |
+| `LLM_FAILOVER_COOLDOWN_SECONDS` | optional, defaults to 20; `0` disables the cooldown (every request retries MS-S1 fresh) |
+
+**Observability.** `GET /health/ready` and `GET /status` gain (all `null` unless `LLM_PROVIDER=failover`): `llm_primary_provider`, `llm_primary_reachable`, `llm_fallback_provider`, `llm_fallback_reachable`, `llm_currently_preferred` (`"primary"` or `"fallback"`) — each a fresh, dedicated probe of both providers (this is a separate, deliberately-polled endpoint, not part of the per-chat-message path the design above protects from an extra round trip). The existing `llm_reachable`/`llm_latency_ms`/`llm_model_available` fields report whichever provider is currently preferred; overall readiness (`status: "ready"`) requires only that *at least one* of the two providers can serve chat, since staying operational through an MS-S1 outage is the entire point. Which provider actually answered a given generation is additionally recorded as a `RequestTimer` tag (`llm_served_by`) when `PERFORMANCE_PROFILING=true`.
+
+**Rollback:** set `LLM_PROVIDER=openai_compatible` (MS-S1 only, no automatic fallback) or `LLM_PROVIDER=ollama` (Ollama only) in `.env.oracle` and restart the `backend` service.
+
+---
+
+## MS-S1 vLLM systemd service (`edum8-vllm`)
+
+vLLM runs on MS-S1 as a managed systemd service (**not** this repo's own deploy tooling — MS-S1 is a separate host with its own OS-level setup, outside `deploy/`; the details below are recorded here because the Oracle backend's behavior depends on them).
+
+**Current validated serving configuration** (Milestone 6.2 audit):
+
+| Setting | Value |
+|---|---|
+| Model | `Qwen/Qwen3-4B-Instruct-2507` |
+| Max model length | `32768` |
+| `--gpu-memory-utilization` | **`0.15`** (not `0.50` — an earlier assumed value; `0.15` is what production actually runs today, verified directly from the live process. See "Remaining operational risks" below: this should be benchmarked before raising concurrency, not bumped blindly.) |
+| Bind address | `100.73.9.108:8000` only (MS-S1's Tailscale IP) — never `0.0.0.0`, confirmed via `ss -tlnp` and via `curl` from outside the tailnet failing to connect |
+
+**systemd unit** (`edum8-vllm.service`), verified live:
+
+- `enabled` — starts automatically on boot
+- `After=` / `Wants=` include both `tailscaled.service` and `network-online.target` — vLLM will not attempt to start before Tailscale has had a chance to bring up the `100.73.9.108` interface
+- `Restart=on-failure`, `RestartSec=10s` (measured real restart: new PID within ~15s of a kill, API fully responding again within ~59s — see "Validated resilience testing" below)
+- Runs as the normal non-root operator user, working directory `/home/metehanzorluoglu/edum8-inference`
+- Starts via `start-vllm.sh` (mode `700`) in that directory, not a bare `vllm serve` invocation
+
+**Secret handling** (Milestone 6.2 finding + fix — see "Security findings" in the milestone report):
+
+- The vLLM Bearer API key lives in `/home/metehanzorluoglu/edum8-inference/secrets/vllm.env`, mode `600`, inside a `secrets/` directory mode `700` — readable only by the owning user, not world/group-readable.
+- `start-vllm.sh` loads it as an environment variable; it is **never** passed as a `--api-key` CLI argument. Verified directly: the key does not appear in `systemctl cat edum8-vllm`'s unit text, nor in the running process's `argv`/`/proc/<pid>/cmdline` (both are visible to any local user via `ps aux`, which is exactly the exposure this closes).
+- The key is never rotated by this change — same production credential throughout.
+
+**Log/disk safety:** `journalctl -u edum8-vllm --disk-usage` measured ~104 MB for this unit's journal; the host's root filesystem is 9% used with ~1.4 TB free. Default journald retention policy is adequate at this scale — no journald configuration change was made or is currently needed.
+
+---
+
+## Validated resilience testing (Milestone 6.2)
+
+All of the following were run against the real production MS-S1/Oracle stack (not mocked), each with a real chat request through the actual backend API, and each fully reversed/restored immediately afterward.
+
+**vLLM process crash recovery** (`sudo kill -9` on the live vLLM PID, not `systemctl restart`):
+- New PID detected: **~15s**
+- API fully responding again (model reloaded): **~59s**
+- A chat request that landed during the outage was correctly served by Ollama, then a subsequent request automatically returned to MS-S1 — no Oracle backend restart, no manual intervention.
+
+**MS-S1 full reboot** (`sudo reboot`):
+- Host/Tailscale unreachable: ~44s
+- vLLM API back up (model loaded) from Tailscale-reconnect: ~43s more (~87s total from reboot start)
+- Oracle detected the outage within ~6s (bounded by its own polling interval) and detected recovery within ~1s of the port actually reopening
+- Requests during the outage correctly used Ollama; requests after recovery went straight back to MS-S1 with zero Oracle-side changes.
+
+**Oracle backend recreation** (`docker compose up -d --force-recreate backend` — the same pathway `oracle-restart.sh` uses, scoped to just this one service):
+- Container recreated and healthy in **~16s**
+- `FailoverLLMProvider` correctly rebuilt from `.env.oracle` on the fresh process (verified: `type(get_llm_provider()).__name__ == "FailoverLLMProvider"`, correct primary/fallback classes, correct cooldown value)
+- First real chat request after restart went straight to MS-S1 with no failover event
+- Frontend, Qdrant, and Ollama containers were confirmed untouched (identical `StartedAt` timestamps before/after)
+- A follow-up fallback + recovery check (same reversible network-block method as below) also passed cleanly post-restart.
+
+**Both-unavailable controlled failure** (Milestone 6.2's predecessor validation — MS-S1 network-blocked at the Oracle host level via an `iptables` `FORWARD`-chain rule targeting `100.73.9.108` specifically, inserted ahead of Tailscale's own `ts-forward` rule since Tailscale's default-accept otherwise bypasses `DOCKER-USER`; Ollama's `qwen3:8b` manifest renamed aside on the Ollama container, embeddings/vision left untouched): backend stayed healthy, the request failed with a clean, non-crashing "model not installed" error, no message was left stuck `generating`, no secret appeared in any log line. Both restored immediately and byte-verified afterward.
+
+---
+
+## MS-S1 operational runbook
+
+### Check MS-S1 health
+
+Run on MS-S1:
+```bash
+uptime                                   # machine online, how long
+tailscale status | grep edumind-vm       # Tailscale sees the Oracle peer?
+systemctl is-active edum8-vllm           # vLLM running?
+rocm-smi --showuse                       # GPU detected/in use?
+curl -s http://100.73.9.108:8000/v1/models   # no key -> 401 means: process up, model loaded, port bound
+```
+From Oracle, without needing MS-S1 access at all:
+```bash
+curl -s http://127.0.0.1:8000/health/ready   # llm_primary_reachable / llm_currently_preferred
+```
+
+### Restart vLLM safely
+
+```bash
+sudo systemctl restart edum8-vllm
+journalctl -u edum8-vllm -f      # watch it come back up; wait for the model-loaded log line before assuming it's ready
+```
+This is a graceful stop+start (unlike the crash test's `kill -9`) — safe to run any time; Oracle will transparently use Ollama for any request that lands in the few-second gap.
+
+### MS-S1 unavailable
+
+Expected behavior: `Edum8 → Oracle Ollama`, automatically, no action needed. Confirm with `GET /health/ready` (`llm_currently_preferred: "fallback"`) or `journalctl` on Oracle (`docker logs edumind-oracle-backend-1 | grep "using fallback provider"`). MS-S1 recovers on its own schedule; Edum8 returns to it automatically on the next request once `/v1/models` responds again.
+
+### vLLM fails repeatedly
+
+```bash
+systemctl status edum8-vllm --no-pager     # current state, last few log lines
+journalctl -u edum8-vllm -n 200 --no-pager # full recent history — look for OOM, model-load errors, ROCm errors
+rocm-smi --showmeminfo vram                # GPU memory exhausted?
+tailscale status                           # is the tailnet itself healthy?
+```
+`Restart=on-failure` will keep retrying automatically; if it's crash-looping, the journal will show the same error repeating on every restart — that's the actual root cause to fix, not the restart behavior itself.
+
+### Tailscale unavailable
+
+```bash
+systemctl status tailscaled --no-pager
+tailscale status                 # peer list — is MS-S1 even listed as an active peer from the Oracle side?
+journalctl -u tailscaled -n 100 --no-pager
+```
+If Tailscale itself is down on MS-S1, `edum8-vllm.service` will not start at all (by design — its `After=`/`Wants=` on `tailscaled.service` prevents a race). Fixing Tailscale connectivity and confirming `tailscale status` shows the peer as `active` is the prerequisite before checking vLLM itself.
+
+### API key problem (diagnose without ever printing the secret)
+
+```bash
+# On MS-S1 — confirm the file exists with correct permissions, never cat its content:
+ls -la /home/metehanzorluoglu/edum8-inference/secrets/vllm.env
+stat -c "%a %U:%G" /home/metehanzorluoglu/edum8-inference/secrets/vllm.env   # expect 600, owning user
+
+# From Oracle — confirm behavior only, never the value:
+curl -s -o /dev/null -w "%{http_code}\n" http://100.73.9.108:8000/v1/models              # expect 401 (no key)
+curl -s -o /dev/null -w "%{http_code}\n" http://100.73.9.108:8000/v1/models \
+  -H "Authorization: Bearer wrong-key"                                                    # expect 401 (rejected)
+```
+A 401 on the *authenticated* Oracle→MS-S1 path (visible as `llm_primary_reachable: false` with the message "Authentication with the inference server failed" in a chat error) means `LLM_API_KEY` in `.env.oracle` no longer matches `secrets/vllm.env` on MS-S1 — compare lengths/hashes (`sha256sum`) on both ends without ever displaying either value, then update whichever side is stale.
+
+### Ollama fallback unavailable
+
+Expected behavior: if MS-S1 is *also* down (or MS-S1 is healthy and this is irrelevant — Ollama is only reached as fallback), a generation request fails with a clean, non-crashing error (e.g. "Model 'qwen3:8b' is not installed...") — the backend stays healthy, no message is left stuck. Recovery: fix Ollama (`docker restart edumind-oracle-ollama-1` if genuinely unresponsive — safe, no data loss, the model volume persists) and confirm `ollama_reachable: true` on `/health/ready`.
+
+### Force Ollama-only mode (emergency rollback)
+
+```bash
+# Edit deploy/oracle/.env.oracle:
+LLM_PROVIDER=ollama
+
+# Then, on the Oracle VM:
+cd deploy/oracle && source scripts/lib/common.sh && oracle_compose up -d --force-recreate backend
+```
+This disables MS-S1 entirely — chat always uses the local Ollama `qwen3:8b`, no automatic failover logic engaged at all (byte-identical to this backend's original pre-migration behavior). Confirm via `/health/ready`: `llm_provider: "ollama"`.
+
+### Restore failover mode
+
+```bash
+# Edit deploy/oracle/.env.oracle:
+LLM_PROVIDER=failover
+
+# Then, on the Oracle VM:
+cd deploy/oracle && source scripts/lib/common.sh && oracle_compose up -d --force-recreate backend
+```
+Confirm via `/health/ready`: `llm_provider: "failover"`, `llm_currently_preferred: "primary"` once MS-S1 is confirmed healthy.
+
+---
+
+## Remaining operational risks / TODOs (Milestone 6.2)
+
+- **Cold Ollama fallback latency:** the *first* fallback request after MS-S1 goes down can take roughly **45-60 seconds**, not a few seconds — because normal traffic never touches Ollama's chat model, `qwen3:8b` typically isn't resident in Ollama's memory and must cold-load (a live measurement during the crash-recovery test showed a ~52s fallback response, consistent with this host's previously-measured ~44s cold `qwen3:8b` load). Subsequent fallback requests in the same outage are fast once the model is loaded. Not fixed in this milestone (would mean either enabling `OLLAMA_PREWARM_ENABLED` more broadly or a dedicated keep-warm mechanism) — recorded as a candidate follow-up, not a blocker.
+- **Per-worker failover cooldown:** `FailoverLLMProvider`'s post-failure cooldown (`LLM_FAILOVER_COOLDOWN_SECONDS`, default 20s) is `@lru_cache`-scoped per Python process. Since the backend runs `--workers 2`, each uvicorn worker tracks its own independent cooldown — during a real outage, this was observed as multiple independent "before generation" failure/failover events within the same 20s window (one per worker that happens to get a request), rather than one process-wide skip. Every one of those still correctly failed over; this only means slightly more retry attempts against MS-S1 during an outage than a single-worker deployment would see, not a correctness defect. Not changed in this milestone (would require a cross-worker-shared cooldown store, e.g. a small shared-memory or Redis-backed flag) — recorded as a candidate follow-up.
+- **`gpu-memory-utilization=0.15`:** supports today's traffic level, but was not benchmarked in this milestone — this milestone is explicitly about reliability/operations, not model tuning. Should be benchmarked (throughput, concurrency headroom, VRAM ceiling) before raising it or increasing expected concurrent load.
+- **Deferred: Production LLM Model Benchmarking & Selection** (explicitly out of scope for Milestone 6.2, recorded per that milestone's own instruction): a future milestone should compare stronger models against Edum8-specific RAG quality, citation accuracy, academic answer quality, instruction following, TTFT, tokens/sec, VRAM, concurrency, and long-context behavior. Qwen3-4B-Instruct-2507 was not replaced or re-benchmarked here.
 
 ---
 

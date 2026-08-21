@@ -1,13 +1,15 @@
 import json
 import logging
-from collections.abc import Iterable, Iterator, Mapping
+import threading
+import time
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import Literal, Protocol
 
 import httpx
 import ollama
 
-from app.core.errors import LLMProviderError
-from app.core.ollama_errors import classify_ollama_error
+from app.core.errors import LLMErrorCategory, LLMProviderError
+from app.core.ollama_errors import classify_ollama_error, classify_ollama_error_category
 from app.core.request_timing import RequestTimer
 
 logger = logging.getLogger(__name__)
@@ -141,7 +143,10 @@ class OllamaLLMProvider:
         except LLMProviderError:
             raise
         except Exception as exc:
-            raise LLMProviderError(classify_ollama_error(exc, model=self._model)) from exc
+            raise LLMProviderError(
+                classify_ollama_error(exc, model=self._model),
+                category=classify_ollama_error_category(exc),
+            ) from exc
 
         if timer is not None and last_chunk is not None:
             _record_ollama_metrics(timer, last_chunk)
@@ -196,6 +201,40 @@ def _classify_openai_compatible_error(exc: Exception, *, model: str) -> str:
             message = exc.response.text or str(exc)
         return f"The inference server returned an error running '{model}': {message}"
     return f"Chat generation with model '{model}' failed: {exc}"
+
+
+def _classify_openai_compatible_error_category(exc: Exception) -> LLMErrorCategory:
+    """The category counterpart to _classify_openai_compatible_error above
+    (MS-S1 vLLM migration resilience work) — read by
+    app/core/llm_provider.py::FailoverLLMProvider to decide whether a
+    primary-provider failure is eligible for automatic failover. Kept as a
+    separate function rather than folded into _classify_openai_compatible_error
+    itself, mirroring app/core/ollama_errors.py's identical
+    classify_ollama_error / classify_ollama_error_category split.
+
+    A timeout or connection failure means the server/network path itself is
+    unavailable — INFRASTRUCTURE, eligible for failover. A 5xx means the
+    server is up but internally broken — also INFRASTRUCTURE: a healthy
+    secondary provider can serve where a broken upstream inference server
+    cannot. A 401/403 means this backend's own configured API key is
+    wrong — CONFIGURATION, deliberately never failover-eligible (silently
+    routing around a bad key would hide a real misconfiguration instead of
+    surfacing it, per this migration's explicit design requirement). Any
+    other status code (400 malformed request, 404 unknown model, etc.) is
+    also CONFIGURATION for the same reason. Anything unrecognized falls
+    through to LLMProviderError's own OTHER default, matching
+    classify_ollama_error_category's identical fallthrough."""
+    if isinstance(exc, httpx.TimeoutException):
+        return LLMErrorCategory.INFRASTRUCTURE
+    if isinstance(exc, httpx.ConnectError | ConnectionError):
+        return LLMErrorCategory.INFRASTRUCTURE
+    if isinstance(exc, httpx.HTTPStatusError):
+        if exc.response.status_code in (401, 403):
+            return LLMErrorCategory.CONFIGURATION
+        if exc.response.status_code >= 500:
+            return LLMErrorCategory.INFRASTRUCTURE
+        return LLMErrorCategory.CONFIGURATION
+    return LLMErrorCategory.OTHER
 
 
 def _record_openai_compatible_usage_metrics(
@@ -341,7 +380,8 @@ class OpenAICompatibleLLMProvider:
             raise
         except Exception as exc:
             message = _classify_openai_compatible_error(exc, model=self._model)
-            raise LLMProviderError(message) from exc
+            category = _classify_openai_compatible_error_category(exc)
+            raise LLMProviderError(message, category=category) from exc
 
         if timer is not None and usage is not None:
             _record_openai_compatible_usage_metrics(timer, usage)
@@ -386,3 +426,187 @@ def _record_ollama_metrics(timer: RequestTimer, final_chunk: object) -> None:
             timer.record_metric("decode_tokens_per_second", round(decode_tokens_per_second, 2))
     except Exception:
         pass
+
+
+_DEFAULT_FAILOVER_COOLDOWN_SECONDS = 20.0
+
+
+class FailoverLLMProvider:
+    """Wraps a primary and a fallback LLMProvider (MS-S1 vLLM migration
+    resilience work: primary=OpenAICompatibleLLMProvider talking to MS-S1,
+    fallback=OllamaLLMProvider talking to the local Oracle Ollama) so
+    RagService/generation_manager see one ordinary LLMProvider and need no
+    changes at all — this class implements the exact same Protocol as
+    OllamaLLMProvider/OpenAICompatibleLLMProvider above.
+
+    Design (deliberately simple over deliberately clever, matching this
+    module's existing style):
+
+    - NO separate health-check request is ever made. The primary is always
+      attempted directly, and "did it work" is answered by the real
+      generation attempt itself — avoiding both the extra round-trip a
+      pre-flight health check would add to every single request, and the
+      TOCTOU race a health check has against the real call that follows it
+      (healthy-at-check-time, dead-a-moment-later is exactly the failure
+      mode a pre-flight check cannot close).
+
+    - Failover is a one-shot decision made ONLY before the primary has
+      produced its first token. `stream_chat` pulls exactly one item from
+      the primary's generator via `next()`: if that raises an
+      INFRASTRUCTURE-classified LLMProviderError (see LLMErrorCategory),
+      the fallback provider serves the entire request instead. If it
+      raises anything else (CONFIGURATION/OTHER — a bad API key, a
+      malformed request, an unrecognized failure), that exception is
+      re-raised unchanged and NO failover happens — silently routing
+      around a misconfiguration would hide it instead of surfacing it,
+      which is this design's explicit, deliberate line (see
+      LLMErrorCategory's own docstring).
+
+    - Once the primary has yielded even one token, this class is fully
+      committed to the primary for the rest of the stream: the remaining
+      tokens are forwarded via a plain `yield from`, entirely outside any
+      try/except here, so a disconnect partway through propagates exactly
+      as it would with no failover wrapper at all — the caller's existing
+      interrupted-generation handling (generation_manager.py's
+      LLMProviderError branch: persist what streamed so far, mark the
+      message "error") is completely unchanged. This is the one hard rule
+      the migration's design explicitly calls out: never restart or splice
+      in a second answer from a different provider after real output has
+      already reached the user, since that could deliver a duplicated or
+      contradictory answer.
+
+    - Cancellation is untouched: this class adds no cancel-awareness of
+      its own. `run_text_generation`'s cancel check runs between tokens of
+      whatever iterator this class's `stream_chat` returns, regardless of
+      which underlying provider is actually yielding them, and
+      GeneratorExit (from that iterator being closed) propagates through
+      the plain `yield`/`yield from` statements below into whichever
+      provider is currently suspended at its own `with self._client.stream
+      (...)` block exactly as it does today for a single provider — see
+      OpenAICompatibleLLMProvider.stream_chat's own such block.
+
+    - A short, bounded cooldown (`cooldown_seconds`, default
+      _DEFAULT_FAILOVER_COOLDOWN_SECONDS) is the one piece of state this
+      class keeps: after an INFRASTRUCTURE failure, the primary is skipped
+      (fallback used immediately, no attempt at all) until the cooldown
+      elapses — bounding the worst case where the primary is not merely
+      refusing connections (fails in milliseconds either way) but silently
+      unreachable (e.g. a severed Tailscale link with packets simply
+      dropped), where a real connect attempt can block for the provider's
+      full configured request timeout. Without this, every single request
+      during such an outage would pay that full timeout before falling
+      back. The cooldown is never permanent and needs no restart/manual
+      reset to clear: the very next `stream_chat` call after it elapses
+      tries the primary again directly (the real generation attempt is
+      again the only "health check" that ever runs), which is what makes
+      recovery automatic. A cooldown of 0 (accepted for tests) disables
+      this skip entirely — every call retries the primary fresh."""
+
+    def __init__(
+        self,
+        *,
+        primary: LLMProvider,
+        fallback: LLMProvider,
+        primary_label: str = "primary",
+        fallback_label: str = "fallback",
+        cooldown_seconds: float = _DEFAULT_FAILOVER_COOLDOWN_SECONDS,
+        now_fn: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._primary = primary
+        self._fallback = fallback
+        self._primary_label = primary_label
+        self._fallback_label = fallback_label
+        self._cooldown_seconds = cooldown_seconds
+        self._now_fn = now_fn
+        self._state_lock = threading.Lock()
+        # monotonic timestamp before which the primary is skipped entirely
+        # (0.0 — i.e. "never skip" — until the first INFRASTRUCTURE failure).
+        self._primary_unhealthy_until = 0.0
+
+    def _primary_available_now(self) -> bool:
+        with self._state_lock:
+            return self._now_fn() >= self._primary_unhealthy_until
+
+    def _mark_primary_unhealthy(self) -> None:
+        if self._cooldown_seconds <= 0:
+            return
+        with self._state_lock:
+            self._primary_unhealthy_until = self._now_fn() + self._cooldown_seconds
+
+    def _mark_primary_healthy(self) -> None:
+        with self._state_lock:
+            self._primary_unhealthy_until = 0.0
+
+    def stream_chat(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        timer: RequestTimer | None = None,
+        options_override: Mapping[str, object] | None = None,
+    ) -> Iterator[str]:
+        if self._primary_available_now():
+            primary_stream = self._primary.stream_chat(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                timer=timer,
+                options_override=options_override,
+            )
+            try:
+                first_token = next(primary_stream)
+            except StopIteration:
+                # Primary produced a genuinely empty completion — a
+                # successful (if unusual) outcome, not a failure to
+                # recover from. Nothing was yielded either way.
+                self._mark_primary_healthy()
+                return
+            except LLMProviderError as exc:
+                if exc.category is not LLMErrorCategory.INFRASTRUCTURE:
+                    # Configuration/auth/unrecognized failure: never
+                    # silently mask this behind the fallback provider.
+                    raise
+                self._mark_primary_unhealthy()
+                logger.warning(
+                    "Primary LLM (%s) unavailable before generation; using fallback provider (%s)",
+                    self._primary_label,
+                    self._fallback_label,
+                )
+                if timer is not None:
+                    timer.record_tag("llm_failover", "primary_unavailable")
+                    timer.record_tag("llm_served_by", self._fallback_label)
+                yield from self._fallback.stream_chat(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    timer=timer,
+                    options_override=options_override,
+                )
+                return
+            else:
+                # Primary produced real output — fully committed from here:
+                # no further exception handling wraps the rest of the
+                # stream, so an interruption partway through behaves
+                # exactly as it would with no failover wrapper at all.
+                self._mark_primary_healthy()
+                if timer is not None:
+                    timer.record_tag("llm_served_by", self._primary_label)
+                yield first_token
+                yield from primary_stream
+                return
+
+        # Primary is in its post-failure cooldown window: skip straight to
+        # the fallback without attempting the primary at all, avoiding a
+        # repeat of whatever made it slow/unreachable in the first place.
+        logger.info(
+            "Primary LLM (%s) in cooldown after a recent failure; using fallback provider (%s)",
+            self._primary_label,
+            self._fallback_label,
+        )
+        if timer is not None:
+            timer.record_tag("llm_failover", "primary_cooldown")
+            timer.record_tag("llm_served_by", self._fallback_label)
+        yield from self._fallback.stream_chat(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            timer=timer,
+            options_override=options_override,
+        )

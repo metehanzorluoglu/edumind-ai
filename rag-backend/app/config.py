@@ -99,7 +99,17 @@ class Settings(BaseSettings):
     # below. Embeddings (OLLAMA_EMBED_MODEL), vision (OLLAMA_VISION_MODEL),
     # and image generation (OLLAMA_IMAGE_MODEL) are NOT affected by this
     # setting either way — only ordinary text chat generation switches.
-    llm_provider: Literal["ollama", "openai_compatible"] = "ollama"
+    #
+    # "failover" (MS-S1 automatic-failover resilience work) wraps two of
+    # the above providers — see LLM_PRIMARY_PROVIDER/LLM_FALLBACK_PROVIDER
+    # below and app/core/llm_provider.py::FailoverLLMProvider — so ordinary
+    # chat generation prefers one provider and automatically, transparently
+    # falls back to the other on an infrastructure failure (never a
+    # configuration/auth failure — see LLMErrorCategory), then automatically
+    # prefers the primary again once it recovers. "ollama" and
+    # "openai_compatible" keep their exact original single-provider
+    # meaning: neither one ever silently fails over to anything.
+    llm_provider: Literal["ollama", "openai_compatible", "failover"] = "ollama"
     # Base URL of the OpenAI-compatible server, including its `/v1` path
     # (e.g. "http://100.73.9.108:8000/v1" for the private, Tailscale-only
     # MS-S1 vLLM host) — only read when llm_provider="openai_compatible".
@@ -136,18 +146,48 @@ class Settings(BaseSettings):
     # inference host reached over a private network.
     llm_request_timeout_seconds: float = Field(default=120.0, ge=1.0, le=900.0)
 
+    # --- Automatic LLM failover (MS-S1 resilience work) -------------------
+    # Only read when llm_provider="failover". Names which concrete
+    # provider plays each role — deliberately generic (not hardcoded to
+    # "openai_compatible is always primary") so this Settings model stays
+    # honest about what it actually enforces, even though production only
+    # ever configures LLM_PRIMARY_PROVIDER=openai_compatible/
+    # LLM_FALLBACK_PROVIDER=ollama (MS-S1 preferred, local Oracle Ollama as
+    # the automatic fallback). See the model_validator below, which refuses
+    # a configuration where both roles name the same provider — failing
+    # over to the exact provider that just failed serves no purpose.
+    llm_primary_provider: Literal["ollama", "openai_compatible"] = "openai_compatible"
+    llm_fallback_provider: Literal["ollama", "openai_compatible"] = "ollama"
+    # How long (seconds) app/core/llm_provider.py::FailoverLLMProvider skips
+    # the primary entirely (using the fallback immediately, no attempt)
+    # after an infrastructure failure, before automatically retrying the
+    # primary again on the next request — see that class's own docstring
+    # for the full reasoning. 20s bounds the worst case (a silently
+    # unreachable primary whose connect attempt blocks for its full
+    # LLM_REQUEST_TIMEOUT_SECONDS) to at most one such stall per window,
+    # while still being short enough that recovery after MS-S1 comes back
+    # up is felt within well under a minute, with no backend restart.
+    llm_failover_cooldown_seconds: float = Field(default=20.0, ge=0.0, le=600.0)
+
     @property
     def effective_llm_model(self) -> str:
         """The model name actually used for ordinary text chat generation
         right now — OLLAMA_LLM_MODEL when llm_provider="ollama" (the
         original, unchanged behavior), LLM_MODEL when llm_provider=
-        "openai_compatible". Every call site that previously read
-        `settings.ollama_llm_model` to mean "the active text model" (health/
-        status readiness, model routing, RagService's display name) reads
-        this instead, so they stay correct regardless of which provider is
-        configured; ollama_llm_model itself is untouched and still governs
-        the Ollama path exactly as before."""
-        if self.llm_provider == "openai_compatible":
+        "openai_compatible", and — for llm_provider="failover" — whichever
+        of those two the configured LLM_PRIMARY_PROVIDER names (the model a
+        healthy system actually answers with; see readiness/status routes
+        for the fallback's own model surfaced separately). Every call site
+        that previously read `settings.ollama_llm_model` to mean "the
+        active text model" (health/status readiness, model routing,
+        RagService's display name) reads this instead, so they stay
+        correct regardless of which provider is configured; ollama_llm_model
+        itself is untouched and still governs the Ollama path exactly as
+        before."""
+        provider = (
+            self.llm_primary_provider if self.llm_provider == "failover" else self.llm_provider
+        )
+        if provider == "openai_compatible":
             return self.llm_model
         return self.ollama_llm_model
 
@@ -819,6 +859,19 @@ class Settings(BaseSettings):
                 f"({self.retrieval_fetch_k}) must be >= retrieval_top_k ({self.retrieval_top_k}): "
                 "the candidate pool fed into MMR selection cannot be smaller than what MMR "
                 "must return."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_llm_failover_roles(self) -> "Settings":
+        if (
+            self.llm_provider == "failover"
+            and self.llm_primary_provider == self.llm_fallback_provider
+        ):
+            raise ValueError(
+                "LLM_PRIMARY_PROVIDER and LLM_FALLBACK_PROVIDER must differ when "
+                "LLM_PROVIDER=failover — failing over to the exact provider that just "
+                "failed serves no purpose."
             )
         return self
 

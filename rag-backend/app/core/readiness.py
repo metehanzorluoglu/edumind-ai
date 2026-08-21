@@ -49,6 +49,25 @@ class ReadinessStatus:
     llm_reachable: bool = False
     llm_latency_ms: float | None = None
     llm_model_available: bool = False
+    # --- Automatic LLM failover observability (MS-S1 resilience work) ----
+    # All None/unset unless llm_provider == "failover" — the plain
+    # "ollama"/"openai_compatible" modes above are entirely unaffected and
+    # leave these at their defaults, matching every other additive field
+    # this dataclass has picked up over time. `llm_reachable` above already
+    # reports "can chat generation be served AT ALL right now" (true if
+    # EITHER role is reachable) for is_ready's purposes; these fields exist
+    # so a caller (GET /health/ready, GET /status) can additionally show
+    # *which* provider that is, and whether the other one is also healthy.
+    llm_primary_provider: str | None = None
+    llm_primary_reachable: bool | None = None
+    llm_fallback_provider: str | None = None
+    llm_fallback_reachable: bool | None = None
+    # "primary" | "fallback" — which provider a new chat request would
+    # actually be served by right now, mirroring
+    # FailoverLLMProvider._primary_available_now()'s own decision (a fresh
+    # probe made here, not a read of that live in-process cooldown state —
+    # see check_readiness's module-level docstring note below).
+    llm_currently_preferred: str | None = None
 
     @property
     def is_ready(self) -> bool:
@@ -151,26 +170,88 @@ def check_readiness(
     llm_base_url: str | None = None,
     llm_api_key: str = "",
     llm_client: _OpenAICompatibleListClient | None = None,
+    llm_primary_provider: str | None = None,
+    llm_primary_model: str | None = None,
+    llm_fallback_model: str | None = None,
 ) -> ReadinessStatus:
     """`required_models` covers whatever this deployment always serves via
     Ollama (embeddings, vision, image generation) — it should NOT include
-    the chat LLM's own model name when llm_provider="openai_compatible",
-    since that model doesn't live on the Ollama server at all; the caller
-    (see app/api/routes_health.py/routes_status.py) decides that.
+    the chat LLM's own model name when llm_provider="openai_compatible" or
+    "failover", since that model doesn't (necessarily) live on the Ollama
+    server at all; the caller (see app/api/routes_health.py/
+    routes_status.py) decides that.
 
-    `llm_model`/`llm_base_url`/`llm_api_key` are only read when
-    llm_provider="openai_compatible" — a caller that leaves llm_provider
-    at its default "ollama" gets the exact same single Ollama round trip
-    this function always made, with the chat LLM's reachability/
+    `llm_model`/`llm_base_url`/`llm_api_key`/`llm_client` are only read
+    when llm_provider="openai_compatible" — a caller that leaves
+    llm_provider at its default "ollama" gets the exact same single Ollama
+    round trip this function always made, with the chat LLM's reachability/
     model-availability simply mirrored from that same call (see below),
-    never a second network call."""
+    never a second network call. Both untouched, byte-for-byte, by the
+    "failover" mode added below.
+
+    `llm_primary_provider`/`llm_primary_model`/`llm_fallback_model` are
+    only read when llm_provider="failover" (MS-S1 automatic-failover
+    resilience work): this probes BOTH the primary and the fallback
+    (reusing `llm_base_url`/`llm_api_key`/`llm_client` for whichever role
+    is "openai_compatible", and `ollama_result` below for whichever role
+    is "ollama" — never a third, separate configuration surface). This is
+    a deliberately different tradeoff from FailoverLLMProvider's own
+    "never health-check ahead of a real request" design: GET /health/ready
+    and GET /status are themselves already dedicated, separately-polled
+    health-check endpoints (not part of the per-chat-message path this
+    migration's design explicitly protects), so probing both providers
+    here is the same cost this function already paid for the plain
+    "openai_compatible" mode above, just duplicated across two providers
+    instead of one — it does not add a round trip to any chat request."""
     ollama_result = _check_ollama(
         ollama_base_url=ollama_base_url,
         required_models=required_models,
         ollama_client=ollama_client,
     )
 
-    if llm_provider == "openai_compatible":
+    primary_provider_label: str | None = None
+    fallback_provider_label: str | None = None
+    primary_reachable: bool | None = None
+    fallback_reachable: bool | None = None
+    currently_preferred: str | None = None
+
+    if llm_provider == "failover":
+        primary_provider_label = llm_primary_provider or "openai_compatible"
+        fallback_provider_label = (
+            "ollama" if primary_provider_label == "openai_compatible" else "openai_compatible"
+        )
+
+        def _check_role(kind: str, model: str | None) -> tuple[bool, float | None, bool]:
+            if kind == "openai_compatible":
+                return _check_openai_compatible_llm(
+                    base_url=llm_base_url or "",
+                    api_key=llm_api_key,
+                    model=model or "",
+                    client=llm_client,
+                )
+            reachable = ollama_result.reachable
+            latency_ms = ollama_result.latency_ms
+            model_available = (
+                _model_installed(model, ollama_result.installed_names)
+                if model and ollama_result.reachable
+                else False
+            )
+            return reachable, latency_ms, model_available
+
+        primary_reachable, primary_latency_ms, primary_model_available = _check_role(
+            primary_provider_label, llm_primary_model
+        )
+        fallback_reachable, fallback_latency_ms, fallback_model_available = _check_role(
+            fallback_provider_label, llm_fallback_model
+        )
+
+        currently_preferred = "primary" if primary_reachable else "fallback"
+        llm_reachable = primary_reachable or fallback_reachable
+        llm_model_available = (
+            primary_model_available if primary_reachable else fallback_model_available
+        )
+        llm_latency_ms = primary_latency_ms if primary_reachable else fallback_latency_ms
+    elif llm_provider == "openai_compatible":
         llm_reachable, llm_latency_ms, llm_model_available = _check_openai_compatible_llm(
             base_url=llm_base_url or "",
             api_key=llm_api_key,
@@ -213,4 +294,9 @@ def check_readiness(
         llm_reachable=llm_reachable,
         llm_latency_ms=llm_latency_ms,
         llm_model_available=llm_model_available,
+        llm_primary_provider=primary_provider_label,
+        llm_primary_reachable=primary_reachable,
+        llm_fallback_provider=fallback_provider_label,
+        llm_fallback_reachable=fallback_reachable,
+        llm_currently_preferred=currently_preferred,
     )

@@ -9,8 +9,48 @@ class EmbeddingProviderError(CoreError):
     pass
 
 
+class LLMErrorCategory(StrEnum):
+    """Classifies *why* an LLMProvider.stream_chat call failed — read by
+    app/core/llm_provider.py::FailoverLLMProvider to decide whether an
+    error is eligible for automatic failover to a secondary provider
+    (MS-S1/vLLM migration resilience work).
+
+    INFRASTRUCTURE means the provider itself (the process/host/network path
+    to it) is the thing that's broken — connection refused, DNS failure,
+    a connect/read timeout, or an upstream 5xx — exactly the class of
+    failure a healthy secondary provider can plausibly route around.
+    Automatic failover is only ever considered for this category.
+
+    CONFIGURATION means the provider responded (or refused to) in a way
+    that means *this backend's own setup* is wrong — a bad/expired API key
+    (401/403), a model name the server doesn't know about, a malformed
+    request. Failing over here would silently mask a real misconfiguration
+    behind a fallback provider that "happens to still work" — see the
+    module docstring's explicit warning about this — so these never
+    trigger automatic failover.
+
+    OTHER is the safe default for anything not explicitly classified
+    (mirrors VisionErrorCategory.OTHER's identical default-to-safe
+    convention above) — deliberately treated the same as CONFIGURATION by
+    FailoverLLMProvider (i.e. never eligible for failover): an
+    unrecognized failure shape is exactly the case where silently masking
+    it behind a different provider is least appropriate."""
+
+    INFRASTRUCTURE = "infrastructure"
+    CONFIGURATION = "configuration"
+    OTHER = "other"
+
+
 class LLMProviderError(CoreError):
-    pass
+    """`category` (see LLMErrorCategory) defaults to OTHER — the safe,
+    non-failover-eligible default — so a raise site that doesn't set one
+    explicitly (any exception type classify_ollama_error/
+    _classify_openai_compatible_error don't specifically recognize) never
+    silently becomes failover-eligible by omission."""
+
+    def __init__(self, message: str, *, category: LLMErrorCategory | None = None) -> None:
+        super().__init__(message)
+        self.category: LLMErrorCategory = category or LLMErrorCategory.OTHER
 
 
 class VisionErrorCategory(StrEnum):

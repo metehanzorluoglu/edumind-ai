@@ -38,7 +38,7 @@ What ollama/httpx actually raise here — verified against the installed
 import httpx
 import ollama
 
-from app.core.errors import VisionErrorCategory
+from app.core.errors import LLMErrorCategory, VisionErrorCategory
 
 _OOM_KEYWORDS = ("out of memory", "cuda error", "oom", "insufficient memory", "failed to allocate")
 _NOT_FOUND_KEYWORDS = ("not found", "no such model")
@@ -89,6 +89,34 @@ def classify_ollama_error(exc: Exception, *, model: str, action: str = "Chat gen
         return f"Ollama returned an error running '{model}': {message}"
 
     return f"{action} with model '{model}' failed: {exc}"
+
+
+def classify_ollama_error_category(exc: Exception) -> LLMErrorCategory:
+    """The FailoverLLMProvider counterpart to classify_ollama_error above
+    (MS-S1 vLLM migration resilience work) — same exception-type branches,
+    returning an LLMErrorCategory instead of a message string, so
+    app/core/llm_provider.py::OllamaLLMProvider's raised LLMProviderError
+    carries enough structure for FailoverLLMProvider to decide whether a
+    failure is eligible for automatic failover, without re-parsing the
+    message text. See LLMErrorCategory's own docstring for the exact
+    INFRASTRUCTURE/CONFIGURATION/OTHER contract.
+
+    A missing/not-yet-pulled model (ollama.ResponseError, "not found") is
+    deliberately CONFIGURATION, not INFRASTRUCTURE: the server is reachable
+    and responded — this backend (or its operator) asked for the wrong
+    model name, exactly the kind of misconfiguration that should surface
+    loudly rather than be silently routed around."""
+    if isinstance(exc, httpx.TimeoutException):
+        return LLMErrorCategory.INFRASTRUCTURE
+    if isinstance(exc, httpx.ConnectError | ConnectionError):
+        return LLMErrorCategory.INFRASTRUCTURE
+    if isinstance(exc, ollama.ResponseError):
+        return LLMErrorCategory.CONFIGURATION
+    if isinstance(exc, httpx.HTTPStatusError):
+        if exc.response.status_code >= 500:
+            return LLMErrorCategory.INFRASTRUCTURE
+        return LLMErrorCategory.CONFIGURATION
+    return LLMErrorCategory.OTHER
 
 
 def classify_vision_error_category(

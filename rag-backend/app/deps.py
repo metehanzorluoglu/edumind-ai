@@ -1,6 +1,6 @@
 from collections.abc import AsyncIterator
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session, sessionmaker
@@ -16,7 +16,12 @@ from app.core.embedding_provider import (
 from app.core.evidence_client import EvidenceClient
 from app.core.image_generation_service import ImageGenerationService
 from app.core.latex_compiler_client import LatexCompilerClient
-from app.core.llm_provider import LLMProvider, OllamaLLMProvider, OpenAICompatibleLLMProvider
+from app.core.llm_provider import (
+    FailoverLLMProvider,
+    LLMProvider,
+    OllamaLLMProvider,
+    OpenAICompatibleLLMProvider,
+)
 from app.core.rag_service import RagService
 from app.core.rate_limiter import RateLimiter
 from app.core.request_timing import DISABLED_TIMER, RequestTimer, bind_timer, unbind_timer
@@ -161,17 +166,16 @@ def get_retriever() -> Retriever:
 RetrieverDep = Annotated[Retriever, Depends(get_retriever)]
 
 
-@lru_cache
-def get_llm_provider() -> LLMProvider:
-    """Settings.llm_provider (env var LLM_PROVIDER, default "ollama")
-    selects which LLMProvider implementation ordinary text chat uses — see
-    app/core/llm_provider.py. Every other provider singleton in this file
-    (embeddings, vision, image generation) is unaffected: they always
-    construct their own Ollama-backed instance regardless of this
-    setting, since only chat generation is part of the MS-S1 vLLM
-    migration."""
-    settings = get_settings()
-    if settings.llm_provider == "openai_compatible":
+def _build_llm_provider(
+    settings: Settings, kind: Literal["ollama", "openai_compatible"]
+) -> LLMProvider:
+    """Constructs a single concrete LLMProvider for whichever `kind` is
+    asked for — shared by get_llm_provider's plain single-provider modes
+    and its "failover" mode below, so the two roles a FailoverLLMProvider
+    wraps are built via the exact same logic as a standalone
+    LLM_PROVIDER=ollama / LLM_PROVIDER=openai_compatible deployment would
+    use, never a second, potentially-drifting construction path."""
+    if kind == "openai_compatible":
         return OpenAICompatibleLLMProvider(
             model=settings.llm_model,
             base_url=settings.llm_base_url,
@@ -185,6 +189,33 @@ def get_llm_provider() -> LLMProvider:
         think=settings.ollama_thinking_enabled,
         options={"num_predict": settings.ollama_num_predict},
     )
+
+
+@lru_cache
+def get_llm_provider() -> LLMProvider:
+    """Settings.llm_provider (env var LLM_PROVIDER, default "ollama")
+    selects which LLMProvider implementation ordinary text chat uses — see
+    app/core/llm_provider.py. Every other provider singleton in this file
+    (embeddings, vision, image generation) is unaffected: they always
+    construct their own Ollama-backed instance regardless of this
+    setting, since only chat generation is part of the MS-S1 vLLM
+    migration.
+
+    "failover" (MS-S1 automatic-failover resilience work) wraps a primary
+    and a fallback instance — both built via _build_llm_provider above,
+    named by Settings.llm_primary_provider/llm_fallback_provider — in a
+    FailoverLLMProvider, so RagService/generation_manager still see one
+    ordinary LLMProvider and need no changes at all."""
+    settings = get_settings()
+    if settings.llm_provider == "failover":
+        return FailoverLLMProvider(
+            primary=_build_llm_provider(settings, settings.llm_primary_provider),
+            fallback=_build_llm_provider(settings, settings.llm_fallback_provider),
+            primary_label=settings.llm_primary_provider,
+            fallback_label=settings.llm_fallback_provider,
+            cooldown_seconds=settings.llm_failover_cooldown_seconds,
+        )
+    return _build_llm_provider(settings, settings.llm_provider)
 
 
 LLMProviderDep = Annotated[LLMProvider, Depends(get_llm_provider)]
@@ -382,9 +413,7 @@ def get_compile_artifact_storage() -> CompileArtifactStorage:
     return CompileArtifactStorage(root_dir=settings.compile_artifact_dir)
 
 
-CompileArtifactStorageDep = Annotated[
-    CompileArtifactStorage, Depends(get_compile_artifact_storage)
-]
+CompileArtifactStorageDep = Annotated[CompileArtifactStorage, Depends(get_compile_artifact_storage)]
 
 
 def get_documents_repository(db: DBSessionDep) -> DocumentsRepository:
@@ -426,9 +455,7 @@ def get_document_jobs_repository(db: DBSessionDep) -> DocumentJobsRepository:
     return DocumentJobsRepository(db)
 
 
-DocumentJobsRepositoryDep = Annotated[
-    DocumentJobsRepository, Depends(get_document_jobs_repository)
-]
+DocumentJobsRepositoryDep = Annotated[DocumentJobsRepository, Depends(get_document_jobs_repository)]
 
 
 def get_notebooks_repository(db: DBSessionDep) -> NotebooksRepository:

@@ -162,3 +162,118 @@ def test_settings_repr_never_contains_llm_api_key(monkeypatch) -> None:
     settings = Settings(jwt_secret=_JWT_SECRET)
 
     assert "super-secret-vllm-key" not in repr(settings)
+
+
+# --- LLM_PROVIDER=failover / automatic MS-S1 failover resilience -------
+
+
+def _clear_llm_failover_env(monkeypatch) -> None:
+    for name in ("LLM_PRIMARY_PROVIDER", "LLM_FALLBACK_PROVIDER", "LLM_FAILOVER_COOLDOWN_SECONDS"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_llm_provider_accepts_failover_value(monkeypatch) -> None:
+    """ "failover" is a new, additive third value — "ollama" and
+    "openai_compatible" (tested above) keep their exact original meaning
+    (a plain single provider, never any automatic fallback)."""
+    _clear_llm_env(monkeypatch)
+    _clear_llm_failover_env(monkeypatch)
+    monkeypatch.setenv("LLM_PROVIDER", "failover")
+
+    settings = Settings(jwt_secret=_JWT_SECRET)
+
+    assert settings.llm_provider == "failover"
+
+
+def test_llm_primary_and_fallback_provider_default_to_openai_compatible_and_ollama(
+    monkeypatch,
+) -> None:
+    _clear_llm_env(monkeypatch)
+    _clear_llm_failover_env(monkeypatch)
+
+    settings = Settings(jwt_secret=_JWT_SECRET)
+
+    assert settings.llm_primary_provider == "openai_compatible"
+    assert settings.llm_fallback_provider == "ollama"
+
+
+def test_llm_failover_refuses_identical_primary_and_fallback_provider(monkeypatch) -> None:
+    """Failing over to the exact provider that just failed serves no
+    purpose — refused at startup rather than silently accepted."""
+    _clear_llm_env(monkeypatch)
+    _clear_llm_failover_env(monkeypatch)
+    monkeypatch.setenv("LLM_PROVIDER", "failover")
+    monkeypatch.setenv("LLM_PRIMARY_PROVIDER", "ollama")
+    monkeypatch.setenv("LLM_FALLBACK_PROVIDER", "ollama")
+
+    with pytest.raises(ValidationError):
+        Settings(jwt_secret=_JWT_SECRET)
+
+
+def test_llm_failover_identical_roles_allowed_when_not_in_failover_mode(monkeypatch) -> None:
+    """The validator only fires when LLM_PROVIDER=failover — an operator
+    who never touches LLM_PRIMARY_PROVIDER/LLM_FALLBACK_PROVIDER at all
+    (both left at their identical-looking defaults is impossible today,
+    but nothing should ever depend on that) must not be blocked while
+    running plain "ollama"/"openai_compatible" mode."""
+    _clear_llm_env(monkeypatch)
+    _clear_llm_failover_env(monkeypatch)
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("LLM_PRIMARY_PROVIDER", "ollama")
+    monkeypatch.setenv("LLM_FALLBACK_PROVIDER", "ollama")
+
+    settings = Settings(jwt_secret=_JWT_SECRET)
+
+    assert settings.llm_provider == "ollama"
+
+
+def test_llm_failover_cooldown_seconds_defaults_to_20(monkeypatch) -> None:
+    _clear_llm_env(monkeypatch)
+    _clear_llm_failover_env(monkeypatch)
+
+    settings = Settings(jwt_secret=_JWT_SECRET)
+
+    assert settings.llm_failover_cooldown_seconds == 20.0
+
+
+def test_llm_failover_cooldown_seconds_configurable_via_env_var(monkeypatch) -> None:
+    _clear_llm_env(monkeypatch)
+    _clear_llm_failover_env(monkeypatch)
+    monkeypatch.setenv("LLM_FAILOVER_COOLDOWN_SECONDS", "5")
+
+    settings = Settings(jwt_secret=_JWT_SECRET)
+
+    assert settings.llm_failover_cooldown_seconds == 5.0
+
+
+def test_effective_llm_model_in_failover_mode_follows_primary_role(monkeypatch) -> None:
+    _clear_llm_env(monkeypatch)
+    _clear_llm_failover_env(monkeypatch)
+    monkeypatch.setenv("LLM_PROVIDER", "failover")
+    monkeypatch.setenv("LLM_PRIMARY_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("LLM_FALLBACK_PROVIDER", "ollama")
+    monkeypatch.setenv("LLM_MODEL", "Qwen/Qwen3-4B-Instruct-2507")
+    monkeypatch.setenv("OLLAMA_LLM_MODEL", "qwen3:8b")
+
+    settings = Settings(jwt_secret=_JWT_SECRET)
+
+    assert settings.effective_llm_model == "Qwen/Qwen3-4B-Instruct-2507"
+
+
+def test_effective_llm_model_in_failover_mode_follows_primary_role_when_ollama_is_primary(
+    monkeypatch,
+) -> None:
+    """The primary/fallback roles are generic — even though production only
+    ever configures openai_compatible as primary, effective_llm_model must
+    still resolve correctly if the roles were ever reversed."""
+    _clear_llm_env(monkeypatch)
+    _clear_llm_failover_env(monkeypatch)
+    monkeypatch.setenv("LLM_PROVIDER", "failover")
+    monkeypatch.setenv("LLM_PRIMARY_PROVIDER", "ollama")
+    monkeypatch.setenv("LLM_FALLBACK_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("LLM_MODEL", "Qwen/Qwen3-4B-Instruct-2507")
+    monkeypatch.setenv("OLLAMA_LLM_MODEL", "qwen3:8b")
+
+    settings = Settings(jwt_secret=_JWT_SECRET)
+
+    assert settings.effective_llm_model == "qwen3:8b"

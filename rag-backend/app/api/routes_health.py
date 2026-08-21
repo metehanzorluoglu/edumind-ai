@@ -52,6 +52,14 @@ class ReadinessResponse(BaseModel):
     llm_provider: str
     llm_reachable: bool
     llm_latency_ms: float | None
+    # Automatic LLM failover observability (MS-S1 resilience work) — all
+    # None unless llm_provider=="failover"; see app/core/readiness.py's
+    # ReadinessStatus for the full contract.
+    llm_primary_provider: str | None
+    llm_primary_reachable: bool | None
+    llm_fallback_provider: str | None
+    llm_fallback_reachable: bool | None
+    llm_currently_preferred: str | None
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -90,6 +98,21 @@ def get_readiness(settings: SettingsDep) -> ReadinessResponse:
     if settings.llm_provider == "ollama":
         required_models.append(settings.ollama_llm_model)
 
+    # Automatic LLM failover (MS-S1 resilience work): resolve each role's
+    # own model name so check_readiness can probe both providers, not just
+    # whichever one is primary — see that function's docstring.
+    llm_primary_provider = None
+    llm_primary_model = None
+    llm_fallback_model = None
+    if settings.llm_provider == "failover":
+        llm_primary_provider = settings.llm_primary_provider
+        if llm_primary_provider == "openai_compatible":
+            llm_primary_model = settings.llm_model
+            llm_fallback_model = settings.ollama_llm_model
+        else:
+            llm_primary_model = settings.ollama_llm_model
+            llm_fallback_model = settings.llm_model
+
     readiness = check_readiness(
         ollama_base_url=settings.ollama_base_url,
         required_models=required_models,
@@ -98,6 +121,9 @@ def get_readiness(settings: SettingsDep) -> ReadinessResponse:
         llm_model=settings.effective_llm_model,
         llm_base_url=settings.llm_base_url,
         llm_api_key=settings.llm_api_key.get_secret_value(),
+        llm_primary_provider=llm_primary_provider,
+        llm_primary_model=llm_primary_model,
+        llm_fallback_model=llm_fallback_model,
     )
     vision_model_available = (
         readiness.models_available[settings.ollama_vision_model]
@@ -117,4 +143,9 @@ def get_readiness(settings: SettingsDep) -> ReadinessResponse:
         llm_provider=readiness.llm_provider,
         llm_reachable=readiness.llm_reachable,
         llm_latency_ms=readiness.llm_latency_ms,
+        llm_primary_provider=readiness.llm_primary_provider,
+        llm_primary_reachable=readiness.llm_primary_reachable,
+        llm_fallback_provider=readiness.llm_fallback_provider,
+        llm_fallback_reachable=readiness.llm_fallback_reachable,
+        llm_currently_preferred=readiness.llm_currently_preferred,
     )

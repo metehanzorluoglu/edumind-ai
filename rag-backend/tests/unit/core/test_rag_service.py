@@ -4,6 +4,8 @@ wiring, and _record_prompt_metadata's safe (metadata-only, never content)
 profiling output.
 """
 
+from app.core.errors import LLMErrorCategory, LLMProviderError
+from app.core.llm_provider import FailoverLLMProvider
 from app.core.rag_service import RagService
 from app.core.request_timing import RequestTimer, bind_timer, unbind_timer
 from app.core.retrieval_schemas import RetrievedChunk
@@ -186,7 +188,8 @@ class TestRetrievalModeObservability:
 
     def test_general_only_when_no_conversation_or_project(self) -> None:
         rag_service = RagService(
-            retriever=_FakeRetriever([_chunk("evidence")]), llm_provider=_FakeLLMProvider(),
+            retriever=_FakeRetriever([_chunk("evidence")]),
+            llm_provider=_FakeLLMProvider(),
             model_name="m",
         )
         _, timer = _prepare_with_scope(rag_service, "a question")
@@ -195,7 +198,8 @@ class TestRetrievalModeObservability:
 
     def test_chat_plus_general_when_conversation_id_given(self) -> None:
         rag_service = RagService(
-            retriever=_FakeRetriever([_chunk("evidence")]), llm_provider=_FakeLLMProvider(),
+            retriever=_FakeRetriever([_chunk("evidence")]),
+            llm_provider=_FakeLLMProvider(),
             model_name="m",
         )
         _, timer = _prepare_with_scope(rag_service, "a question", conversation_id="conv-1")
@@ -205,7 +209,8 @@ class TestRetrievalModeObservability:
 
     def test_chat_plus_project_plus_general_with_both_scopes(self) -> None:
         rag_service = RagService(
-            retriever=_FakeRetriever([_chunk("evidence")]), llm_provider=_FakeLLMProvider(),
+            retriever=_FakeRetriever([_chunk("evidence")]),
+            llm_provider=_FakeLLMProvider(),
             model_name="m",
         )
         _, timer = _prepare_with_scope(
@@ -218,7 +223,8 @@ class TestRetrievalModeObservability:
         (one per project a conversation belongs to) must not produce
         "chat+project+project+general"."""
         rag_service = RagService(
-            retriever=_FakeRetriever([_chunk("evidence")]), llm_provider=_FakeLLMProvider(),
+            retriever=_FakeRetriever([_chunk("evidence")]),
+            llm_provider=_FakeLLMProvider(),
             model_name="m",
         )
         _, timer = _prepare_with_scope(
@@ -231,10 +237,76 @@ class TestRetrievalModeObservability:
 
     def test_records_nothing_when_profiling_disabled(self) -> None:
         rag_service = RagService(
-            retriever=_FakeRetriever([_chunk("evidence")]), llm_provider=_FakeLLMProvider(),
+            retriever=_FakeRetriever([_chunk("evidence")]),
+            llm_provider=_FakeLLMProvider(),
             model_name="m",
         )
         _, timer = _prepare_with_scope(
             rag_service, "a question", conversation_id="conv-1", enabled=False
         )
         assert timer.tags_dict() == {}
+
+
+class _StreamingLLMProvider:
+    """Unlike _FakeLLMProvider above, actually yields recognizable content
+    — used by TestFailoverProviderPreservesRagPipeline below to prove
+    *which* provider served the answer without affecting retrieval/
+    citations at all."""
+
+    def __init__(self, *, tokens: list[str] | None = None, error: Exception | None = None) -> None:
+        self._tokens = tokens or []
+        self._error = error
+
+    def stream_chat(self, *, system_prompt, user_prompt, timer=None, options_override=None):
+        yield from self._tokens
+        if self._error is not None:
+            raise self._error
+
+
+class TestFailoverProviderPreservesRagPipeline:
+    """MS-S1 automatic-failover resilience work: FailoverLLMProvider sits
+    strictly below RagService.prepare() (retrieval -> context-prep ->
+    citation-building), which never even constructs an LLMProvider call
+    for the prompt/citation-building stage — so retrieval, prompt
+    construction, and citations must be byte-for-byte identical whether
+    the primary or the fallback provider ends up answering."""
+
+    def test_citations_and_sources_are_identical_regardless_of_which_provider_answers(self) -> None:
+        chunks = [
+            _chunk("evidence one", document_id="doc-1"),
+            _chunk("evidence two", document_id="doc-2"),
+        ]
+
+        primary_healthy = RagService(
+            retriever=_FakeRetriever(chunks),
+            llm_provider=FailoverLLMProvider(
+                primary=_StreamingLLMProvider(tokens=["answer from MS-S1"]),
+                fallback=_StreamingLLMProvider(tokens=["should never be used"]),
+            ),
+            model_name="test-model",
+        )
+        primary_down = RagService(
+            retriever=_FakeRetriever(chunks),
+            llm_provider=FailoverLLMProvider(
+                primary=_StreamingLLMProvider(
+                    error=LLMProviderError("down", category=LLMErrorCategory.INFRASTRUCTURE)
+                ),
+                fallback=_StreamingLLMProvider(tokens=["answer from Ollama"]),
+            ),
+            model_name="test-model",
+        )
+
+        result_primary = primary_healthy.run("a question", user_id="user-1")
+        result_fallback = primary_down.run("a question", user_id="user-1")
+
+        # The answer text legitimately differs (a different provider
+        # produced it) — but everything RAG built independently of that
+        # must not: same citations, same retrieved sources, same
+        # insufficient_evidence determination.
+        assert result_primary.answer == "answer from MS-S1"
+        assert result_fallback.answer == "answer from Ollama"
+        assert result_primary.citations == result_fallback.citations
+        assert result_primary.retrieved_sources == result_fallback.retrieved_sources
+        assert (
+            result_primary.insufficient_evidence == result_fallback.insufficient_evidence is False
+        )

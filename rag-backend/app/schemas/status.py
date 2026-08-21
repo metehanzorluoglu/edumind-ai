@@ -60,3 +60,12 @@ class StatusResponse(BaseModel):
     llm_provider: str
     llm_reachable: bool
     llm_latency_ms: float | None
+    # Automatic LLM failover observability (MS-S1 resilience work) — all
+    # None unless llm_provider=="failover"; see
+    # app/api/routes_health.py's ReadinessResponse fields of the same
+    # name for the full contract.
+    llm_primary_provider: str | None
+    llm_primary_reachable: bool | None
+    llm_fallback_provider: str | None
+    llm_fallback_reachable: bool | None
+    llm_currently_preferred: str | None

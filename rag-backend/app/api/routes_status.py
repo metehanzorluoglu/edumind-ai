@@ -39,6 +39,20 @@ def get_status(settings: SettingsDep, user: CurrentUserDep) -> StatusResponse:
     if settings.llm_provider == "ollama":
         required_models.append(settings.ollama_llm_model)
 
+    # Automatic LLM failover (MS-S1 resilience work) — see routes_health.py's
+    # identical comment for why each role's own model name is resolved here.
+    llm_primary_provider = None
+    llm_primary_model = None
+    llm_fallback_model = None
+    if settings.llm_provider == "failover":
+        llm_primary_provider = settings.llm_primary_provider
+        if llm_primary_provider == "openai_compatible":
+            llm_primary_model = settings.llm_model
+            llm_fallback_model = settings.ollama_llm_model
+        else:
+            llm_primary_model = settings.ollama_llm_model
+            llm_fallback_model = settings.llm_model
+
     readiness = check_readiness(
         ollama_base_url=settings.ollama_base_url,
         required_models=required_models,
@@ -47,6 +61,9 @@ def get_status(settings: SettingsDep, user: CurrentUserDep) -> StatusResponse:
         llm_model=settings.effective_llm_model,
         llm_base_url=settings.llm_base_url,
         llm_api_key=settings.llm_api_key.get_secret_value(),
+        llm_primary_provider=llm_primary_provider,
+        llm_primary_model=llm_primary_model,
+        llm_fallback_model=llm_fallback_model,
     )
     vision_model_available = (
         readiness.models_available[settings.ollama_vision_model]
@@ -88,4 +105,9 @@ def get_status(settings: SettingsDep, user: CurrentUserDep) -> StatusResponse:
         llm_provider=readiness.llm_provider,
         llm_reachable=readiness.llm_reachable,
         llm_latency_ms=readiness.llm_latency_ms,
+        llm_primary_provider=readiness.llm_primary_provider,
+        llm_primary_reachable=readiness.llm_primary_reachable,
+        llm_fallback_provider=readiness.llm_fallback_provider,
+        llm_fallback_reachable=readiness.llm_fallback_reachable,
+        llm_currently_preferred=readiness.llm_currently_preferred,
     )
