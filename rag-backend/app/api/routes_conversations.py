@@ -1773,7 +1773,7 @@ def _handle_conversation_message(
     route = choose_model(
         has_images=len(parsed.attachments) > 0,
         corpus_enabled=parsed.use_corpus,
-        text_model=settings.ollama_llm_model,
+        text_model=settings.effective_llm_model,
         vision_model=settings.ollama_vision_model,
     )
 

@@ -384,6 +384,43 @@ These names are **not** a typo — the Oracle Compose project is named `edumind-
 
 Larger than the Raspberry Pi 5 config's `qwen3:4b` / `qwen2.5vl:3b` pair — this host's 24 GB RAM and 4 OCPUs support the full-size models directly; see the next section for how their resource envelope is tuned.
 
+`OLLAMA_LLM_MODEL` above only actually drives ordinary text chat generation when `LLM_PROVIDER=ollama` — see the next section for this deployment's real (different) production setting.
+
+---
+
+## MS-S1 vLLM chat LLM
+
+Ordinary text chat generation (`app/core/llm_provider.py`) is served in production by **MS-S1**, a separate GPU host running vLLM's OpenAI-compatible API (`Qwen/Qwen3-4B-Instruct-2507`), reached over this Oracle VM's own Tailscale interface — not the `ollama` sibling container, which continues to serve embeddings/vision/image-generation only (those never moved).
+
+```
+Oracle backend container -> host's tailscale0 -> Tailscale -> MS-S1 -> vLLM -> Qwen3-4B
+```
+
+**Environment variables** (`.env.oracle`, see `.env.oracle.example` for the full annotated block):
+
+| Setting | Purpose |
+|---|---|
+| `LLM_PROVIDER` | `openai_compatible` in production; `ollama` falls back to the sibling Ollama container for chat too, with no code change |
+| `LLM_BASE_URL` | MS-S1's Tailscale address, e.g. `http://100.x.x.x:8000/v1` — a real address belongs **only** here and in `.env.oracle`/`.env.oracle.example`, never in source code |
+| `LLM_MODEL` | `Qwen/Qwen3-4B-Instruct-2507` |
+| `LLM_API_KEY` | vLLM's required Bearer token — rotate on MS-S1 itself; never committed, logged, or echoed in an error response |
+| `LLM_REQUEST_TIMEOUT_SECONDS` | optional, defaults to 120 |
+
+**Docker networking — verified, not assumed.** `docker-compose.oracle.yml`'s `backend` service needed **no changes** to reach MS-S1: it sits on the plain bridge network `edumind-rpi5-net` (not `internal: true`), which gets outbound NAT through the host exactly like any other container-to-internet traffic, and the host's own `tailscale0` route to `100.64.0.0/10` applies to that NATed traffic the same way it would to a request from the host itself. Confirmed directly against the running production container:
+
+```bash
+docker exec edumind-oracle-backend-1 python -c \
+  "import urllib.request; urllib.request.urlopen('http://<MS-S1-tailscale-ip>:8000/v1/models', timeout=5)"
+# -> HTTPError 401 {"error":"Unauthorized"} without a key — proves the container
+#    reaches MS-S1 and gets a real response, not a network-level failure.
+```
+
+A host that *can* reach Tailscale peers does not guarantee a container can — always verify with a real `docker exec` request like the one above after any host-level Tailscale/firewall change, rather than assuming host connectivity implies container connectivity.
+
+**If MS-S1 is unreachable:** `GET /health/ready` and `GET /status` report `llm_reachable: false` (see `app/core/readiness.py`) without crashing the backend; an in-flight chat request gets a clear "could not reach the inference server" error (`app/core/llm_provider.py`'s `OpenAICompatibleLLMProvider`) instead of a raw exception. Recovery is automatic — no backend restart needed — once MS-S1 answers again, since every chat request opens its own connection.
+
+**Rollback:** set `LLM_PROVIDER=ollama` in `.env.oracle` and restart the `backend` service (`OLLAMA_LLM_MODEL` above is always kept current for exactly this fallback).
+
 ---
 
 ## Current performance optimizations

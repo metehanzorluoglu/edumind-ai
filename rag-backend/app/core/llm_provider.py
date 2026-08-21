@@ -1,11 +1,16 @@
+import json
+import logging
 from collections.abc import Iterable, Iterator, Mapping
 from typing import Literal, Protocol
 
+import httpx
 import ollama
 
 from app.core.errors import LLMProviderError
 from app.core.ollama_errors import classify_ollama_error
 from app.core.request_timing import RequestTimer
+
+logger = logging.getLogger(__name__)
 
 
 class LLMProvider(Protocol):
@@ -140,6 +145,206 @@ class OllamaLLMProvider:
 
         if timer is not None and last_chunk is not None:
             _record_ollama_metrics(timer, last_chunk)
+
+
+_DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS = 120.0
+
+
+def _classify_openai_compatible_error(exc: Exception, *, model: str) -> str:
+    """The OpenAICompatibleLLMProvider counterpart to
+    app/core/ollama_errors.py's classify_ollama_error — same "turn an
+    exception into a message a user can act on" contract, covering the
+    exception shapes a real `/v1/chat/completions` call against an
+    OpenAI-compatible server (vLLM, in production) can raise.
+
+    Never includes the request body, the Authorization header, or the raw
+    API key in any returned message — only the upstream status code and
+    whatever error text the server itself chose to send back, which is
+    the server's own (already-public) response, never a secret this
+    backend holds."""
+    if isinstance(exc, httpx.TimeoutException):
+        return (
+            f"The '{model}' model did not respond in time. It may be overloaded, or this "
+            "request may be too large to process quickly — try again shortly."
+        )
+    if isinstance(exc, httpx.ConnectError | ConnectionError):
+        return (
+            f"Could not reach the inference server to run '{model}'. It may be temporarily "
+            "unavailable — try again shortly."
+        )
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+        if status_code in (401, 403):
+            # Deliberately generic: never echoes the server's own error body
+            # here, since some OpenAI-compatible servers include request
+            # metadata (occasionally the offending Authorization value
+            # itself, truncated or not) in a 401/403 body. The status code
+            # alone is enough for an operator to know "check the API key".
+            return (
+                f"Authentication with the inference server failed while running '{model}'. "
+                "Check the configured API key."
+            )
+        if status_code >= 500:
+            return (
+                f"The inference server had an internal error running '{model}' "
+                f"(HTTP {status_code}). Try again shortly."
+            )
+        try:
+            body = exc.response.json()
+            message = body.get("error") or str(body) if isinstance(body, dict) else str(body)
+        except ValueError:
+            message = exc.response.text or str(exc)
+        return f"The inference server returned an error running '{model}': {message}"
+    return f"Chat generation with model '{model}' failed: {exc}"
+
+
+def _record_openai_compatible_usage_metrics(
+    timer: RequestTimer, usage: Mapping[str, object]
+) -> None:
+    """Best-effort counterpart to _record_ollama_metrics below, using the
+    `usage` object an OpenAI-compatible server returns on the final SSE
+    chunk when the request sets `stream_options: {"include_usage": true}`
+    (vLLM supports this). No load/prompt-eval timing breakdown exists in
+    the OpenAI wire format the way Ollama's ChatResponse provides it, so
+    only token counts are recorded here — still enough to see prompt vs.
+    completion size on the profiling timer. Never raises: a profiling
+    extraction failure must never break a real chat response."""
+    try:
+        prompt_tokens = usage.get("prompt_tokens")
+        if isinstance(prompt_tokens, int | float):
+            timer.record_metric("actual_prompt_tokens", prompt_tokens)
+        completion_tokens = usage.get("completion_tokens")
+        if isinstance(completion_tokens, int | float):
+            timer.record_metric("completion_token_count", completion_tokens)
+    except Exception:
+        pass
+
+
+class OpenAICompatibleLLMProvider:
+    """LLMProvider implementation for any server exposing an OpenAI-style
+    streaming `/v1/chat/completions` endpoint — introduced for the MS-S1
+    vLLM migration (a private, Tailscale-only `Qwen/Qwen3-4B-Instruct-2507`
+    host requiring `Authorization: Bearer <key>`; see app/deps.py::
+    get_llm_provider and Settings.llm_provider). Implements the exact same
+    LLMProvider Protocol as OllamaLLMProvider above — RagService
+    (app/core/rag_service.py) and the generation worker
+    (app/core/generation_manager.py) call `stream_chat` identically either
+    way and need no changes: only which HTTP API/auth scheme reaches the
+    model differs.
+
+    `options`/`options_override` use this codebase's existing
+    Ollama-flavored option names (e.g. `num_predict` — see
+    app/api/routes_conversations.py's lesson-mode override, the one place
+    that builds an options_override today) so that call site keeps working
+    unmodified regardless of which provider is active. `num_predict` is
+    translated to OpenAI's `max_tokens` field here; every other option key
+    is passed straight through as a top-level request field (e.g.
+    `temperature`), matching OllamaLLMProvider's own "plain pass-through"
+    contract for `options`.
+
+    The API key is held only in `self._api_key` and sent solely as the
+    `Authorization` header value — never logged, never interpolated into
+    an exception message (see _classify_openai_compatible_error above),
+    and never part of `body` (the JSON payload logged nowhere in this
+    class)."""
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        base_url: str,
+        api_key: str,
+        client: httpx.Client | None = None,
+        options: Mapping[str, object] | None = None,
+        timeout_seconds: float = _DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_SECONDS,
+    ) -> None:
+        self._model = model
+        self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
+        self._options = options
+        self._client: httpx.Client = (
+            client if client is not None else httpx.Client(timeout=timeout_seconds)
+        )
+
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self._api_key}"}
+
+    def _request_body(self, options_override: Mapping[str, object] | None) -> dict[str, object]:
+        effective_options = (
+            {**(self._options or {}), **options_override} if options_override else self._options
+        )
+        body: dict[str, object] = {
+            "model": self._model,
+            "stream": True,
+            # Asks vLLM to include a final usage-only chunk (empty
+            # `choices`) so token counts can be recorded on the timer —
+            # see _record_openai_compatible_usage_metrics. A server that
+            # doesn't understand this field ignores it; token streaming
+            # is unaffected either way.
+            "stream_options": {"include_usage": True},
+        }
+        for key, value in (effective_options or {}).items():
+            body["max_tokens" if key == "num_predict" else key] = value
+        return body
+
+    def stream_chat(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        timer: RequestTimer | None = None,
+        options_override: Mapping[str, object] | None = None,
+    ) -> Iterator[str]:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        body = self._request_body(options_override)
+        body["messages"] = messages
+        usage: Mapping[str, object] | None = None
+        try:
+            with self._client.stream(
+                "POST",
+                f"{self._base_url}/chat/completions",
+                json=body,
+                headers=self._headers(),
+            ) as response:
+                if response.status_code >= 400:
+                    # Read the body before raise_for_status() so the error
+                    # classifier below can inspect the server's own JSON
+                    # error message — a streamed response's body is empty
+                    # until explicitly read.
+                    response.read()
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[len("data:") :].strip()
+                    if not data or data == "[DONE]":
+                        continue
+                    try:
+                        chunk = json.loads(data)
+                    except ValueError:
+                        logger.warning("Skipping malformed SSE chunk from inference server")
+                        continue
+                    chunk_usage = chunk.get("usage")
+                    if isinstance(chunk_usage, dict):
+                        usage = chunk_usage
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    content = delta.get("content")
+                    if content:
+                        yield content
+        except LLMProviderError:
+            raise
+        except Exception as exc:
+            message = _classify_openai_compatible_error(exc, model=self._model)
+            raise LLMProviderError(message) from exc
+
+        if timer is not None and usage is not None:
+            _record_openai_compatible_usage_metrics(timer, usage)
 
 
 def _record_ollama_metrics(timer: RequestTimer, final_chunk: object) -> None:

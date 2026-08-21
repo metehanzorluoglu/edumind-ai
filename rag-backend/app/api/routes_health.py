@@ -43,6 +43,15 @@ class ReadinessResponse(BaseModel):
     # lightweight readiness check deliberately never does.
     ollama_latency_ms: float | None
     qdrant_latency_ms: float | None
+    # MS-S1 vLLM migration (additive — every field above is unchanged):
+    # the *configured chat LLM's* own reachability, which is only
+    # different from ollama_reachable/ollama_latency_ms above when
+    # LLM_PROVIDER=openai_compatible points chat generation at a server
+    # other than the one serving embeddings/vision. See
+    # app/core/readiness.py's ReadinessStatus for the full contract.
+    llm_provider: str
+    llm_reachable: bool
+    llm_latency_ms: float | None
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -70,14 +79,25 @@ def get_readiness(settings: SettingsDep) -> ReadinessResponse:
         logger.warning("Qdrant readiness check failed: %s", exc)
         store = None
 
-    required_models = [settings.ollama_llm_model, settings.ollama_embed_model]
+    # The chat LLM's own model name is only added to the Ollama-side
+    # required_models list when it actually lives on the Ollama server
+    # (llm_provider="ollama") — when llm_provider="openai_compatible" its
+    # availability is checked separately, against LLM_BASE_URL instead
+    # (see check_readiness's llm_model/llm_base_url/llm_api_key params).
+    required_models = [settings.ollama_embed_model]
     if settings.vision_enabled:
         required_models.append(settings.ollama_vision_model)
+    if settings.llm_provider == "ollama":
+        required_models.append(settings.ollama_llm_model)
 
     readiness = check_readiness(
         ollama_base_url=settings.ollama_base_url,
         required_models=required_models,
         vector_store=store,
+        llm_provider=settings.llm_provider,
+        llm_model=settings.effective_llm_model,
+        llm_base_url=settings.llm_base_url,
+        llm_api_key=settings.llm_api_key.get_secret_value(),
     )
     vision_model_available = (
         readiness.models_available[settings.ollama_vision_model]
@@ -89,9 +109,12 @@ def get_readiness(settings: SettingsDep) -> ReadinessResponse:
         ollama_reachable=readiness.ollama_reachable,
         qdrant_reachable=readiness.qdrant_reachable,
         models_available=readiness.models_available,
-        text_model_available=readiness.models_available[settings.ollama_llm_model],
+        text_model_available=readiness.llm_model_available,
         vision_model_available=vision_model_available,
         embedding_model_available=readiness.models_available[settings.ollama_embed_model],
         ollama_latency_ms=readiness.ollama_latency_ms,
         qdrant_latency_ms=readiness.qdrant_latency_ms,
+        llm_provider=readiness.llm_provider,
+        llm_reachable=readiness.llm_reachable,
+        llm_latency_ms=readiness.llm_latency_ms,
     )

@@ -2,9 +2,12 @@
 wiring for OLLAMA_NUM_PREDICT — the actual env-var-to-live-provider path,
 end to end, complementing tests/unit/test_config.py (Settings parsing only)
 and tests/unit/core/test_llm_provider.py (OllamaLLMProvider's own
-request-shaping, given an options dict directly)."""
+request-shaping, given an options dict directly). Also covers the
+LLM_PROVIDER switch (MS-S1 vLLM migration) selecting
+OpenAICompatibleLLMProvider instead."""
 
 from app.config import get_settings
+from app.core.llm_provider import OllamaLLMProvider, OpenAICompatibleLLMProvider
 from app.deps import get_llm_provider
 
 _JWT_SECRET = "x" * 32  # Settings.jwt_secret is required (min_length=16); irrelevant here.
@@ -17,6 +20,11 @@ def _reset_caches() -> None:
     # test would silently see an earlier test's cached instance.
     get_settings.cache_clear()
     get_llm_provider.cache_clear()
+
+
+def _clear_llm_env(monkeypatch) -> None:
+    for name in ("LLM_PROVIDER", "LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
 
 
 def test_get_llm_provider_defaults_num_predict_to_512(monkeypatch) -> None:
@@ -56,5 +64,48 @@ def test_get_llm_provider_wires_thinking_and_num_predict_together(monkeypatch) -
         provider = get_llm_provider()
         assert provider._think is True
         assert provider._options == {"num_predict": 2048}
+    finally:
+        _reset_caches()
+
+
+def test_get_llm_provider_defaults_to_ollama_when_llm_provider_unset(monkeypatch) -> None:
+    """No LLM_PROVIDER set at all (every pre-existing deployment) must keep
+    returning an OllamaLLMProvider — the whole point of this being an
+    opt-in migration, not a breaking default change."""
+    monkeypatch.setenv("JWT_SECRET", _JWT_SECRET)
+    _clear_llm_env(monkeypatch)
+    _reset_caches()
+
+    try:
+        provider = get_llm_provider()
+        assert isinstance(provider, OllamaLLMProvider)
+    finally:
+        _reset_caches()
+
+
+def test_get_llm_provider_selects_openai_compatible_from_settings(monkeypatch) -> None:
+    """LLM_PROVIDER=openai_compatible (the MS-S1 vLLM migration) must wire
+    LLM_BASE_URL/LLM_MODEL/LLM_API_KEY/LLM_REQUEST_TIMEOUT_SECONDS onto an
+    OpenAICompatibleLLMProvider instead of OllamaLLMProvider — the actual
+    env-var-to-live-provider path this migration adds."""
+    monkeypatch.setenv("JWT_SECRET", _JWT_SECRET)
+    _clear_llm_env(monkeypatch)
+    monkeypatch.setenv("LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("LLM_BASE_URL", "http://vllm.example.internal:8000/v1")
+    monkeypatch.setenv("LLM_MODEL", "Qwen/Qwen3-4B-Instruct-2507")
+    monkeypatch.setenv("LLM_API_KEY", "test-secret-key")
+    monkeypatch.setenv("LLM_REQUEST_TIMEOUT_SECONDS", "45")
+    _reset_caches()
+
+    try:
+        provider = get_llm_provider()
+        assert isinstance(provider, OpenAICompatibleLLMProvider)
+        assert provider._model == "Qwen/Qwen3-4B-Instruct-2507"
+        assert provider._base_url == "http://vllm.example.internal:8000/v1"
+        # The real secret must reach the provider (it needs the actual
+        # value to authenticate) but must never appear anywhere else this
+        # test can observe — see test_config.py's repr guard for the
+        # complementary "never printed" check.
+        assert provider._api_key == "test-secret-key"
     finally:
         _reset_caches()

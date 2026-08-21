@@ -16,7 +16,7 @@ from app.core.embedding_provider import (
 from app.core.evidence_client import EvidenceClient
 from app.core.image_generation_service import ImageGenerationService
 from app.core.latex_compiler_client import LatexCompilerClient
-from app.core.llm_provider import LLMProvider, OllamaLLMProvider
+from app.core.llm_provider import LLMProvider, OllamaLLMProvider, OpenAICompatibleLLMProvider
 from app.core.rag_service import RagService
 from app.core.rate_limiter import RateLimiter
 from app.core.request_timing import DISABLED_TIMER, RequestTimer, bind_timer, unbind_timer
@@ -163,7 +163,22 @@ RetrieverDep = Annotated[Retriever, Depends(get_retriever)]
 
 @lru_cache
 def get_llm_provider() -> LLMProvider:
+    """Settings.llm_provider (env var LLM_PROVIDER, default "ollama")
+    selects which LLMProvider implementation ordinary text chat uses — see
+    app/core/llm_provider.py. Every other provider singleton in this file
+    (embeddings, vision, image generation) is unaffected: they always
+    construct their own Ollama-backed instance regardless of this
+    setting, since only chat generation is part of the MS-S1 vLLM
+    migration."""
     settings = get_settings()
+    if settings.llm_provider == "openai_compatible":
+        return OpenAICompatibleLLMProvider(
+            model=settings.llm_model,
+            base_url=settings.llm_base_url,
+            api_key=settings.llm_api_key.get_secret_value(),
+            timeout_seconds=settings.llm_request_timeout_seconds,
+            options={"num_predict": settings.ollama_num_predict},
+        )
     return OllamaLLMProvider(
         model=settings.ollama_llm_model,
         base_url=settings.ollama_base_url,
@@ -264,7 +279,7 @@ def get_rag_service() -> RagService:
     return RagService(
         retriever=get_retriever(),
         llm_provider=get_llm_provider(),
-        model_name=settings.ollama_llm_model,
+        model_name=settings.effective_llm_model,
         max_chunks_per_document=settings.context_max_chunks_per_document,
         max_total_context_chars=settings.context_max_total_chars,
         dedup_similarity_threshold=settings.context_dedup_similarity_threshold,

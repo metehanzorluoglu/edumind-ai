@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -86,6 +86,70 @@ class Settings(BaseSettings):
     # increase, not a blind one. See the performance investigation for the
     # measured generation-time impact of this larger cap.
     ollama_num_predict_lesson_mode: int = Field(default=1536, ge=1)
+
+    # --- Chat LLM provider (MS-S1 vLLM migration) ------------------------
+    # Which backend app/deps.py::get_llm_provider talks to for ordinary
+    # text chat generation (app/core/llm_provider.py). "ollama" (the
+    # default) preserves this app's original behavior byte-for-byte —
+    # every OLLAMA_* setting above continues to apply exactly as before.
+    # "openai_compatible" instead points chat generation at any server
+    # implementing OpenAI's streaming `/v1/chat/completions` API (the
+    # private, Tailscale-only MS-S1 vLLM host in production, or any other
+    # OpenAI-compatible endpoint) — see LLM_BASE_URL/LLM_MODEL/LLM_API_KEY
+    # below. Embeddings (OLLAMA_EMBED_MODEL), vision (OLLAMA_VISION_MODEL),
+    # and image generation (OLLAMA_IMAGE_MODEL) are NOT affected by this
+    # setting either way — only ordinary text chat generation switches.
+    llm_provider: Literal["ollama", "openai_compatible"] = "ollama"
+    # Base URL of the OpenAI-compatible server, including its `/v1` path
+    # (e.g. "http://100.73.9.108:8000/v1" for the private, Tailscale-only
+    # MS-S1 vLLM host) — only read when llm_provider="openai_compatible".
+    # The real production host is never hardcoded here; this default is a
+    # harmless localhost placeholder, matching every other *_base_url
+    # setting in this file (e.g. ollama_base_url above).
+    llm_base_url: str = "http://localhost:8000/v1"
+    # Model name exactly as the OpenAI-compatible server expects it (e.g.
+    # "Qwen/Qwen3-4B-Instruct-2507") — only read when llm_provider=
+    # "openai_compatible". Deliberately independent from OLLAMA_LLM_MODEL:
+    # the two providers are never required to name the same model.
+    llm_model: str = "Qwen/Qwen3-4B-Instruct-2507"
+    # Bearer token sent as `Authorization: Bearer <value>` on every request
+    # to the OpenAI-compatible server (see
+    # app/core/llm_provider.py::OpenAICompatibleLLMProvider) — only read
+    # when llm_provider="openai_compatible". `SecretStr` (unlike this
+    # file's other secret-shaped fields, e.g. smtp_password, which predate
+    # this concern) so an accidental `repr()`/`str()` of a live Settings
+    # instance — an unhandled-exception traceback frame, a debug log line
+    # — never prints the real value; call sites read the actual token via
+    # `.get_secret_value()` only at the point they build the Authorization
+    # header (app/deps.py::get_llm_provider, app/api/routes_health.py,
+    # app/api/routes_status.py). No real secret is ever set here as a
+    # default; set it via the environment/.env only. An empty string (the
+    # default) means no Authorization header value is sent, which any real
+    # vLLM deployment behind Tailscale rejects with 401 — a clear,
+    # actionable readiness/error signal rather than a silent
+    # misconfiguration.
+    llm_api_key: SecretStr = SecretStr("")
+    # Request timeout (seconds) for one OpenAI-compatible chat completion
+    # call — connect plus the entire streamed response. 120s default
+    # mirrors this app's other provider-timeout settings (e.g.
+    # vision_request_timeout_seconds below) and is generous for a shared
+    # inference host reached over a private network.
+    llm_request_timeout_seconds: float = Field(default=120.0, ge=1.0, le=900.0)
+
+    @property
+    def effective_llm_model(self) -> str:
+        """The model name actually used for ordinary text chat generation
+        right now — OLLAMA_LLM_MODEL when llm_provider="ollama" (the
+        original, unchanged behavior), LLM_MODEL when llm_provider=
+        "openai_compatible". Every call site that previously read
+        `settings.ollama_llm_model` to mean "the active text model" (health/
+        status readiness, model routing, RagService's display name) reads
+        this instead, so they stay correct regardless of which provider is
+        configured; ollama_llm_model itself is untouched and still governs
+        the Ollama path exactly as before."""
+        if self.llm_provider == "openai_compatible":
+            return self.llm_model
+        return self.ollama_llm_model
 
     # Per-stage timing instrumentation (see app/core/request_timing.py) for
     # the upload and chat pipelines. Off by default: when false, every

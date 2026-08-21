@@ -55,3 +55,8 @@ class StatusResponse(BaseModel):
     embedding_model_available: bool
     ollama_latency_ms: float | None
     qdrant_latency_ms: float | None
+    # MS-S1 vLLM migration (additive) — see app/api/routes_health.py's
+    # ReadinessResponse fields of the same name for the full contract.
+    llm_provider: str
+    llm_reachable: bool
+    llm_latency_ms: float | None

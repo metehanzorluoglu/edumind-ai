@@ -30,14 +30,23 @@ def get_status(settings: SettingsDep, user: CurrentUserDep) -> StatusResponse:
         logger.warning("Qdrant status check failed: %s", exc)
         store = None
 
-    required_models = [settings.ollama_llm_model, settings.ollama_embed_model]
+    # See routes_health.py's identical comment: the chat LLM's model name
+    # only joins the Ollama-side required_models list when it actually
+    # lives on the Ollama server.
+    required_models = [settings.ollama_embed_model]
     if settings.vision_enabled:
         required_models.append(settings.ollama_vision_model)
+    if settings.llm_provider == "ollama":
+        required_models.append(settings.ollama_llm_model)
 
     readiness = check_readiness(
         ollama_base_url=settings.ollama_base_url,
         required_models=required_models,
         vector_store=store,
+        llm_provider=settings.llm_provider,
+        llm_model=settings.effective_llm_model,
+        llm_base_url=settings.llm_base_url,
+        llm_api_key=settings.llm_api_key.get_secret_value(),
     )
     vision_model_available = (
         readiness.models_available[settings.ollama_vision_model]
@@ -57,7 +66,7 @@ def get_status(settings: SettingsDep, user: CurrentUserDep) -> StatusResponse:
         backend_reachable=True,
         ollama_reachable=readiness.ollama_reachable,
         qdrant_reachable=readiness.qdrant_reachable,
-        generation_model=settings.ollama_llm_model,
+        generation_model=settings.effective_llm_model,
         embedding_model=settings.ollama_embed_model,
         document_count=stats.document_count,
         chunk_count=stats.chunk_count,
@@ -72,8 +81,11 @@ def get_status(settings: SettingsDep, user: CurrentUserDep) -> StatusResponse:
         conversation_scope_enabled=settings.conversation_scope_enabled,
         zoom_in_enabled=settings.zoom_in_enabled,
         latex_compilation_enabled=settings.latex_compilation_enabled,
-        text_model_available=readiness.models_available[settings.ollama_llm_model],
+        text_model_available=readiness.llm_model_available,
         embedding_model_available=readiness.models_available[settings.ollama_embed_model],
         ollama_latency_ms=readiness.ollama_latency_ms,
         qdrant_latency_ms=readiness.qdrant_latency_ms,
+        llm_provider=readiness.llm_provider,
+        llm_reachable=readiness.llm_reachable,
+        llm_latency_ms=readiness.llm_latency_ms,
     )
