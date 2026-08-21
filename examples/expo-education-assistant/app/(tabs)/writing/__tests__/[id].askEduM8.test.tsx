@@ -954,6 +954,44 @@ describe('Writing workspace — Ask EduM8 (Milestone 5.2)', () => {
     expect(findByTextIncluding(renderer.root, 'Teachers reported increased autonomy')).toBeTruthy();
   });
 
+  it('a quick action still works on a project with zero references (Milestone 6.2 real-model validation regression)', async () => {
+    // Real bug found via real-model/real-browser validation: the quick-
+    // action bar was wired to ask.canAsk (whether the Ask EduM8 PANEL's
+    // current RAG scope is non-empty), which disabled every quick
+    // action — including Grammar — on any brand-new project with no
+    // references yet, even though a local_edit request like Grammar
+    // never uses RAG at all (M6.1's own POLICY_LAYERS guarantees this
+    // regardless of scope). Fixed in [id].tsx by no longer gating the
+    // quick-action bar on canAsk.
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute([]),
+      createConversationRoute(),
+      putDocumentsRoute(),
+      patchScopeRoute(),
+      messagesRoute(),
+    ]);
+
+    const editor = renderer.root.find((n) => n.type === LatexCodeEditor);
+    act(() => {
+      editor.props.onSelectionChange({ start: 0, end: 15 });
+    });
+
+    const grammarButton = findPressableByLabel(
+      renderer.root,
+      'Grammar — ask EduM8 about the selection'
+    );
+    expect(grammarButton.props.disabled).toBeFalsy();
+
+    await act(async () => {
+      grammarButton.props.onPress();
+      await flushAsync();
+    });
+
+    const messageBody = bodyOf(findCall('POST', '/conversations/conv-1/messages'));
+    expect(String(messageBody.query)).toContain('Check the grammar and spelling');
+  });
+
   it('the bare "Ask EduM8" quick action only opens the panel — it never sends a request by itself (Milestone 6.2 Part 34)', async () => {
     const renderer = await renderScreen([
       getProjectRoute(),
@@ -1168,7 +1206,7 @@ describe('Writing workspace — Ask EduM8 (Milestone 5.2)', () => {
     expect(findByTextIncluding(renderer.root, 'Answered in')).toBeTruthy();
   });
 
-  it('Stop cancels the in-flight stream both locally and on the backend (Part 2)', async () => {
+  it('Stop cancels the in-flight stream locally, without a doomed server-side /cancel call (Part 2, Milestone 6.2 real-model validation)', async () => {
     const stream = controllableMessagesRoute();
     const renderer = await renderScreen([
       getProjectRoute(),
@@ -1212,15 +1250,24 @@ describe('Writing workspace — Ask EduM8 (Milestone 5.2)', () => {
     expect(findByTextIncluding(renderer.root, 'Stopped.')).toBeTruthy();
     expect(() => findPressableWithText(renderer.root, 'Stop')).toThrow();
 
-    // The backend was actually told to stop generating (best-effort
-    // server-side cancel), not just the local read loop.
+    // Milestone 6.2 real-model validation — a real bug found and fixed:
+    // this used to assert a server-side /cancel call was made, on the
+    // (wrong) belief that the turn id doubled as the real backend
+    // message id. It never does (client_message_id is a purely
+    // client-side idempotency key, unrelated to the assistant Message
+    // row's own server-assigned UUID — confirmed against real backend
+    // logs, which showed every such call 422ing and the backend worker
+    // quietly finishing the generation nobody could see anymore). Stop
+    // is now a LOCAL abort only — exactly matching Chat's own
+    // cancelSend() for a live, still-connected turn (see
+    // useConversationMessages.ts) — so no /cancel request is made at all.
     const cancelCall = (global.fetch as jest.Mock).mock.calls.find(
       ([url, init]: [string, RequestInit]) =>
         String(url).includes('/conversations/conv-1/messages/') &&
         String(url).endsWith('/cancel') &&
         init?.method === 'POST'
     );
-    expect(cancelCall).toBeTruthy();
+    expect(cancelCall).toBeUndefined();
 
     // The composer is usable again immediately — cancelling never leaves
     // the panel stuck in a permanent "Asking…"/busy state.

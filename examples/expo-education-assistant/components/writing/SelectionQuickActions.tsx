@@ -100,7 +100,7 @@ export function SelectionQuickActions({
     onOpenAskPanel();
     if (!action.buildPrompt) return; // bare "Ask EduM8" — just opens the panel
     const fullContext: WritingAskEditorContext = { ...editorContext, selectedText };
-    void ask.ask(action.buildPrompt(selectedText), fullContext);
+    void ask.ask(action.buildPrompt(selectedText), fullContext, { skipScopeGate: true });
   }
 
   return (

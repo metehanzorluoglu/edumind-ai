@@ -1747,7 +1747,24 @@ export default function WritingProjectEditorScreen() {
                 <SelectionQuickActions
                   visible={isActiveFileEditable && manuscriptSelectionText.trim().length > 0}
                   selectedText={manuscriptSelectionText}
-                  disabled={!ask.canAsk}
+                  // Milestone 6.2 real-model validation (bug found and
+                  // fixed here): `ask.canAsk` gates whether the Ask
+                  // EduM8 PANEL's composer has a non-empty RAG scope to
+                  // search (Project references/Selected sources/
+                  // Research notes) — correct for a typed question that
+                  // might be a reference/evidence question, but WRONG
+                  // for these quick actions. Grammar/Improve/Concise/
+                  // Explain are always local_edit-shaped requests
+                  // (M6.1's own POLICY_LAYERS guarantees zero RAG for
+                  // them regardless of scope), so wiring them to
+                  // canAsk incorrectly disabled every quick action on
+                  // any project with zero references — even though
+                  // fixing a typo has nothing to do with the reference
+                  // list. The only real gate a quick action needs
+                  // (a live selection, not already asking) is already
+                  // enforced by `visible` above and `ask.asking` inside
+                  // this component.
+                  disabled={false}
                   ask={ask}
                   editorContext={{
                     projectId: project.id,

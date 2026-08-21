@@ -8,7 +8,7 @@ import {
   type RetrievedChunk,
   type WritingContextSummary,
 } from 'education-assistant-client';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { CloseIcon } from '@/components/icons';
 import { MarkdownAnswer } from '@/components/MarkdownAnswer';
@@ -191,6 +191,26 @@ export function AskEduM8Panel({
   const [sourcePickerOpen, setSourcePickerOpen] = useState(false);
   const [notesPickerOpen, setNotesPickerOpen] = useState(false);
 
+  // Milestone 6.2 real-model validation — a real bug found and fixed
+  // here: this ScrollView never auto-scrolled to the newest turn, so a
+  // researcher asking a second (or third, ...) question had to manually
+  // scroll down to see it — including a still-streaming answer, which
+  // otherwise renders entirely off-screen below the fold. Keeps pinned
+  // to the bottom as a new turn starts AND as its answer streams in
+  // (mirrors ordinary chat-app behavior), via a lightweight "does the
+  // latest turn's own rendered shape look different" signature rather
+  // than a per-token effect dependency on `turns` itself.
+  const turnsScrollRef = useRef<ScrollView>(null);
+  const latestTurn = ask.turns[ask.turns.length - 1];
+  const latestTurnSignature = latestTurn
+    ? `${ask.turns.length}:${latestTurn.id}:${latestTurn.status}:${latestTurn.answer.length}:${latestTurn.sources.length}`
+    : '0';
+  useEffect(() => {
+    if (!latestTurn) return;
+    turnsScrollRef.current?.scrollToEnd({ animated: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [latestTurnSignature]);
+
   const referenceIdSet = useMemo(
     () => new Set(projectReferenceDocumentIds),
     [projectReferenceDocumentIds]
@@ -268,7 +288,11 @@ export function AskEduM8Panel({
         )}
       </View>
 
-      <ScrollView style={styles.turns} contentContainerStyle={styles.turnsContent}>
+      <ScrollView
+        ref={turnsScrollRef}
+        style={styles.turns}
+        contentContainerStyle={styles.turnsContent}
+      >
         {ask.turns.map((turn, index) => (
           <AskTurnView
             key={turn.id}

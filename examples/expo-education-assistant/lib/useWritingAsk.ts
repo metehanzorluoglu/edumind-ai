@@ -160,7 +160,22 @@ export interface UseWritingAskResult {
   setResearchNotesScope: (entries: NotebookEntry[]) => void;
   turns: WritingAskTurn[];
   asking: boolean;
-  ask: (question: string, editorContext?: WritingAskEditorContext | null) => Promise<void>;
+  ask: (
+    question: string,
+    editorContext?: WritingAskEditorContext | null,
+    options?: {
+      /** Milestone 6.2 real-model validation — a quick action's
+       * controlled prompt (Grammar/Improve/Concise/Explain) is always
+       * local_edit-shaped: M6.1's own POLICY_LAYERS guarantees zero RAG
+       * for it regardless of the panel's current scope selection, so
+       * canAsk's "does the active scope have anything to search"
+       * question simply doesn't apply. Only quick actions pass this —
+       * the composer's own typed questions (which really can be
+       * reference/evidence questions needing a real scope) stay gated
+       * by canAsk exactly as before. */
+      skipScopeGate?: boolean;
+    }
+  ) => Promise<void>;
   /** Aborts the in-flight stream (if any) both locally (stops rendering
    * further tokens) and on the backend (POST .../cancel, best-effort —
    * mirrors Chat's cancelPersistedGeneration) so the generation thread
@@ -284,23 +299,40 @@ export function useWritingAsk(
   }, []);
 
   const cancel = useCallback((): void => {
-    const conversationId = conversationIdRef.current;
-    const turnId = activeTurnIdRef.current;
+    // Milestone 6.2 real-model validation — a real bug found and fixed
+    // here: this used to ALSO call client.cancelMessage(conversationId,
+    // turnId), on the belief that turnId (== the client_message_id
+    // minted below) "doubles as the real backend message id." It never
+    // does — PostConversationMessageRequest.client_message_id is a
+    // purely client-side idempotency key (a base36 timestamp+random
+    // string), while the assistant Message row's own `id` is a UUID
+    // assigned server-side (see app/db/models_conversations.py) and is
+    // never sent back to the client during a live stream. Every such
+    // call therefore 422'd (a UUID-format path-param validation
+    // failure) — confirmed against real backend logs — meaning the
+    // backend worker kept generating a real, unseen answer (burning
+    // real compute) after every "Stop" press, not just in the rare
+    // failure case the old comment described. This exactly mirrors
+    // Chat's OWN cancelSend() (useConversationMessages.ts) for a live,
+    // still-connected turn: a LOCAL abort only. Chat's separate
+    // cancelPersistedGeneration (a genuine server-side cancel) is only
+    // ever used for a DIFFERENT scenario — resuming a reconnected
+    // 'generating' message the client already has the real persisted id
+    // for — which Writing's live turns never have. Removing the broken
+    // call changes nothing about user-visible behavior (it always
+    // failed silently before); it just stops sending a doomed request
+    // and stops claiming a stop that never actually happened server-side.
     abortControllerRef.current?.abort();
-    // Best-effort server-side stop (mirrors Chat's cancelPersistedGeneration)
-    // — turnId doubles as the real backend message id, since it was minted
-    // as client_message_id below. A failure here just means the backend
-    // worker keeps running unseen until it finishes on its own; the local
-    // abort above already stopped the UI from waiting on it.
-    if (conversationId && turnId) {
-      client.cancelMessage(conversationId, turnId).catch(() => {});
-    }
-  }, [client]);
+  }, []);
 
   const ask = useCallback(
-    async (question: string, editorContext?: WritingAskEditorContext | null): Promise<void> => {
+    async (
+      question: string,
+      editorContext?: WritingAskEditorContext | null,
+      options?: { skipScopeGate?: boolean }
+    ): Promise<void> => {
       const trimmed = question.trim();
-      if (!trimmed || asking || !canAsk) return;
+      if (!trimmed || asking || (!canAsk && !options?.skipScopeGate)) return;
 
       // Milestone 6.2 Part 2 — manuscript selection/section context is no
       // longer folded into the query text here at all; it travels
