@@ -51,6 +51,8 @@ from app.schemas.writing import (
     CompileWritingProjectResponse,
     CreateWritingProjectRequest,
     DuplicateWritingProjectRequest,
+    InverseSearchRequest,
+    InverseSearchResponse,
     UpdateWritingProjectRequest,
     WritingProjectBibliographyResponse,
     WritingProjectListResponse,
@@ -614,6 +616,91 @@ def _collect_extra_files(
     return extra
 
 
+def _resolve_synctex_file_to_project_file_id(
+    files_repository: WritingProjectFilesRepository,
+    user_id: uuid.UUID,
+    project_id_uuid: uuid.UUID,
+    root_file_id: uuid.UUID,
+    synctex_file: str,
+) -> uuid.UUID | None:
+    """SyncTeX implementation — maps a SyncTeX inverse-search result's
+    source-relative file path (e.g. "main.tex" or "sections/intro.tex" —
+    already validated by the compiler service to be a plain relative
+    path, never absolute/traversal-bearing) back to a real
+    WritingProjectFile id.
+
+    This is the INVERSE of `_collect_extra_files`'s own rebasing
+    convention, deliberately re-deriving it here rather than trying to
+    share a helper across "build the compile snapshot" and "map a
+    result back" — the two run at different times against potentially
+    different file trees (a project can be edited between compiling and
+    clicking the preview), so recomputing the CURRENT root directory
+    fresh here (rather than trusting anything cached from compile time)
+    is the correct behavior, not an accidental duplication: a result
+    that no longer maps to any real file (a stale reference against a
+    since-deleted/renamed file) is reported as unresolved, never
+    guessed — same "never invent file relationships" posture
+    app/core/writing_manuscript_graph.py already documents for the
+    forward \\input/\\include direction.
+    """
+    contents = files_repository.get_all_content(user_id, project_id_uuid)
+    if contents is None:
+        return None
+    # The compiler always calls the root file "main.tex" at its own
+    # sandbox top level, regardless of the root's real name/path (see
+    # LatexCompilerClient.compile's own docstring) — this is the one
+    # case that never needs a path lookup at all.
+    if synctex_file == "main.tex":
+        return root_file_id
+
+    root_dir = ""
+    for content in contents:
+        if content.node.id == root_file_id:
+            root_dir = content.node.path.rsplit("/", 1)[0] if "/" in content.node.path else ""
+            break
+    real_path = f"{root_dir}/{synctex_file}" if root_dir else synctex_file
+
+    for content in contents:
+        if content.node.id != root_file_id and content.node.path == real_path:
+            return content.node.id
+    return None
+
+
+# SyncTeX implementation, real-browser validation — verified directly
+# (real pdflatex + bibtex + synctex, both the reference-list entries
+# AND inline `\cite{}` marker text) that classical BibTeX-generated
+# bibliography content is attributed by SyncTeX to `main.bbl`, a build
+# BYPRODUCT rebuilt fresh every compile job and never a real project
+# file — LaTeX/BibTeX never `\input`s the original `.bib` DATA file at
+# all, so SyncTeX structurally has no position records for it
+# whatsoever. This is a genuine, honestly-explainable "can't map this
+# exactly" case, not a resolver bug — distinguished from an ordinary
+# "no reliable match" decline so the frontend can say so specifically.
+# Every one of these extensions is a well-known LaTeX-toolchain
+# byproduct (bibtex/biber, cross-reference/TOC passes, indexing) — never
+# a real authored source file a project would legitimately store.
+_GENERATED_LATEX_ARTIFACT_EXTENSIONS = (
+    ".bbl",
+    ".aux",
+    ".blg",
+    ".toc",
+    ".lof",
+    ".lot",
+    ".out",
+    ".ind",
+    ".idx",
+    ".ilg",
+    ".glo",
+    ".gls",
+    ".bcf",
+    ".run.xml",
+)
+
+
+def _is_generated_latex_artifact(synctex_file: str) -> bool:
+    return synctex_file.lower().endswith(_GENERATED_LATEX_ARTIFACT_EXTENSIONS)
+
+
 @router.get("/{project_id}/bibliography", response_model=WritingProjectBibliographyResponse)
 def get_writing_project_bibliography(
     project_id: str,
@@ -868,8 +955,17 @@ def compile_writing_project(
             for key in expired_keys:
                 compile_artifact_storage.delete(key)
             compile_id_uuid = uuid.uuid4()
+            # SyncTeX implementation — rides the EXACT SAME compile_id/
+            # ownership/TTL/cleanup lifecycle as the PDF (see
+            # CompileArtifactStorage.save's own docstring for why this
+            # needs no new DB column at all). `outcome.synctex_bytes` is
+            # None whenever the compiler service didn't produce one —
+            # never fatal to the compile itself.
             storage_key = compile_artifact_storage.save(
-                user_id=user.id, compile_id=compile_id_uuid, pdf_bytes=outcome.pdf_bytes
+                user_id=user.id,
+                compile_id=compile_id_uuid,
+                pdf_bytes=outcome.pdf_bytes,
+                synctex_bytes=outcome.synctex_bytes,
             )
             compile_artifacts_repository.create(
                 compile_id=compile_id_uuid,
@@ -957,3 +1053,109 @@ def get_compiled_pdf(
         ) from exc
 
     return Response(content=pdf_bytes, media_type="application/pdf")
+
+
+@router.post(
+    "/{project_id}/compile/{compile_id}/inverse-search",
+    response_model=InverseSearchResponse,
+)
+def inverse_search_compiled_pdf(
+    project_id: str,
+    compile_id: str,
+    payload: InverseSearchRequest,
+    user: CurrentUserDep,
+    writing_projects_repository: WritingProjectsRepositoryDep,
+    files_repository: WritingProjectFilesRepositoryDep,
+    compile_artifacts_repository: CompileArtifactsRepositoryDep,
+    compile_artifact_storage: CompileArtifactStorageDep,
+    latex_compiler_client: LatexCompilerClientDep,
+    settings: SettingsDep,
+) -> InverseSearchResponse:
+    """SyncTeX implementation — the compiled-preview double-click ->
+    exact source location endpoint, replacing the old text-search
+    heuristic entirely (writingPreviewSourceMap.ts on the frontend side
+    is gone; this is now the ONLY source-navigation mechanism). Same
+    ownership/expiry checks as `get_compiled_pdf` above — a guessed/
+    expired/wrong-owner compile_id 404s identically to a nonexistent
+    one (Part 42's own "never leak whether a compile_id exists for
+    someone else's project" posture, unchanged from that route).
+
+    Every "can't answer confidently" case returns `resolved=False` with
+    HTTP 200, NEVER a guessed location — a missing SyncTeX artifact (a
+    compile that predates this feature, or one that genuinely produced
+    no SyncTeX data), a compiler-service failure, an out-of-range page/
+    coordinate, or a result that no longer maps to any real project
+    file are all indistinguishable "decline" outcomes to the caller,
+    exactly matching this app's established "never guess" convention
+    for source navigation.
+    """
+    if not settings.latex_compilation_enabled:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="LaTeX compilation is disabled")
+
+    project_id_uuid = _parse_uuid_or_404(project_id)
+    project = writing_projects_repository.get(user.id, project_id_uuid)
+    if project is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Writing project not found")
+    if project.root_file_id is None:
+        return InverseSearchResponse(resolved=False)
+
+    # Same sweep-before-read convention as the PDF GET route above.
+    expired_keys = compile_artifacts_repository.sweep_expired()
+    for key in expired_keys:
+        compile_artifact_storage.delete(key)
+
+    try:
+        compile_id_uuid = uuid.UUID(compile_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, detail="Compiled PDF not found or expired"
+        ) from exc
+
+    artifact = compile_artifacts_repository.get(
+        user_id=user.id, project_id=project_id_uuid, compile_id=compile_id_uuid
+    )
+    if artifact is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Compiled PDF not found or expired")
+
+    try:
+        synctex_bytes = compile_artifact_storage.read_synctex(artifact.storage_key)
+    except OSError:
+        # This compile has no SyncTeX data (predates this feature, or
+        # genuinely produced none) — an honest "can't answer," never a
+        # 404 (the PDF artifact itself is real and still valid) and
+        # never a 500 for what this route already documents as a
+        # best-effort capability.
+        return InverseSearchResponse(resolved=False)
+
+    client_outcome = latex_compiler_client.inverse_search(
+        synctex_bytes=synctex_bytes, page=payload.page, x=payload.x, y=payload.y
+    )
+    logger.info(
+        "inverse-search compile=%s project=%s user=%s ok=%s resolved=%s",
+        compile_id,
+        project_id,
+        user.id,
+        client_outcome.ok,
+        client_outcome.resolved,
+    )
+    if not client_outcome.ok or not client_outcome.resolved or client_outcome.file is None:
+        return InverseSearchResponse(resolved=False)
+
+    file_id = _resolve_synctex_file_to_project_file_id(
+        files_repository,
+        user.id,
+        project_id_uuid,
+        project.root_file_id,
+        client_outcome.file,
+    )
+    if file_id is None or client_outcome.line is None:
+        # SyncTeX genuinely resolved a position — just not to a real
+        # project file. Distinguish "it's a generated build byproduct
+        # (e.g. bibtex's own main.bbl)" from every other unresolved case
+        # (see _is_generated_latex_artifact's own docstring) so the
+        # frontend can explain this one honestly instead of showing the
+        # same generic decline for both.
+        reason = "generated_content" if _is_generated_latex_artifact(client_outcome.file) else None
+        return InverseSearchResponse(resolved=False, reason=reason)
+
+    return InverseSearchResponse(resolved=True, file_id=str(file_id), line=client_outcome.line)

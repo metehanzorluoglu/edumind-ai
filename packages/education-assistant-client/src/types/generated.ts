@@ -1239,6 +1239,69 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/writing-projects/{project_id}/compile/{compile_id}/inverse-search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Inverse Search Compiled Pdf
+         * @description SyncTeX implementation — the compiled-preview double-click ->
+         *     exact source location endpoint, replacing the old text-search
+         *     heuristic entirely (writingPreviewSourceMap.ts on the frontend side
+         *     is gone; this is now the ONLY source-navigation mechanism). Same
+         *     ownership/expiry checks as `get_compiled_pdf` above — a guessed/
+         *     expired/wrong-owner compile_id 404s identically to a nonexistent
+         *     one (Part 42's own "never leak whether a compile_id exists for
+         *     someone else's project" posture, unchanged from that route).
+         *
+         *     Every "can't answer confidently" case returns `resolved=False` with
+         *     HTTP 200, NEVER a guessed location — a missing SyncTeX artifact (a
+         *     compile that predates this feature, or one that genuinely produced
+         *     no SyncTeX data), a compiler-service failure, an out-of-range page/
+         *     coordinate, or a result that no longer maps to any real project
+         *     file are all indistinguishable "decline" outcomes to the caller,
+         *     exactly matching this app's established "never guess" convention
+         *     for source navigation.
+         */
+        post: operations["inverse_search_compiled_pdf_writing_projects__project_id__compile__compile_id__inverse_search_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/writing-projects/{project_id}/context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Writing Context
+         * @description Builds one Writing context packet for `project_id` — the
+         *     request-time boundary later Milestone 6 features (M6.2+) call
+         *     instead of rebuilding context logic themselves (Part 25). Also the
+         *     endpoint a DEV-ONLY frontend context inspector (Part 21, not built
+         *     this milestone — see the M6.1 report) would call if/when one is
+         *     added. `project_id` in the URL and `body.project_id` are reconciled
+         *     here (the URL is authoritative — a caller who somehow sent mismatched
+         *     ids gets the URL's project checked, never a silent mix of the two).
+         */
+        post: operations["post_writing_context_writing_projects__project_id__context_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/writing-projects/{project_id}/files": {
         parameters: {
             query?: never;
@@ -2628,6 +2691,30 @@ export interface components {
             /** Root Path */
             root_path?: string | null;
         };
+        /**
+         * ContextBudgetReport
+         * @description Part 11's required transparency: what was requested, what
+         *     actually made it into the packet, and what was cut for budget
+         *     reasons — per category, plus a total.
+         */
+        ContextBudgetReport: {
+            /** Category Limits */
+            category_limits: {
+                [key: string]: number;
+            };
+            /** Category Tokens Included */
+            category_tokens_included: {
+                [key: string]: number;
+            };
+            /** Category Tokens Omitted */
+            category_tokens_omitted: {
+                [key: string]: number;
+            };
+            /** Total Token Budget */
+            total_token_budget: number;
+            /** Total Tokens Included */
+            total_tokens_included: number;
+        };
         /** ConversationDetailResponse */
         ConversationDetailResponse: {
             /** Id */
@@ -3440,6 +3527,39 @@ export interface components {
             replace: string;
         };
         /**
+         * EvidenceItem
+         * @description One provenance-stamped piece of context (Part 16). `text` is the
+         *     actual content included in the packet — already budget-truncated
+         *     and deduplicated by the time it appears here (Part 13).
+         */
+        EvidenceItem: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "manuscript_text" | "user_note" | "user_highlight" | "reference_metadata" | "source_passage";
+            /** Text */
+            text: string;
+            /** Estimated Tokens */
+            estimated_tokens: number;
+            /** Note Id */
+            note_id?: string | null;
+            /** Highlight Id */
+            highlight_id?: string | null;
+            /** Document Id */
+            document_id?: string | null;
+            /** Document Title */
+            document_title?: string | null;
+            /** Page Number */
+            page_number?: number | null;
+            /** Reference Key */
+            reference_key?: string | null;
+            /** Chunk Id */
+            chunk_id?: string | null;
+            /** Score */
+            score?: number | null;
+        };
+        /**
          * ExtractionSource
          * @description Where one field's value came from — surfaced to the frontend via
          *     POST /documents/metadata-preview's `extraction_sources` (see
@@ -3666,6 +3786,59 @@ export interface components {
             path: string;
             /** Reason */
             reason: string;
+        };
+        /**
+         * InverseSearchRequest
+         * @description SyncTeX implementation — POST /writing-projects/{id}/compile/
+         *     {compile_id}/inverse-search's request body: a rendered-PDF
+         *     double-click's page + coordinates, exactly as pdf.js's own viewport
+         *     already reports them (see the design report's own §7 for the
+         *     pdf.js-coordinate -> SyncTeX-coordinate mapping this assumes).
+         */
+        InverseSearchRequest: {
+            /** Page */
+            page: number;
+            /** X */
+            x: number;
+            /** Y */
+            y: number;
+        };
+        /**
+         * InverseSearchResponse
+         * @description `resolved=False` (with `file_id`/`line` both None) is the ONLY
+         *     shape for "no reliable source location" — this endpoint never
+         *     guesses. `file_id` is a real WritingProjectFile id (a UUID string),
+         *     never a raw path — the frontend already knows how to open a file by
+         *     id and navigate to a line via its existing diagnostic/outline
+         *     navigation primitives, so this is deliberately shaped to slot into
+         *     that exact mechanism rather than inventing a new one.
+         *
+         *     SyncTeX implementation, real-browser validation — bibliography/
+         *     citation content is a genuine, structural SyncTeX+classical-BibTeX
+         *     limitation, not a resolver bug: verified directly (real pdflatex +
+         *     bibtex + synctex) that BOTH the reference-list entries AND inline
+         *     `\cite{}` marker text are attributed by SyncTeX to the GENERATED
+         *     `main.bbl` (bibtex's compiled bibliography, rebuilt fresh every
+         *     compile job and never a real project file) — never to the `.bib`
+         *     data file itself, which BibTeX/LaTeX never `\input`s at all and
+         *     which SyncTeX accordingly has no position records for whatsoever.
+         *     `reason="generated_content"` distinguishes this specific, honestly-
+         *     explainable case (`Input:` resolved to a real file, but one that's a
+         *     build byproduct with no corresponding project file — e.g. `.bbl`/
+         *     `.aux`/`.toc`/similar) from every other "declined" outcome (a
+         *     genuinely absent SyncTeX record, a transport failure, an out-of-
+         *     range click), so the frontend can show a more specific explanation
+         *     instead of one generic message for every unresolved case.
+         */
+        InverseSearchResponse: {
+            /** Resolved */
+            resolved: boolean;
+            /** File Id */
+            file_id?: string | null;
+            /** Line */
+            line?: number | null;
+            /** Reason */
+            reason?: "generated_content" | null;
         };
         /** LoginRequest */
         LoginRequest: {
@@ -4112,6 +4285,20 @@ export interface components {
              */
             updated_at: string;
         };
+        /** ProjectStructureContext */
+        ProjectStructureContext: {
+            /** Root Path */
+            root_path?: string | null;
+            /** Active File Path */
+            active_file_path?: string | null;
+            /** Ancestor Paths */
+            ancestor_paths?: string[];
+            /**
+             * Tex File Count
+             * @default 0
+             */
+            tex_file_count: number;
+        };
         /** ProjectSummaryResponse */
         ProjectSummaryResponse: {
             /** Id */
@@ -4242,6 +4429,36 @@ export interface components {
             ollama_latency_ms: number | null;
             /** Qdrant Latency Ms */
             qdrant_latency_ms: number | null;
+            /** Llm Provider */
+            llm_provider: string;
+            /** Llm Reachable */
+            llm_reachable: boolean;
+            /** Llm Latency Ms */
+            llm_latency_ms: number | null;
+            /** Llm Primary Provider */
+            llm_primary_provider: string | null;
+            /** Llm Primary Reachable */
+            llm_primary_reachable: boolean | null;
+            /** Llm Fallback Provider */
+            llm_fallback_provider: string | null;
+            /** Llm Fallback Reachable */
+            llm_fallback_reachable: boolean | null;
+            /** Llm Currently Preferred */
+            llm_currently_preferred: string | null;
+        };
+        /** ReferenceContext */
+        ReferenceContext: {
+            /** Mode */
+            mode?: string | null;
+            /** Bibliography Source */
+            bibliography_source?: string | null;
+            /** Citation Key Source */
+            citation_key_source?: string | null;
+            /**
+             * Edum8 Available
+             * @default false
+             */
+            edum8_available: boolean;
         };
         /**
          * ReferenceImageInput
@@ -4523,6 +4740,62 @@ export interface components {
             /** Results */
             results: components["schemas"]["RetrievedChunk"][];
         };
+        /** SectionContext */
+        SectionContext: {
+            /** File Id */
+            file_id: string;
+            /** File Path */
+            file_path: string;
+            /** Chapter */
+            chapter?: string | null;
+            /** Section */
+            section?: string | null;
+            /** Subsection */
+            subsection?: string | null;
+            /** Subsubsection */
+            subsubsection?: string | null;
+            /** Line Start */
+            line_start?: number | null;
+            /** Line End */
+            line_end?: number | null;
+        };
+        /** SelectionContext */
+        SelectionContext: {
+            /** File Id */
+            file_id: string;
+            /** File Path */
+            file_path: string;
+            /** Selection Start */
+            selection_start?: number | null;
+            /** Selection End */
+            selection_end?: number | null;
+            /**
+             * Selected Text
+             * @default
+             */
+            selected_text: string;
+            /**
+             * Before Text
+             * @default
+             */
+            before_text: string;
+            /**
+             * After Text
+             * @default
+             */
+            after_text: string;
+            /**
+             * Selected Text Matches Client
+             * @default true
+             */
+            selected_text_matches_client: boolean;
+            /**
+             * Content Freshness
+             * @default saved
+             * @enum {string}
+             */
+            content_freshness: "saved" | "unsaved_client_buffer";
+        };
         /** SessionExchangeRequest */
         SessionExchangeRequest: {
             /** Auth Code */
@@ -4587,6 +4860,22 @@ export interface components {
             ollama_latency_ms: number | null;
             /** Qdrant Latency Ms */
             qdrant_latency_ms: number | null;
+            /** Llm Provider */
+            llm_provider: string;
+            /** Llm Reachable */
+            llm_reachable: boolean;
+            /** Llm Latency Ms */
+            llm_latency_ms: number | null;
+            /** Llm Primary Provider */
+            llm_primary_provider: string | null;
+            /** Llm Primary Reachable */
+            llm_primary_reachable: boolean | null;
+            /** Llm Fallback Provider */
+            llm_fallback_provider: string | null;
+            /** Llm Fallback Reachable */
+            llm_fallback_reachable: boolean | null;
+            /** Llm Currently Preferred */
+            llm_currently_preferred: string | null;
         };
         /**
          * SwitchAttachmentScopeRequest
@@ -4905,6 +5194,112 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /**
+         * WritingContextDiagnostics
+         * @description Part 20's observability contract — safe to log (IDs/counts/token
+         *     sizes only, never manuscript text or evidence text).
+         */
+        WritingContextDiagnostics: {
+            /**
+             * Policy
+             * @enum {string}
+             */
+            policy: "local_edit" | "explanation" | "manuscript_question" | "reference_question" | "cross_source_synthesis";
+            /** Active File Id */
+            active_file_id: string | null;
+            /** Selection Present */
+            selection_present: boolean;
+            /** Manuscript Context Tokens */
+            manuscript_context_tokens: number;
+            /** Notes Count */
+            notes_count: number;
+            /** Highlights Count */
+            highlights_count: number;
+            /** References Count */
+            references_count: number;
+            /** Evidence Chunk Count */
+            evidence_chunk_count: number;
+            /** Estimated Total Tokens */
+            estimated_total_tokens: number;
+            /** Context Build Duration Ms */
+            context_build_duration_ms: number;
+            /** Retrieval Duration Ms */
+            retrieval_duration_ms: number;
+            /**
+             * Llm Calls Made
+             * @default 0
+             */
+            llm_calls_made: number;
+        };
+        /**
+         * WritingContextPacket
+         * @description The full structured result (Part 15). Layers absent for this
+         *     request/policy are simply empty (empty list / None), never
+         *     populated with placeholder content.
+         */
+        WritingContextPacket: {
+            /**
+             * Policy
+             * @enum {string}
+             */
+            policy: "local_edit" | "explanation" | "manuscript_question" | "reference_question" | "cross_source_synthesis";
+            /** User Request */
+            user_request: string;
+            selection?: components["schemas"]["SelectionContext"] | null;
+            section?: components["schemas"]["SectionContext"] | null;
+            project_structure?: components["schemas"]["ProjectStructureContext"] | null;
+            /** Notes */
+            notes?: components["schemas"]["EvidenceItem"][];
+            /** Highlights */
+            highlights?: components["schemas"]["EvidenceItem"][];
+            references?: components["schemas"]["ReferenceContext"] | null;
+            /** Reference Metadata */
+            reference_metadata?: components["schemas"]["EvidenceItem"][];
+            /** Evidence */
+            evidence?: components["schemas"]["EvidenceItem"][];
+            budget: components["schemas"]["ContextBudgetReport"];
+            diagnostics: components["schemas"]["WritingContextDiagnostics"];
+        };
+        /**
+         * WritingContextRequest
+         * @description One inbound request for Writing context — Part 3's contract.
+         *     `selected_text` is accepted but is NEVER trusted as canonical (Part
+         *     3: "Do NOT trust client-provided selected text as canonical
+         *     manuscript content") — the engine always recomputes the actual
+         *     selection substring from `selection_start`/`selection_end` against
+         *     real file content (see writing_context_engine.resolve_active_file_content),
+         *     and only uses the caller's `selected_text` to detect/report a
+         *     mismatch (Part 3/16's honesty requirement), never as the source of
+         *     truth itself.
+         */
+        WritingContextRequest: {
+            /** Project Id */
+            project_id: string;
+            /** Active File Id */
+            active_file_id?: string | null;
+            /** Cursor Position */
+            cursor_position?: number | null;
+            /** Selection Start */
+            selection_start?: number | null;
+            /** Selection End */
+            selection_end?: number | null;
+            /** Selected Text */
+            selected_text?: string | null;
+            /**
+             * User Request
+             * @default
+             */
+            user_request: string;
+            /** Active File Unsaved Content */
+            active_file_unsaved_content?: string | null;
+            /** Policy Override */
+            policy_override?: ("local_edit" | "explanation" | "manuscript_question" | "reference_question" | "cross_source_synthesis") | null;
+            /**
+             * Include Evidence Retrieval
+             * @default true
+             */
+            include_evidence_retrieval: boolean;
         };
         /**
          * WritingProjectBibliographyResponse
@@ -7575,6 +7970,81 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    inverse_search_compiled_pdf_writing_projects__project_id__compile__compile_id__inverse_search_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                compile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InverseSearchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InverseSearchResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_writing_context_writing_projects__project_id__context_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WritingContextRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WritingContextPacket"];
                 };
             };
             /** @description Validation Error */

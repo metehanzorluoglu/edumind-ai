@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import re
 import shutil
@@ -101,6 +102,40 @@ class CompileOutcome:
     duration_ms: float = 0.0
     pdf_bytes: bytes | None = None
     page_count: int | None = None
+    # SyncTeX implementation — the compiled manuscript's own SyncTeX
+    # database (see `-synctex=1` on _PDFLATEX_ARGS below), read from the
+    # job's workdir before it's torn down, same lifecycle as `pdf_bytes`:
+    # only ever populated on a genuine successful compile (a failed/
+    # timed-out pass never reaches main.pdf either, by construction —
+    # `-halt-on-error` means neither file exists at all once pdflatex
+    # actually halts). None whenever the file wasn't produced for any
+    # reason (never treated as fatal on its own — a compile that
+    # succeeds but somehow has no SyncTeX data still returns its PDF;
+    # the caller (rag-backend) just has nothing to persist for inverse
+    # search on that specific compile).
+    synctex_bytes: bytes | None = None
+
+
+@dataclass
+class InverseSearchOutcome:
+    """SyncTeX implementation — the result of one `synctex edit` inverse
+    query (rendered-PDF click -> source location). `resolved=False` for
+    every non-answer case (invalid input already rejected by the caller,
+    an out-of-range page/coordinate, a genuinely missing SyncTeX record,
+    a timed-out/crashed synctex process) — this service never guesses;
+    the caller (rag-backend) treats `resolved=False` as "decline
+    navigation," exactly like every other "no reliable match" case
+    already established in this app's Writing workspace.
+
+    `file` is a SOURCE-RELATIVE path only (e.g. "main.tex" or
+    "sections/intro.tex") — never the absolute scratch-workdir path
+    SyncTeX's own raw `Input:` line actually contains (see
+    `_parse_inverse_search_output`'s own docstring for why that raw
+    value must never leave this function)."""
+
+    resolved: bool
+    file: str | None = None
+    line: int | None = None
 
 
 def _job_env(workdir: Path) -> dict[str, str]:
@@ -342,6 +377,14 @@ _PDFLATEX_ARGS = [
     "-file-line-error",
     "-cnf-line=openin_any=p",
     "-cnf-line=openout_any=p",
+    # SyncTeX implementation — generates main.synctex.gz alongside
+    # main.pdf on every pass (only the LAST pass's copy is ever read —
+    # see run_compile_job below — same "only the final state matters"
+    # convention already established for main.pdf/diagnostics). A plain
+    # pdflatex flag: no shell-escape interaction, no new capability the
+    # manuscript's own TeX code can invoke, nothing for Part 4's
+    # `-no-shell-escape` guarantee to interact with.
+    "-synctex=1",
     "main.tex",
 ]
 
@@ -523,6 +566,16 @@ async def run_compile_job(
                 duration_ms=duration_ms,
             )
 
+        # SyncTeX implementation — read BEFORE the `finally` block's
+        # cleanup, same "read the bytes out of the doomed workdir while
+        # it still exists" discipline pdf_bytes above already follows.
+        # Never fatal if missing (see CompileOutcome.synctex_bytes's own
+        # docstring) — a compile that produced a real PDF but somehow no
+        # SyncTeX data still returns successfully; there's simply
+        # nothing to persist for inverse search on that one compile.
+        synctex_path = workdir / "main.synctex.gz"
+        synctex_bytes = synctex_path.read_bytes() if synctex_path.exists() else None
+
         return CompileOutcome(
             status="success",
             diagnostics=extract_diagnostics(last_pass.log),
@@ -530,6 +583,7 @@ async def run_compile_job(
             duration_ms=duration_ms,
             pdf_bytes=pdf_bytes,
             page_count=_extract_page_count(last_pass.log),
+            synctex_bytes=synctex_bytes,
         )
     finally:
         # Part 18 — unconditional cleanup. shutil.rmtree on a
@@ -564,4 +618,171 @@ def to_response(outcome: CompileOutcome) -> CompileResponse:
         ),
         pdf_size_bytes=len(outcome.pdf_bytes) if outcome.pdf_bytes is not None else None,
         page_count=outcome.page_count,
+        synctex_base64=(
+            base64.b64encode(outcome.synctex_bytes).decode("ascii")
+            if outcome.synctex_bytes is not None
+            else None
+        ),
     )
+
+
+# SyncTeX implementation — `synctex edit`'s own result block always names
+# the input file as TeX itself saw it: relative to the CURRENT WORKING
+# DIRECTORY pdflatex actually ran in AT COMPILE TIME — NOT the inverse-
+# search job's own scratch directory. This was confirmed the hard way
+# (a real bug caught by this module's own round-trip tests, not assumed
+# from documentation): a .synctex.gz file bakes in the absolute compile-
+# time cwd permanently at generation time. By the time an inverse-search
+# query runs against it — copied into an entirely new scratch directory,
+# often long after the original compile's own workdir has already been
+# rmtree'd — `Input:` still reports that ORIGINAL, now-nonexistent path,
+# e.g. "/tmp/jobs/<original-compile-uuid>/./main.tex" or ".../sections/
+# intro.tex". So this function does NOT (and structurally cannot) match
+# against ITS OWN caller's workdir — that was the actual bug in an
+# earlier version of this function, only caught because the real
+# subprocess test suite (tests/test_compiler_subprocess.py) exercises a
+# full compile -> inverse-search round trip, not a hand-crafted stdout
+# fixture.
+#
+# The robust fix: SyncTeX always separates "the absolute cwd it ran in"
+# from "the relative path as TeX opened it" with a literal "/./" marker
+# (confirmed across every real compile in this file's own test suite,
+# both single- and multi-file) — split on the FIRST such marker and keep
+# only what follows. Anything that doesn't contain that marker at all is
+# declined rather than guessed at (never a fuzzier "strip everything
+# before the last few segments" heuristic that could accidentally leave
+# a real absolute path fragment in what's returned to the caller). The
+# caller (rag-backend) still independently validates the result maps to
+# a real project file before ever using it — this is the first, and
+# most important, layer of "never leak container filesystem internals"
+# (the design report's own §9/§6 requirement).
+_SYNCTEX_INPUT_CWD_MARKER = "/./"
+
+
+def _parse_inverse_search_output(stdout: str) -> InverseSearchOutcome:
+    if "SyncTeX result begin" not in stdout:
+        # No result block at all — SyncTeX's own documented behavior for
+        # an out-of-range page/coordinate or a synctex file with nothing
+        # at that location (verified directly: exit code is still 0).
+        return InverseSearchOutcome(resolved=False)
+
+    input_match = re.search(r"^Input:(.*)$", stdout, re.MULTILINE)
+    line_match = re.search(r"^Line:(-?\d+)$", stdout, re.MULTILINE)
+    if not input_match or not line_match:
+        return InverseSearchOutcome(resolved=False)
+
+    raw_input = input_match.group(1).strip()
+    line = int(line_match.group(1))
+    if line < 1:
+        return InverseSearchOutcome(resolved=False)
+
+    if _SYNCTEX_INPUT_CWD_MARKER not in raw_input:
+        # Never seen in real testing (every real compile in this
+        # service always invokes pdflatex with a bare relative "main.tex"
+        # / "\input{...}" target) — if SyncTeX's own output shape ever
+        # differs, decline rather than risk forwarding an unrecognized
+        # (possibly still-absolute) path.
+        return InverseSearchOutcome(resolved=False)
+    relative = raw_input.split(_SYNCTEX_INPUT_CWD_MARKER, 1)[1]
+
+    # Defense in depth, mirroring safe_relative_path's own checks above
+    # — a relative path this service is about to hand back to the
+    # caller must itself never be absolute or traversal-bearing, even
+    # though SyncTeX's own well-formed output should never produce one.
+    if not relative or Path(relative).is_absolute() or ".." in Path(relative).parts:
+        return InverseSearchOutcome(resolved=False)
+
+    return InverseSearchOutcome(resolved=True, file=relative, line=line)
+
+
+def _is_finite(value: float) -> bool:
+    return math.isfinite(value)
+
+
+async def run_inverse_search_job(
+    *,
+    synctex_bytes: bytes,
+    page: int,
+    x: float,
+    y: float,
+    settings: Settings,
+) -> InverseSearchOutcome:
+    """SyncTeX implementation — runs exactly one whitelisted, fixed-argv
+    `synctex edit` query against a caller-supplied SyncTeX database, in a
+    fresh, isolated scratch directory this function creates and tears
+    down itself (same tmpfs-under-/tmp/jobs, own-session,
+    killpg-on-timeout, unconditional-cleanup discipline as
+    run_compile_job — see _run_phase/_kill_process_group above; this is
+    NOT a new execution model, it's the same one applied to a second,
+    much smaller and faster operation).
+
+    `page`/`x`/`y` are already validated by the caller (app/main.py) as
+    plain, bounded numbers before this is ever invoked — `synctex edit`'s
+    own `-o` argument here is ALWAYS the literal, fixed string
+    "main.pdf" this function creates itself; no part of the request body
+    is ever concatenated into a shell command or an argv element other
+    than these three already-numeric-typed values.
+
+    `synctex edit` only reads the SyncTeX database and needs its `-o`
+    target file to merely EXIST (verified directly — a placeholder/
+    empty-shell PDF works identically to the real one for this purpose,
+    since only main.synctex.gz's own recorded coordinates are actually
+    consulted); a real PDF's bytes are never needed here and are never
+    sent to this endpoint at all.
+    """
+    # Defense in depth — app/main.py's endpoint already validates these
+    # via pydantic (int page, finite float x/y, all bounded) before ever
+    # calling this function, but this function re-derives its own safety
+    # from first principles too, matching safe_relative_path's own
+    # "never trust the caller, even our own caller" posture elsewhere in
+    # this module.
+    if not isinstance(page, int) or page < 1:
+        return InverseSearchOutcome(resolved=False)
+    if not isinstance(x, int | float) or not isinstance(y, int | float):
+        return InverseSearchOutcome(resolved=False)
+    if not (_is_finite(x) and _is_finite(y)):
+        return InverseSearchOutcome(resolved=False)
+
+    workdir = Path(settings.working_root) / f"inverse-{uuid.uuid4().hex}"
+    workdir.mkdir(parents=True, exist_ok=False, mode=0o700)
+    try:
+        (workdir / "main.synctex.gz").write_bytes(synctex_bytes)
+        # synctex edit's own docs: "-o page:x:y:file ... This named file
+        # must always exist" — its CONTENTS are irrelevant to an edit
+        # (inverse) query, only main.synctex.gz's own recorded
+        # coordinates are consulted.
+        (workdir / "main.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+
+        # Fixed-decimal formatting (never scientific notation, which a
+        # bare str()/repr() of a very small/large float could produce
+        # and which synctex's own "page:x:y:file" colon-delimited parser
+        # has no documented handling for) — one more reason this is
+        # never simply interpolated from unvalidated caller input.
+        coordinate = f"{page}:{x:.4f}:{y:.4f}:main.pdf"
+        argv = ["synctex", "edit", "-o", coordinate]
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=str(workdir),
+            env=dict(_BASE_ENV),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=settings.synctex_edit_timeout_seconds
+            )
+        except TimeoutError:
+            _kill_process_group(proc.pid)
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except TimeoutError:
+                logger.warning("synctex edit process group %s did not exit after SIGKILL", proc.pid)
+            return InverseSearchOutcome(resolved=False)
+
+        if proc.returncode != 0:
+            return InverseSearchOutcome(resolved=False)
+
+        return _parse_inverse_search_output(stdout.decode("utf-8", "replace"))
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)

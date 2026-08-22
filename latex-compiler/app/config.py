@@ -64,3 +64,12 @@ class Settings(BaseSettings):
     max_extra_files_count: int = 150
     max_extra_file_bytes: int = 15_000_000
     max_extra_files_total_bytes: int = 100_000_000
+
+    # SyncTeX implementation — a real .synctex.gz for a short academic
+    # manuscript is a few KB; generous headroom (still tiny next to
+    # max_pdf_output_bytes) rather than a tight guess. `synctex edit`
+    # itself is a near-instant read-only query (no TeX engine invoked at
+    # all) — its own timeout is correspondingly much smaller than a
+    # compile phase's.
+    max_synctex_bytes: int = 5_000_000
+    synctex_edit_timeout_seconds: float = 10.0

@@ -63,6 +63,39 @@ class CompileResponse(BaseModel):
     pdf_base64: str | None = None
     pdf_size_bytes: int | None = None
     page_count: int | None = None
+    # SyncTeX implementation — the compiled manuscript's own SyncTeX
+    # database, base64-encoded the same way pdf_base64 already is. None
+    # whenever it wasn't produced (see CompileOutcome.synctex_bytes's
+    # own docstring for why that's never treated as fatal on its own).
+    synctex_base64: str | None = None
+
+
+class InverseSearchRequest(BaseModel):
+    """SyncTeX implementation — a rendered-PDF click's page/coordinates
+    plus the SAME compile's own SyncTeX database (fetched by the caller
+    from its own artifact store — this service is otherwise fully
+    stateless and never remembers a prior compile). `page` matches
+    synctex's own 1-based convention; `x`/`y` are big points (1/72"),
+    top-left origin — the same units/orientation pdf.js's own rendered
+    viewport already uses at scale=1, per the design report's own §7."""
+
+    synctex_base64: str = Field(min_length=1)
+    page: int = Field(ge=1, le=100_000)
+    x: float = Field(ge=-1_000_000, le=1_000_000, allow_inf_nan=False)
+    y: float = Field(ge=-1_000_000, le=1_000_000, allow_inf_nan=False)
+
+
+class InverseSearchResponse(BaseModel):
+    """`resolved=False` (with `file`/`line` both None) is the ONLY shape
+    for "no reliable answer" — this service never guesses a location.
+    `file` is a source-relative path only (e.g. "main.tex" or
+    "sections/intro.tex") — see _parse_inverse_search_output's own
+    docstring in app/compiler.py for why the raw SyncTeX `Input:` value
+    can never reach this response unmodified."""
+
+    resolved: bool
+    file: str | None = None
+    line: int | None = None
 
 
 class ErrorResponse(BaseModel):

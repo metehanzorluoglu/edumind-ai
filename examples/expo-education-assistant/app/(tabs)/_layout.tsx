@@ -26,6 +26,7 @@ import {
   recordSectionLocation,
   type LastLocationSection,
 } from '@/lib/sectionLastLocation';
+import { useWritingDrawerContent, WritingDrawerSlotProvider } from '@/lib/WritingDrawerSlot';
 
 const WIDE_PANEL_BREAKPOINT_PX = 900;
 
@@ -57,6 +58,19 @@ const ROUTE_BY_SECTION: Record<NavSection, string> = {
  * BottomNav for the pieces themselves.
  */
 export default function TabsLayout() {
+  // Writing drawer/layout architecture correction — the provider has to
+  // be an ANCESTOR of the component that reads it (below), so this
+  // outermost function's only job is to establish that boundary; see
+  // lib/WritingDrawerSlot.tsx's own module docstring for the full
+  // reasoning behind this slot mechanism.
+  return (
+    <WritingDrawerSlotProvider>
+      <TabsLayoutContent />
+    </WritingDrawerSlotProvider>
+  );
+}
+
+function TabsLayoutContent() {
   const { status } = useAuth();
   const theme = useTheme();
   const { preferences, update } = usePreferences();
@@ -87,6 +101,14 @@ export default function TabsLayout() {
     activeSection === 'chat' && lastSegment && lastSegment !== 'chat' && lastSegment !== 'new'
       ? lastSegment
       : null;
+  // Writing drawer/layout architecture correction — true only for the
+  // actual project screen (/writing/<id>, app/(tabs)/writing/[id].tsx),
+  // never the bare /writing list (app/(tabs)/writing/index.tsx, which
+  // has no open file tree/references/etc. to show a Writing drawer
+  // for). [id].tsx is the only dynamic route under writing/, so "a
+  // second path segment exists" reliably means we're there.
+  const isWritingProjectOpen = activeSection === 'writing' && segments.length >= 2;
+  const writingDrawerContent = useWritingDrawerContent();
 
   // Milestone 5.5.2 Part 26 — records every pathname visited inside
   // Writing/Documents/Notes so this section's own nav icon can return
@@ -220,7 +242,25 @@ export default function TabsLayout() {
           />
         )}
 
-        {isWide && !preferences.sidebarCollapsed && (
+        {/* Writing drawer/layout architecture correction — while a
+            Writing project is open, this position shows [id].tsx's own
+            Files/Outline/References/Notes/Tools panel (registered via
+            useRegisterWritingDrawerContent — see lib/WritingDrawerSlot.tsx)
+            INSTEAD of the Chat/Projects AppDrawer, never both: that's the
+            entire fix — one drawer region per route, not a second column
+            stacked beside the first. AppDrawer itself, and every other
+            route (Chat/Search/Documents/Notes/Settings), is completely
+            unaffected. The registered content already carries its own
+            width/resize/collapse styling (the exact same styles.panel
+            [id].tsx always used), so no extra host styling is needed
+            here — and it stays mounted (never conditioned on
+            sidebarCollapsed, a Chat-drawer-only preference) so closing/
+            reopening the Writing drawer via its own toggle never loses
+            file-tree/references/notes/Ask-EduM8 state, matching the
+            "never destroy state you might come back to" contract that
+            content already had before this fix moved where it mounts. */}
+        {isWide && isWritingProjectOpen && writingDrawerContent}
+        {isWide && !isWritingProjectOpen && !preferences.sidebarCollapsed && (
           <AppDrawer
             width={preferences.sidebarWidth}
             onResizeEnd={(w) => update('sidebarWidth', w)}

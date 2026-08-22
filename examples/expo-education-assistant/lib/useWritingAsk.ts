@@ -150,11 +150,21 @@ export interface UseWritingAskResult {
    * send-time RAG scoping both read from. */
   activeDocumentIds: string[];
   scopeLabel: string;
-  /** False when the active scope has nothing to search — Project
-   * References/Selected Sources both require at least one document;
-   * Research Notes requires at least one selected entry (Part 13: an
-   * empty scope is refused up front rather than silently widened). */
+  /** True whenever the currently open document alone, the active RAG
+   * scope alone, or both together give Ask EduM8 something to work
+   * with. Writing UX Refinement milestone, Blocker 2 — the currently
+   * open document is always-usable Writing context on its own; a
+   * project with zero references/sources/notes no longer disables
+   * asking (only a project with NEITHER an open document NOR any scope
+   * content is refused). */
   canAsk: boolean;
+  /** False when the active RAG scope (Project References/Selected
+   * Sources/Research Notes) has nothing selected — independent of
+   * `canAsk`, which the current document alone can already satisfy.
+   * Lets callers show an honest "no references attached" note without
+   * implying Ask EduM8 itself is unavailable (Part 13's original
+   * per-scope guidance, now informational rather than blocking). */
+  hasScopeContent: boolean;
   setProjectReferencesScope: () => void;
   setSelectedSourcesScope: (documentIds: string[]) => void;
   setResearchNotesScope: (entries: NotebookEntry[]) => void;
@@ -222,10 +232,26 @@ export interface UseWritingAskResult {
  * the default "Project References" scope, and always reflects the
  * project's CURRENT reference list, including references added mid
  * Ask-EduM8-session via "Add reference" (Part 7).
+ *
+ * `hasCurrentDocument` — Writing UX Refinement milestone, Blocker 2 fix.
+ * Real-browser validation found a genuine defect: `canAsk` used to
+ * require the active RAG scope (defaulting to Project References) to
+ * have at least one document, so a project with zero references
+ * disabled the composer entirely — even for questions like "summarize
+ * my current document" that need no reference evidence at all. The
+ * backend has never actually required this: `writing_context` (built
+ * from `editorContext` below) is sent on every ask() call regardless of
+ * scope, and the M6.1 Writing Context Engine already treats the active
+ * file as first-class context server-side. The gate was a pure
+ * frontend bug, not a backend requirement. The currently open document
+ * is always-usable Writing context (RAG scope selection remains
+ * optional, additive evidence-search on top of it) — see `canAsk`'s own
+ * updated comment below.
  */
 export function useWritingAsk(
   client: EducationAssistantClient,
-  projectReferenceDocumentIds: string[]
+  projectReferenceDocumentIds: string[],
+  hasCurrentDocument: boolean
 ): UseWritingAskResult {
   const [scopeKind, setScopeKind] = useState<WritingAskScopeKind>('project-references');
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
@@ -284,10 +310,22 @@ export function useWritingAsk(
   // handleAskAboutSelected), which folds every selected entry in as
   // transient context regardless of whether any of them narrow
   // retrieval. Project References/Selected Sources are real RAG scopes
-  // with no such fallback — an empty set there means "search nothing,"
-  // never "search everything."
-  const canAsk =
+  // with no fallback of their own — an empty set there means "no extra
+  // evidence to search," never "search everything."
+  //
+  // Writing UX Refinement milestone, Blocker 2 fix — that emptiness used
+  // to mean "cannot ask at all," which was wrong: the currently open
+  // document (`hasCurrentDocument`) is always valid Writing context on
+  // its own, independent of whatever RAG scope happens to be selected.
+  // `hasCurrentDocument` is an OR, not a replacement — a real, populated
+  // scope still keeps working exactly as before (e.g. a project with no
+  // file open yet but with references already selected can still ask
+  // against them). Only a project with genuinely nothing at all — no
+  // open document AND an empty scope — is refused, same as today's
+  // behavior for that edge case.
+  const hasScopeContent =
     scopeKind === 'research-notes' ? selectedNoteEntries.length > 0 : activeDocumentIds.length > 0;
+  const canAsk = hasCurrentDocument || hasScopeContent;
 
   const resetThread = useCallback((): void => {
     abortControllerRef.current?.abort();
@@ -534,6 +572,7 @@ export function useWritingAsk(
     activeDocumentIds,
     scopeLabel,
     canAsk,
+    hasScopeContent,
     setProjectReferencesScope,
     setSelectedSourcesScope,
     setResearchNotesScope,

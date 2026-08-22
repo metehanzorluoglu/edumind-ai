@@ -14,6 +14,7 @@ import {
   matchSelectionToChunk,
   type PdfViewportLike,
 } from '@/lib/pdfHighlightGeometry';
+import { ensureTextLayerStylesInjected } from '@/lib/pdfTextLayerStyles';
 import type { ReaderSelection } from '@/lib/useReaderSelection';
 import { PdfPageView, type PdfjsDocumentLike, type PdfjsRenderTextLayer } from './PdfPageView';
 
@@ -21,49 +22,6 @@ const MIN_SCALE = 0.5;
 const MAX_SCALE = 3;
 const SCALE_STEP = 0.15;
 const PAGE_HORIZONTAL_PADDING_PX = 48;
-
-// Standard pdf.js text-layer CSS (Apache-2.0, mozilla/pdf.js), scoped
-// under a unique class so it can never leak into/collide with the rest of
-// this app's styles. Injected once, web-only. This is what makes the
-// (invisible, colorless) text spans line up pixel-for-pixel over the
-// canvas so real text selection works — pdf.js positions each span with
-// an inline transform; this stylesheet only supplies the base layout
-// rules pdf.js's TextLayer class assumes are present.
-const TEXT_LAYER_CSS = `
-.edum8-pdf-text-layer {
-  position: absolute;
-  text-align: initial;
-  inset: 0;
-  overflow: clip;
-  line-height: 1;
-  opacity: 1;
-  -webkit-text-size-adjust: none;
-  text-size-adjust: none;
-  forced-color-adjust: none;
-  transform-origin: 0 0;
-  z-index: 2;
-  caret-color: transparent;
-}
-.edum8-pdf-text-layer span, .edum8-pdf-text-layer br {
-  color: transparent;
-  position: absolute;
-  white-space: pre;
-  cursor: text;
-  transform-origin: 0% 0%;
-}
-.edum8-pdf-text-layer span.markedContent { top: 0; height: 0; }
-.edum8-pdf-text-layer ::selection { background: rgba(47, 95, 224, 0.35); }
-.edum8-pdf-text-layer br::selection { background: transparent; }
-`;
-
-function ensureTextLayerStylesInjected(): void {
-  if (typeof document === 'undefined') return;
-  if (document.getElementById('edum8-pdf-text-layer-style')) return;
-  const style = document.createElement('style');
-  style.id = 'edum8-pdf-text-layer-style';
-  style.textContent = TEXT_LAYER_CSS;
-  document.head.appendChild(style);
-}
 
 export interface PdfReaderProps {
   documentId: string;

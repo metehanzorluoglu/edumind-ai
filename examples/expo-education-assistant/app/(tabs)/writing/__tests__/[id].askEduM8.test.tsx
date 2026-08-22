@@ -522,24 +522,83 @@ describe('Writing workspace — Ask EduM8 (Milestone 5.2)', () => {
     expect(findByTextIncluding(renderer.root, 'Project references · 1 source')).toBeTruthy();
   });
 
-  it('an empty Project references scope disables Ask and never sends a request (Part 12/13)', async () => {
-    const renderer = await renderScreen([getProjectRoute(), referencesRoute([])]);
+  it('zero project references no longer disables Ask EduM8 — the current document is always usable (Writing UX Refinement milestone, Blocker 2)', async () => {
+    // Real-browser validation found a genuine defect here: this used to
+    // assert the OPPOSITE — that an empty Project References scope
+    // disabled the Ask button outright and sent no request. That was
+    // wrong: the backend has always treated the current document as
+    // valid Writing context on its own (writing_context is sent on
+    // every ask() call regardless of scope — see useWritingAsk.ts), so
+    // gating the composer on the RAG scope's document count was a pure
+    // frontend bug, not a backend requirement. See this test's replaced
+    // sibling below for the corrected behavior.
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute([]),
+      createConversationRoute(),
+      messagesRoute(),
+    ]);
     openAskPanel(renderer);
 
-    expect(findByTextIncluding(renderer.root, 'This project has no references yet')).toBeTruthy();
+    // Current document is always represented as usable context...
+    expect(findByTextIncluding(renderer.root, 'Current document')).toBeTruthy();
+    // ...and an empty scope is now purely informational, not a warning.
+    expect(findByTextIncluding(renderer.root, 'No project references attached')).toBeTruthy();
+
     const input = renderer.root.find(
       (n) => String(n.type) === 'TextInput' && n.props.accessibilityLabel === 'Ask a question'
     );
     act(() => {
-      input.props.onChangeText('What evidence supports this?');
+      input.props.onChangeText('Summarize my current document');
     });
     const askButton = findPressableByLabel(renderer.root, 'Ask');
-    expect(askButton.props.disabled).toBe(true);
+    expect(askButton.props.disabled).toBe(false);
 
-    const messageCallsBefore = (global.fetch as jest.Mock).mock.calls.filter(([url]: [string]) =>
-      String(url).includes('/messages')
-    ).length;
-    expect(messageCallsBefore).toBe(0);
+    await act(async () => {
+      askButton.props.onPress();
+      await flushAsync();
+    });
+
+    // The question was actually sent and answered using zero
+    // references — the current document (writing_context) alone.
+    const messageBody = bodyOf(findCall('POST', '/conversations/conv-1/messages'));
+    expect(String(messageBody.query)).toBe('Summarize my current document');
+    const writingContext = messageBody.writing_context as Record<string, unknown>;
+    expect(writingContext).toBeTruthy();
+    expect(writingContext.project_id).toBe(PROJECT.id);
+    expect(typeof writingContext.active_file_unsaved_content).toBe('string');
+    expect((writingContext.active_file_unsaved_content as string).length).toBeGreaterThan(0);
+    // Zero references means the scope-sync PUT/PATCH calls (which only
+    // fire when there's something to actually search) never had to run
+    // for this turn — never a call with an empty document_ids array.
+    expect(findCall('PUT', '/conversations/conv-1/documents')).toBeUndefined();
+    expect(findByTextIncluding(renderer.root, 'Teachers reported increased autonomy')).toBeTruthy();
+  });
+
+  it('adding a project reference enriches Ask EduM8 with real RAG evidence rather than being what enables it (Writing UX Refinement milestone, Blocker 2)', async () => {
+    // Same question, same current document, but now WITH a project
+    // reference — proves references remain a genuine evidence-search
+    // enrichment (real citations/Evidence card) on top of the always-
+    // usable current document, not a gate that had to be satisfied
+    // first.
+    const renderer = await renderScreen([
+      getProjectRoute(),
+      referencesRoute([REFERENCE]),
+      createConversationRoute(),
+      putDocumentsRoute(),
+      patchScopeRoute(),
+      messagesRoute(),
+    ]);
+    openAskPanel(renderer);
+    expect(queryByTextIncluding(renderer.root, 'No project references attached')).toBeNull();
+
+    await askQuestion(renderer, 'Summarize my current document');
+
+    expect(bodyOf(findCall('PUT', '/conversations/conv-1/documents'))).toEqual({
+      document_ids: ['d-1'],
+    });
+    expect(findByTextIncluding(renderer.root, 'Teachers reported increased autonomy')).toBeTruthy();
+    expect(findByTextIncluding(renderer.root, 'Doe')).toBeTruthy();
   });
 
   it('sending a question runs create -> PUT documents -> PATCH zoom_in_mode -> POST message, in that order, scoped to the project references', async () => {

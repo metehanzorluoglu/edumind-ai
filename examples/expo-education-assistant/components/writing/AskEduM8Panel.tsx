@@ -28,9 +28,11 @@ import {
   type WritingAskTurn,
 } from '@/lib/useWritingAsk';
 
-// Writing's requests are always text-only (no attachments) and always
-// retrieval-backed (a scope with zero documents is refused up front by
-// useWritingAsk's own canAsk) — so this is a fixed, not per-turn, context.
+// Writing's requests are always text-only (no attachments) — so this is a
+// fixed, not per-turn, context. Writing UX Refinement milestone, Blocker 2
+// fix — no longer "always retrieval-backed": the currently open document
+// alone is enough context to ask (see useWritingAsk's canAsk); a selected
+// RAG scope is optional, additive evidence search on top of it.
 const WRITING_THINKING_CONTEXT = thinkingContextForRequest({});
 
 const SCOPE_TABS: { kind: WritingAskScopeKind; label: string }[] = [
@@ -139,6 +141,13 @@ export interface AskEduM8PanelProps {
   selectionStart: number;
   selectionEnd: number;
   activeFileContent: string;
+  /** Writing UX Refinement milestone, Blocker 2 fix — true whenever an
+   * editable text file is open, independent of `activeFileId` alone
+   * (which can point at a non-text node). Drives the always-on "Current
+   * document" context indicator below and, via useWritingAsk's
+   * `hasCurrentDocument` param, whether Ask EduM8 stays usable with zero
+   * project references. */
+  hasCurrentDocument: boolean;
   /** Milestone 6.2 Part 10 — lifted up to the parent screen (was
    * previously instantiated internally via useWritingAsk()) so the
    * selection-aware quick-action bar next to the editor can share the
@@ -177,6 +186,7 @@ export function AskEduM8Panel({
   selectionStart,
   selectionEnd,
   activeFileContent,
+  hasCurrentDocument,
   ask,
   onOpenSource,
   onAddReference,
@@ -251,7 +261,22 @@ export function AskEduM8Panel({
       </View>
 
       <View style={styles.contextBlock}>
-        <Text style={styles.contextHeading}>Research context</Text>
+        <Text style={styles.contextHeading}>Writing context</Text>
+        {/* Writing UX Refinement milestone, Blocker 2 fix — always-on,
+            non-interactive: the currently open document is baseline
+            Writing context regardless of which RAG scope (below) is
+            selected, or whether it has anything in it. Distinguishing
+            this from the scope tabs (which pick WHICH extra evidence to
+            search) rather than adding a fourth mutually-exclusive tab —
+            "current document" isn't a scope you switch to, it's always
+            included. */}
+        <View style={styles.currentDocRow}>
+          <View style={[styles.currentDocDot, hasCurrentDocument && styles.currentDocDotActive]} />
+          <Text style={styles.currentDocLabel}>
+            {hasCurrentDocument ? 'Current document — always included' : 'No document open yet'}
+          </Text>
+        </View>
+        <Text style={styles.contextHeading}>Research context (optional)</Text>
         <Text style={styles.contextLabel}>{ask.scopeLabel}</Text>
         <View style={styles.scopeTabs}>
           {SCOPE_TABS.map((tab) => (
@@ -277,13 +302,22 @@ export function AskEduM8Panel({
             </Pressable>
           ))}
         </View>
-        {!ask.canAsk && (
-          <Text style={styles.scopeWarning}>
+        {/* Writing UX Refinement milestone, Blocker 2 fix — this used to
+            be a `scopeWarning` gated on `!ask.canAsk`, which disabled the
+            composer entirely whenever the default Project References
+            scope was empty. Zero references is now purely informational
+            (Ask EduM8 still works from the current document alone) —
+            `hasScopeContent`, not `canAsk`, drives this note, and nothing
+            here disables the Ask button. `!ask.canAsk` can still happen
+            (no document open AND an empty scope) and is handled by the
+            Ask button's own disabled state below. */}
+        {!ask.hasScopeContent && (
+          <Text style={styles.scopeNote}>
             {ask.scopeKind === 'project-references'
-              ? 'This project has no references yet — add one, or switch scope.'
+              ? 'No project references attached — add one to include them as evidence.'
               : ask.scopeKind === 'selected-sources'
-                ? 'Choose at least one source above.'
-                : 'Choose at least one research note above.'}
+                ? 'No sources selected — choose some above to include them as evidence.'
+                : 'No research notes selected — choose some above to include them as evidence.'}
           </Text>
         )}
       </View>
@@ -520,6 +554,15 @@ function buildStyles(theme: Theme) {
       letterSpacing: 0.4,
     },
     contextLabel: { fontSize: 13, fontFamily: theme.fonts.bodySemibold, color: theme.text },
+    currentDocRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 },
+    currentDocDot: {
+      width: 7,
+      height: 7,
+      borderRadius: 4,
+      backgroundColor: theme.border,
+    },
+    currentDocDotActive: { backgroundColor: theme.accent },
+    currentDocLabel: { fontSize: 12.5, fontFamily: theme.fonts.body, color: theme.subtext },
     scopeTabs: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 },
     scopeTab: {
       paddingHorizontal: 10,
@@ -531,7 +574,11 @@ function buildStyles(theme: Theme) {
     scopeTabActive: { backgroundColor: theme.accentSoft, borderColor: theme.accent },
     scopeTabText: { fontSize: 12, fontFamily: theme.fonts.body, color: theme.subtext },
     scopeTabTextActive: { color: theme.accent, fontFamily: theme.fonts.bodySemibold },
-    scopeWarning: { fontSize: 12, color: theme.warning, fontFamily: theme.fonts.body },
+    // Writing UX Refinement milestone, Blocker 2 fix — deliberately
+    // `theme.faint`/subtext-toned, not `theme.warning`: an empty RAG
+    // scope is informational, never an error state (it no longer blocks
+    // anything).
+    scopeNote: { fontSize: 12, color: theme.faint, fontFamily: theme.fonts.body },
     turns: { flex: 1 },
     turnsContent: { padding: 16, gap: 16 },
     turn: { gap: 6 },

@@ -17,7 +17,23 @@ import { AuthProvider } from '@/lib/AuthProvider';
 import { ClientProvider } from '@/lib/ClientProvider';
 import { FeatureFlagsProvider } from '@/lib/FeatureFlags';
 import { PreferencesProvider, type Preferences } from '@/lib/Preferences';
+import { useWritingDrawerContent, WritingDrawerSlotProvider } from '@/lib/WritingDrawerSlot';
 import WritingProjectEditorScreen from '../[id]';
+
+/**
+ * Writing drawer/layout architecture correction — [id].tsx no longer
+ * renders its own Files/Outline/References/Notes/Tools panel inline on
+ * desktop; it registers that JSX into the shared slot
+ * app/(tabs)/_layout.tsx renders beside NavRail instead (see
+ * lib/WritingDrawerSlot.tsx). This test file renders [id].tsx in
+ * isolation (not the real _layout.tsx shell), so it has to provide that
+ * same slot + a render site itself — this tiny component IS that render
+ * site, mirroring exactly what _layout.tsx does with
+ * `{isWide && isWritingProjectOpen && writingDrawerContent}`.
+ */
+function WritingDrawerSlotRenderer() {
+  return <>{useWritingDrawerContent()}</>;
+}
 
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(),
@@ -213,7 +229,10 @@ async function renderScreen(
         <AuthProvider>
           <ClientProvider>
             <FeatureFlagsProvider>
-              <WritingProjectEditorScreen />
+              <WritingDrawerSlotProvider>
+                <WritingProjectEditorScreen />
+                <WritingDrawerSlotRenderer />
+              </WritingDrawerSlotProvider>
             </FeatureFlagsProvider>
           </ClientProvider>
         </AuthProvider>
@@ -226,7 +245,7 @@ async function renderScreen(
 }
 
 describe('WritingProjectEditorScreen — desktop Research panel (Milestone 5.5)', () => {
-  it('shows Files/References/Notes/Ask EduM8 as one tab strip, and switching tabs swaps the panel body in place', async () => {
+  it('shows Files/Outline/References/Notes/Tools as one tab strip (writing navigation, not chat history), and switching tabs swaps the panel body in place', async () => {
     const renderer = await renderScreen([getProjectRoute(), referencesRoute()]);
 
     // Defaults to Files (Part 9's own real-browser validation caught
@@ -237,13 +256,40 @@ describe('WritingProjectEditorScreen — desktop Research panel (Milestone 5.5)'
     expect(renderer.root.find((n) => n.type === LatexCodeEditor)).toBeTruthy();
     expect(findByTextIncluding(renderer.root, 'main.tex')).toBeTruthy();
 
+    // Writing UX Refinement milestone — the tab strip itself is pure
+    // writing navigation now: Files/Outline/References/Notes/Tools.
+    // "Ask EduM8" is deliberately NOT one of these pills (see the
+    // dedicated header-button test below) — a chat-style turn-history
+    // panel living as an equal-weight tab of this strip is exactly what
+    // that milestone removed.
+    expect(findPressableByLabel(renderer.root, 'Files')).toBeTruthy();
+    expect(findPressableByLabel(renderer.root, 'Outline')).toBeTruthy();
+    expect(findPressableByLabel(renderer.root, 'References')).toBeTruthy();
+    expect(findPressableByLabel(renderer.root, 'Notes')).toBeTruthy();
+    expect(findPressableByLabel(renderer.root, 'Tools')).toBeTruthy();
+    expect(renderer.root.findAll((n) => n.props.accessibilityLabel === 'Ask EduM8').length).toBe(0);
+
     act(() => {
       findPressableByLabel(renderer.root, 'References').props.onPress();
     });
     expect(findByTextIncluding(renderer.root, 'References')).toBeTruthy();
 
     act(() => {
-      findPressableByLabel(renderer.root, 'Ask EduM8').props.onPress();
+      findPressableByLabel(renderer.root, 'Outline').props.onPress();
+    });
+    expect(findByTextIncluding(renderer.root, 'Sections')).toBeTruthy();
+
+    act(() => {
+      findPressableByLabel(renderer.root, 'Tools').props.onPress();
+    });
+    expect(findByTextIncluding(renderer.root, 'Word count')).toBeTruthy();
+  });
+
+  it('reaches Ask EduM8 only via the header button/shortcut, never as a panel tab pill', async () => {
+    const renderer = await renderScreen([getProjectRoute(), referencesRoute()]);
+
+    act(() => {
+      findPressableByLabel(renderer.root, 'Show Ask EduM8 panel').props.onPress();
     });
     // The embedded panel — same "Research context" indicator the
     // (previously separate-drawer) AskEduM8Panel has always shown, now

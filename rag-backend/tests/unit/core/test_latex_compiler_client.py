@@ -89,6 +89,20 @@ class TestSuccess:
         client.compile(job_id="j1", main_tex="x", references_bib="")
         assert fake.calls[0]["url"] == "http://latex-compiler:8200/compile"
 
+    def test_synctex_bytes_decoded_when_present(self) -> None:
+        fake = _FakeHttpPoster(
+            response=_ok_response(synctex_base64=base64.b64encode(b"fake-synctex").decode("ascii"))
+        )
+        client = LatexCompilerClient(base_url="http://x", client=fake)
+        outcome = client.compile(job_id="j1", main_tex="x", references_bib="")
+        assert outcome.synctex_bytes == b"fake-synctex"
+
+    def test_synctex_bytes_none_when_absent(self) -> None:
+        fake = _FakeHttpPoster(response=_ok_response())
+        client = LatexCompilerClient(base_url="http://x", client=fake)
+        outcome = client.compile(job_id="j1", main_tex="x", references_bib="")
+        assert outcome.synctex_bytes is None
+
 
 class TestFailureMapping:
     def test_503_maps_to_queue_full(self) -> None:
@@ -146,4 +160,56 @@ class TestFailureMapping:
             fake = _FakeHttpPoster(raises=exc)
             client = LatexCompilerClient(base_url="http://x", client=fake)
             outcome = client.compile(job_id="j", main_tex="x", references_bib="")
+            assert outcome.ok is False
+
+
+class TestInverseSearch:
+    def test_resolved_result_decoded(self) -> None:
+        fake = _FakeHttpPoster(
+            response=httpx.Response(200, json={"resolved": True, "file": "main.tex", "line": 4})
+        )
+        client = LatexCompilerClient(base_url="http://latex-compiler:8200", client=fake)
+        outcome = client.inverse_search(synctex_bytes=b"fake", page=1, x=10.0, y=20.0)
+        assert outcome.ok is True
+        assert outcome.resolved is True
+        assert outcome.file == "main.tex"
+        assert outcome.line == 4
+        assert fake.calls[0]["url"] == "http://latex-compiler:8200/inverse-search"
+        assert fake.calls[0]["json"] == {
+            "synctex_base64": base64.b64encode(b"fake").decode("ascii"),
+            "page": 1,
+            "x": 10.0,
+            "y": 20.0,
+        }
+
+    def test_unresolved_result_decoded(self) -> None:
+        fake = _FakeHttpPoster(
+            response=httpx.Response(200, json={"resolved": False, "file": None, "line": None})
+        )
+        client = LatexCompilerClient(base_url="http://x", client=fake)
+        outcome = client.inverse_search(synctex_bytes=b"fake", page=1, x=0.0, y=0.0)
+        assert outcome.ok is True
+        assert outcome.resolved is False
+        assert outcome.file is None
+        assert outcome.line is None
+
+    def test_503_maps_to_queue_full(self) -> None:
+        fake = _FakeHttpPoster(response=httpx.Response(503, json={"error": "queue_full"}))
+        client = LatexCompilerClient(base_url="http://x", client=fake)
+        outcome = client.inverse_search(synctex_bytes=b"fake", page=1, x=0.0, y=0.0)
+        assert outcome.ok is False
+        assert outcome.failure == "queue_full"
+
+    def test_timeout_exception_maps_to_timeout_failure(self) -> None:
+        fake = _FakeHttpPoster(raises=httpx.TimeoutException("slow"))
+        client = LatexCompilerClient(base_url="http://x", client=fake)
+        outcome = client.inverse_search(synctex_bytes=b"fake", page=1, x=0.0, y=0.0)
+        assert outcome.ok is False
+        assert outcome.failure == "timeout"
+
+    def test_never_raises_on_any_failure_mode(self) -> None:
+        for exc in (httpx.TimeoutException("x"), httpx.ConnectError("x"), httpx.HTTPError("x")):
+            fake = _FakeHttpPoster(raises=exc)
+            client = LatexCompilerClient(base_url="http://x", client=fake)
+            outcome = client.inverse_search(synctex_bytes=b"fake", page=1, x=0.0, y=0.0)
             assert outcome.ok is False

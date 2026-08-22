@@ -205,3 +205,47 @@ class CompileWritingProjectResponse(BaseModel):
     #: run against (app/core/latex_source_hash.py) — lets the frontend
     #: detect staleness without a version-history subsystem.
     source_hash: str = ""
+
+
+class InverseSearchRequest(BaseModel):
+    """SyncTeX implementation — POST /writing-projects/{id}/compile/
+    {compile_id}/inverse-search's request body: a rendered-PDF
+    double-click's page + coordinates, exactly as pdf.js's own viewport
+    already reports them (see the design report's own §7 for the
+    pdf.js-coordinate -> SyncTeX-coordinate mapping this assumes)."""
+
+    page: int = Field(ge=1, le=100_000)
+    x: float = Field(ge=-1_000_000, le=1_000_000)
+    y: float = Field(ge=-1_000_000, le=1_000_000)
+
+
+class InverseSearchResponse(BaseModel):
+    """`resolved=False` (with `file_id`/`line` both None) is the ONLY
+    shape for "no reliable source location" — this endpoint never
+    guesses. `file_id` is a real WritingProjectFile id (a UUID string),
+    never a raw path — the frontend already knows how to open a file by
+    id and navigate to a line via its existing diagnostic/outline
+    navigation primitives, so this is deliberately shaped to slot into
+    that exact mechanism rather than inventing a new one.
+
+    SyncTeX implementation, real-browser validation — bibliography/
+    citation content is a genuine, structural SyncTeX+classical-BibTeX
+    limitation, not a resolver bug: verified directly (real pdflatex +
+    bibtex + synctex) that BOTH the reference-list entries AND inline
+    `\\cite{}` marker text are attributed by SyncTeX to the GENERATED
+    `main.bbl` (bibtex's compiled bibliography, rebuilt fresh every
+    compile job and never a real project file) — never to the `.bib`
+    data file itself, which BibTeX/LaTeX never `\\input`s at all and
+    which SyncTeX accordingly has no position records for whatsoever.
+    `reason="generated_content"` distinguishes this specific, honestly-
+    explainable case (`Input:` resolved to a real file, but one that's a
+    build byproduct with no corresponding project file — e.g. `.bbl`/
+    `.aux`/`.toc`/similar) from every other "declined" outcome (a
+    genuinely absent SyncTeX record, a transport failure, an out-of-
+    range click), so the frontend can show a more specific explanation
+    instead of one generic message for every unresolved case."""
+
+    resolved: bool
+    file_id: str | None = None
+    line: int | None = None
+    reason: Literal["generated_content"] | None = None

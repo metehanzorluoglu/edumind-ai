@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { IconButton } from '@/components/ui/IconButton';
 import { Notice } from '@/components/ui/Notice';
+import { ensureTextLayerStylesInjected, PDF_TEXT_LAYER_CLASS_NAME } from '@/lib/pdfTextLayerStyles';
 import { getPdfjs } from '@/lib/pdfjs';
 import { useTheme, type Theme } from '@/lib/Preferences';
 
@@ -19,27 +20,70 @@ const MAX_SCALE = 3;
 const SCALE_STEP = 0.25;
 const PAGE_HORIZONTAL_PADDING_PX = 32;
 
+/**
+ * SyncTeX implementation (Writing UX Refinement milestone) — the exact
+ * click location a rendered-PDF double-click resolves to, in the same
+ * page/coordinate space real SyncTeX's own inverse-search command
+ * expects: 1-based page number, x/y in PDF points (big points, 1/72"),
+ * measured from the page's own top-left corner. This is deliberately
+ * NOT rendered/clicked TEXT — the previous text-search heuristic
+ * (lib/writingPreviewSourceMap.ts, removed this milestone) resolved a
+ * clicked WORD, which real-browser validation proved unreliable for
+ * common words appearing many times in one document (see this
+ * milestone's own report). Source navigation now depends only on WHERE
+ * on the page was clicked, resolved server-side via authoritative
+ * SyncTeX data — see [id].tsx's handlePreviewDoubleClick.
+ */
+export interface PreviewClickLocation {
+  page: number;
+  x: number;
+  y: number;
+}
+
 interface PdfjsPageLike {
-  getViewport(params: { scale: number }): { width: number; height: number };
+  getViewport(params: { scale: number }): { width: number; height: number; scale: number };
   render(params: { canvasContext: CanvasRenderingContext2D; viewport: unknown }): {
     promise: Promise<void>;
   };
+  getTextContent(): Promise<unknown>;
 }
 interface PdfjsDocumentLike {
   numPages: number;
   getPage(pageNumber: number): Promise<PdfjsPageLike>;
 }
+// pdfjs-dist@3's text-layer API — see components/documents/PdfPageView.tsx's
+// identical type (pinned to v3 for Metro web bundling; v4 replaced this
+// function with a `TextLayer` class).
+type PdfjsRenderTextLayer = (params: {
+  textContentSource: unknown;
+  container: HTMLElement;
+  viewport: unknown;
+}) => { promise: Promise<void>; cancel(): void };
 
 /**
  * Milestone 5.1 Part 25/31 — the compiled-manuscript PDF preview.
- * Deliberately NOT the Document Reader (components/documents/PdfReader.tsx
- * + PdfPageView.tsx): no highlights, no text-layer/selection, no saved
- * reading position — a compiled Writing preview is a disposable build
+ * Originally deliberately NOT the Document Reader (components/documents/
+ * PdfReader.tsx + PdfPageView.tsx): no highlights, no saved reading
+ * position — a compiled Writing preview is still a disposable build
  * artifact, not a library document a user annotates. Reuses only the
- * lowest-level shared piece, lib/pdfjs.ts's lazy web-only loader, and
- * reimplements a minimal page-to-canvas render loop rather than pulling in
- * PdfPageView's highlight-geometry/text-layer machinery this screen has no
- * use for (Part 31: "Do not overbuild").
+ * lowest-level shared pieces (lib/pdfjs.ts's lazy web-only loader, and —
+ * since the Writing UX Refinement milestone — lib/pdfTextLayerStyles.ts's
+ * shared text-layer CSS/injection) and reimplements a minimal
+ * page-to-canvas render loop rather than pulling in PdfPageView's
+ * highlight-geometry machinery this screen still has no use for (Part
+ * 31: "Do not overbuild").
+ *
+ * Writing UX Refinement milestone — renders pdf.js's standard text
+ * layer (invisible, colorless spans positioned exactly over the canvas
+ * bitmap — the PDF's own visual appearance is unchanged) purely for
+ * SELECTION UX (the reader can still select/copy rendered text
+ * natively). Double-click source NAVIGATION no longer depends on it at
+ * all: a double-click reports its raw PAGE + PDF-point COORDINATES via
+ * `onDoubleClickLocation`, and the caller ([id].tsx) resolves that
+ * through the backend's authoritative SyncTeX inverse-search endpoint —
+ * never a text-matching guess (a prior text-search heuristic, lib/
+ * writingPreviewSourceMap.ts, was removed this milestone after real-
+ * browser validation proved it unreliable for common/repeated words).
  */
 export function CompiledPdfPreview({
   pdfBlob,
@@ -47,6 +91,7 @@ export function CompiledPdfPreview({
   error,
   stale,
   emptyMessage,
+  onDoubleClickLocation,
 }: {
   pdfBlob: Blob | null;
   loading: boolean;
@@ -57,12 +102,21 @@ export function CompiledPdfPreview({
    * 32's "do not mislead user" requirement. */
   stale: boolean;
   emptyMessage: string;
+  /** SyncTeX implementation — fired when the reader double-clicks
+   * anywhere in the rendered preview, with the exact page/PDF-point
+   * coordinates clicked (see PreviewClickLocation's own docstring).
+   * Omitted (no-op) on native. The preview itself never navigates
+   * anywhere on its own — resolving this to a source location (via
+   * SyncTeX) and driving the editor is entirely the caller's
+   * responsibility. */
+  onDoubleClickLocation?: (location: PreviewClickLocation) => void;
 }) {
   const theme = useTheme();
   const styles = useMemo(() => buildStyles(theme), [theme]);
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [loadError, setLoadError] = useState<string | null>(null);
   const [pdfDoc, setPdfDoc] = useState<PdfjsDocumentLike | null>(null);
+  const [renderTextLayer, setRenderTextLayer] = useState<PdfjsRenderTextLayer | null>(null);
   const [scale, setScale] = useState(1);
   const [containerWidth, setContainerWidth] = useState<number | null>(null);
   const basePageWidthRef = useRef<number | null>(null);
@@ -88,6 +142,7 @@ export function CompiledPdfPreview({
         const page1 = await doc.getPage(1);
         basePageWidthRef.current = page1.getViewport({ scale: 1 }).width;
         setPdfDoc(doc);
+        setRenderTextLayer(() => pdfjs.renderTextLayer as unknown as PdfjsRenderTextLayer);
         setStatus('success');
       } catch (cause) {
         if (cancelled) return;
@@ -187,6 +242,8 @@ export function CompiledPdfPreview({
               pdfDoc={pdfDoc}
               pageNumber={pageNumber}
               scale={scale}
+              renderTextLayer={renderTextLayer}
+              onDoubleClickLocation={onDoubleClickLocation}
             />
           ))}
         </ScrollView>
@@ -360,13 +417,29 @@ function CompiledPdfPage({
   pdfDoc,
   pageNumber,
   scale,
+  renderTextLayer,
+  onDoubleClickLocation,
 }: {
   pdfDoc: PdfjsDocumentLike;
   pageNumber: number;
   scale: number;
+  /** Null until pdf.js's lazy load resolves — the page still renders as
+   * a plain bitmap (today's exact original behavior) until then; the
+   * text layer (selection UX only, see the module docstring) simply
+   * isn't available yet for a page rendered in that brief window. */
+  renderTextLayer: PdfjsRenderTextLayer | null;
+  onDoubleClickLocation?: (location: PreviewClickLocation) => void;
 }) {
   const theme = useTheme();
   const canvasHostRef = useRef<View>(null);
+  // SyncTeX implementation — the actual rendered <canvas> element,
+  // captured at render time so the double-click listener below can
+  // measure a click's position relative to IT specifically (never the
+  // host div, which also contains the invisible text-layer overlay —
+  // measuring against the canvas's own bounding box is what makes the
+  // page-relative coordinate correct regardless of which of the two
+  // overlapping layers the native event actually landed on).
+  const canvasElRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -390,18 +463,113 @@ function CompiledPdfPage({
       canvas.height = Math.round(viewport.height * dpr);
       canvas.style.width = `${viewport.width}px`;
       canvas.style.height = `${viewport.height}px`;
+      canvas.style.display = 'block';
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
       ctx.scale(dpr, dpr);
       host.innerHTML = '';
       host.appendChild(canvas);
+      canvasElRef.current = canvas;
       await page.render({ canvasContext: ctx, viewport }).promise;
+      if (cancelled) return;
+
+      // Writing UX Refinement milestone — an invisible, colorless text
+      // layer positioned exactly over the canvas above (never visually
+      // duplicating the rendered PDF — see lib/pdfTextLayerStyles.ts).
+      // SyncTeX implementation — this is now SELECTION UX ONLY (the
+      // reader can still select/copy rendered text natively);
+      // double-click source NAVIGATION no longer reads from it at all
+      // (see the module docstring and handleNativeDoubleClick below). A
+      // failure here (or renderTextLayer not being ready yet) degrades
+      // gracefully to exactly today's canvas-only preview — never
+      // fatal to the page render that already succeeded above, and
+      // never a loss of navigation capability either.
+      if (renderTextLayer) {
+        ensureTextLayerStylesInjected();
+        const textLayerEl = document.createElement('div');
+        textLayerEl.className = PDF_TEXT_LAYER_CLASS_NAME;
+        textLayerEl.style.width = `${viewport.width}px`;
+        textLayerEl.style.height = `${viewport.height}px`;
+        // pdfjs-dist@3's renderTextLayer reads this CSS variable back
+        // off the container to sanity-check its own `viewport.scale`
+        // argument — see PdfPageView.tsx's identical comment.
+        textLayerEl.style.setProperty('--scale-factor', String(viewport.scale));
+        host.appendChild(textLayerEl);
+        try {
+          const textContent = await page.getTextContent();
+          if (cancelled) return;
+          await renderTextLayer({
+            textContentSource: textContent,
+            container: textLayerEl,
+            viewport,
+          }).promise;
+        } catch {
+          // Swallow — see the comment above this block.
+        }
+      }
     }
     void render();
     return () => {
       cancelled = true;
     };
-  }, [pdfDoc, pageNumber, scale]);
+  }, [pdfDoc, pageNumber, scale, renderTextLayer]);
+
+  // Real-browser validation (Writing UX Refinement milestone,
+  // post-implementation manual QA) found double-click navigation
+  // silently did nothing outside of Jest — root cause: react-native-web's
+  // `View` only forwards an explicit allowlist of DOM event props (see
+  // node_modules/react-native-web/dist/modules/forwardedProps — `onClick`,
+  // `onMouseDown/Up/Move/...`, the pointer-event family, etc.) and
+  // `onDoubleClick` simply isn't in that list (unlike `onMouseDown`,
+  // which [id].tsx's resize handles rely on and which DOES work). The
+  // prop was silently dropped before ever reaching the DOM — no
+  // `dblclick` listener was ever attached. Fixed by attaching a REAL
+  // `dblclick` listener straight to the host DOM node via
+  // `addEventListener`, bypassing react-native-web's prop allowlist
+  // entirely — the same imperative-DOM style this component's own
+  // render effect above already uses for the canvas/text-layer
+  // elements.
+  const onDoubleClickLocationRef = useRef(onDoubleClickLocation);
+  useEffect(() => {
+    onDoubleClickLocationRef.current = onDoubleClickLocation;
+  }, [onDoubleClickLocation]);
+
+  useEffect(() => {
+    const host = canvasHostRef.current as unknown as HTMLElement | null;
+    if (!host || typeof window === 'undefined') return;
+
+    // SyncTeX implementation — the click's exact PAGE POSITION, not
+    // clicked text (see PreviewClickLocation's own docstring for why:
+    // real-browser validation found the previous text-search heuristic
+    // unreliable for common/repeated words — SyncTeX resolves position,
+    // not text, so this is all the caller needs to send). `rect` is the
+    // CANVAS's own bounding box (not the host div's — the text layer
+    // sits on top of it at the identical position/size, so either would
+    // give the same numbers, but measuring the canvas directly is
+    // correct regardless of which overlapping layer the native event's
+    // own target happened to be). pdf.js's viewport is CSS pixels = PDF
+    // points * scale, top-left origin, Y increasing downward — the
+    // EXACT SAME convention SyncTeX's own inverse-search coordinates
+    // use (confirmed directly against real synctex output — see the
+    // design report's own §7) — dividing out the current zoom `scale`
+    // is the only conversion needed, no axis flip.
+    function handleNativeDoubleClick(event: MouseEvent): void {
+      const callback = onDoubleClickLocationRef.current;
+      const canvas = canvasElRef.current;
+      if (!callback || !canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = (event.clientX - rect.left) / scale;
+      const y = (event.clientY - rect.top) / scale;
+      callback({ page: pageNumber, x, y });
+    }
+
+    // Re-attached whenever `scale` changes (the closure above captures
+    // it directly, and a zoom change must use the NEW scale to convert
+    // CSS pixels back to PDF points correctly) — cheap, a single
+    // listener on one already-stable host node.
+    host.addEventListener('dblclick', handleNativeDoubleClick);
+    return () => host.removeEventListener('dblclick', handleNativeDoubleClick);
+  }, [pageNumber, scale]);
 
   return (
     <View
@@ -411,6 +579,7 @@ function CompiledPdfPage({
         borderWidth: StyleSheet.hairlineWidth,
         borderColor: theme.border,
         backgroundColor: '#fff',
+        position: 'relative',
       }}
       accessibilityLabel={`Page ${pageNumber}`}
     />

@@ -88,6 +88,39 @@ const CONTENT_PADDING_TOP_PX = 16;
 const LINE_HEIGHT_PX = 20;
 
 /**
+ * SyncTeX implementation, real-browser validation — "go to line"
+ * navigation (compiler diagnostics, Outline, Find & Replace, and now
+ * SyncTeX) used to reveal its target via a DOM measurement
+ * (getCaretCoordinates' hidden-mirror-div technique) that a real, long
+ * (300+ line) document proved unreliable: the viewport could land tens
+ * of lines away from the correct — and correctly HIGHLIGHTED — target
+ * line. This is the deterministic replacement: with soft-wrapping
+ * disabled (`white-space: pre`), every logical line occupies EXACTLY
+ * one `LINE_HEIGHT_PX`-tall row at a fixed, computable Y offset — the
+ * SAME arithmetic the line-number gutter already uses — so a line's
+ * scroll target never needs a DOM measurement at all, and can never
+ * drift from where the gutter/error-decoration bands already are.
+ * Centers the target line in the viewport (rather than the old "scroll
+ * the minimum needed to bring it into view" top/bottom-align behavior,
+ * which the separate selection-reveal effect still uses for ordinary
+ * typing/clicking) — pure and directly unit-testable, exported for
+ * exactly that reason (this repo's Jest environment has no real DOM to
+ * exercise the effect that calls it — see this file's own gutter test
+ * suite's docstring for that established, accepted limitation).
+ */
+export function computeCenteredScrollTop(params: {
+  lineIndex: number; // 0-indexed
+  clientHeight: number;
+  scrollHeight: number;
+}): number {
+  const { lineIndex, clientHeight, scrollHeight } = params;
+  const lineTop = CONTENT_PADDING_TOP_PX + lineIndex * LINE_HEIGHT_PX;
+  const desired = lineTop - clientHeight / 2 + LINE_HEIGHT_PX / 2;
+  const maxScrollTop = Math.max(0, scrollHeight - clientHeight);
+  return Math.max(0, Math.min(desired, maxScrollTop));
+}
+
+/**
  * Milestone 5.5.1 Part 11-19 — the LaTeX source editor. Native (iOS/
  * Android) keeps the exact plain multiline TextInput this screen has
  * always used — unchanged, zero regression risk there. Web gets real
@@ -236,7 +269,24 @@ export const LatexCodeEditor = forwardRef<LatexCodeEditorHandle, LatexCodeEditor
           }
           if (typeof document === 'undefined') return;
           const el = document.getElementById(textareaId) as HTMLTextAreaElement | null;
-          el?.focus();
+          if (!el) return;
+          // SyncTeX implementation, real-browser validation — a real
+          // regression found the EXACT deterministic reveal scroll the
+          // flashLine layout effect below just set getting silently
+          // overridden immediately afterward, landing the viewport tens
+          // of lines away from the correct (and correctly HIGHLIGHTED)
+          // target line. Root cause: focusing a textarea can trigger the
+          // BROWSER'S OWN "scroll to reveal the current caret" behavior,
+          // which this app never wants — scroll is always managed
+          // explicitly by this component's own layout effects, and
+          // focusing should never have a scroll side-effect of its own.
+          // Capturing and restoring scrollTop immediately around the
+          // native focus() call makes that guarantee absolute,
+          // regardless of exactly when/how the browser's own native
+          // adjustment happens to fire.
+          const scrollTopBeforeFocus = el.scrollTop;
+          el.focus();
+          el.scrollTop = scrollTopBeforeFocus;
         },
       }),
       [textareaId]
@@ -495,15 +545,46 @@ export const LatexCodeEditor = forwardRef<LatexCodeEditorHandle, LatexCodeEditor
       if (!el || !wrapEl) return;
       const lines = value.split('\n');
       const targetIndex = Math.max(0, Math.min(flashLine.line - 1, lines.length - 1));
-      let lineStart = 0;
-      for (let i = 0; i < targetIndex; i += 1) lineStart += lines[i]!.length + 1;
-      const caret = getCaretCoordinates(el, lineStart);
+
+      // SyncTeX implementation, real-browser validation — a genuine
+      // regression in a long (300+ line) real document: the SEPARATE
+      // selection-reveal effect below (still used for ordinary typing/
+      // clicking, unmodified) computes its scroll target via
+      // getCaretCoordinates — a hidden-mirror-div DOM MEASUREMENT — and
+      // real-browser testing found this could land the viewport tens of
+      // lines away from the correct (and correctly HIGHLIGHTED) target
+      // line for "go to line" style navigation (compiler diagnostics,
+      // Outline, Find & Replace, SyncTeX — everything that sets
+      // `flashLine`). Replaced with DETERMINISTIC ARITHMETIC instead:
+      // with soft-wrapping disabled (`white-space: pre` — see this
+      // file's own Milestone 5.5.3 continuation comment), every logical
+      // line occupies EXACTLY one LINE_HEIGHT_PX-tall row at a fixed,
+      // computable Y offset — the EXACT SAME formula the line-number
+      // gutter already uses (see gutterText's own comment) — so this
+      // can never drift from where the gutter/error-decoration bands
+      // already are, and needs no DOM measurement at all.
+      const lineTop = CONTENT_PADDING_TOP_PX + targetIndex * LINE_HEIGHT_PX;
+
+      // Reveal FIRST and deterministically, CENTERING the target line
+      // in the viewport (not the old "scroll the minimum needed" top/
+      // bottom-align behavior) — this effect is declared AFTER the
+      // selection-reveal effect below, so React's own "layout effects
+      // run synchronously in declaration order" guarantee makes this
+      // scrollTop assignment the one actually visible at the next
+      // paint, regardless of whatever that other effect already
+      // computed — no coordination beyond that ordering is needed.
+      el.scrollTop = computeCenteredScrollTop({
+        lineIndex: targetIndex,
+        clientHeight: el.clientHeight,
+        scrollHeight: el.scrollHeight,
+      });
+
       const taRect = el.getBoundingClientRect();
       const wrapRect = wrapEl.getBoundingClientRect();
       setFlashRect({
-        top: taRect.top - wrapRect.top + caret.top - el.scrollTop,
+        top: taRect.top - wrapRect.top + lineTop - el.scrollTop,
         width: wrapRect.width,
-        height: caret.height,
+        height: LINE_HEIGHT_PX,
       });
       setFlashVisible(true);
       // Visible long enough to orient ("keep the highlight visible long

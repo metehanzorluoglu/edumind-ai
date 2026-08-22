@@ -3,18 +3,29 @@ injected fake `compile_fn` (see app/main.py's `create_app(compile_fn=...)`
 seam) — never spawns pdflatex, so this suite runs in any Python
 environment, matching evidence-service/tests' identical seam pattern."""
 
+import base64
+
 import pytest
 from fastapi.testclient import TestClient
 
-from app.compiler import CompileOutcome
+from app.compiler import CompileOutcome, InverseSearchOutcome
 from app.concurrency import JobTimeoutError, QueueFullError
 from app.config import Settings
 from app.main import create_app
 from app.schemas import Diagnostic
 
 
-def make_client(compile_fn, *, settings: Settings | None = None) -> TestClient:
-    app = create_app(settings=settings or Settings(), compile_fn=compile_fn)
+def make_client(
+    compile_fn=None, *, settings: Settings | None = None, inverse_search_fn=None
+) -> TestClient:
+    async def _default_compile_fn(**kwargs):
+        raise AssertionError("compile_fn not configured for this test")
+
+    app = create_app(
+        settings=settings or Settings(),
+        compile_fn=compile_fn or _default_compile_fn,
+        inverse_search_fn=inverse_search_fn,
+    )
     return TestClient(app)
 
 
@@ -138,3 +149,108 @@ def test_job_id_required():
     client = make_client(never_called)
     resp = client.post("/compile", json={"job_id": "", "main_tex": "ok", "references_bib": ""})
     assert resp.status_code == 422  # pydantic min_length=1 validation
+
+
+# --- SyncTeX implementation: /inverse-search ------------------------------
+
+
+def _b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
+def test_inverse_search_resolves_to_source_relative_file_and_line():
+    async def fake_inverse_search(*, synctex_bytes, page, x, y, settings):
+        assert synctex_bytes == b"fake-synctex-bytes"
+        assert page == 1
+        assert x == 100.0
+        assert y == 150.0
+        return InverseSearchOutcome(resolved=True, file="sections/intro.tex", line=4)
+
+    client = make_client(inverse_search_fn=fake_inverse_search)
+    resp = client.post(
+        "/inverse-search",
+        json={
+            "synctex_base64": _b64(b"fake-synctex-bytes"),
+            "page": 1,
+            "x": 100.0,
+            "y": 150.0,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {"resolved": True, "file": "sections/intro.tex", "line": 4}
+
+
+def test_inverse_search_declines_rather_than_guesses():
+    async def fake_inverse_search(*, synctex_bytes, page, x, y, settings):
+        return InverseSearchOutcome(resolved=False)
+
+    client = make_client(inverse_search_fn=fake_inverse_search)
+    resp = client.post(
+        "/inverse-search",
+        json={"synctex_base64": _b64(b"x"), "page": 1, "x": 0.0, "y": 0.0},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"resolved": False, "file": None, "line": None}
+
+
+def test_inverse_search_rejects_invalid_base64_with_400():
+    client = make_client()
+    resp = client.post(
+        "/inverse-search",
+        json={"synctex_base64": "not-valid-base64!!!", "page": 1, "x": 0.0, "y": 0.0},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "invalid_synctex_encoding"
+
+
+def test_inverse_search_rejects_oversized_synctex_with_400():
+    settings = Settings(max_synctex_bytes=10)
+    client = make_client(settings=settings)
+    resp = client.post(
+        "/inverse-search",
+        json={"synctex_base64": _b64(b"x" * 1000), "page": 1, "x": 0.0, "y": 0.0},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "synctex_too_large"
+
+
+def test_inverse_search_rejects_non_positive_page_with_422():
+    client = make_client()
+    resp = client.post(
+        "/inverse-search",
+        json={"synctex_base64": _b64(b"x"), "page": 0, "x": 0.0, "y": 0.0},
+    )
+    assert resp.status_code == 422  # pydantic ge=1 validation
+
+
+def test_inverse_search_queue_full_maps_to_503():
+    client = make_client(inverse_search_fn=lambda **kwargs: None)
+
+    async def raise_queue_full(fn, *, timeout_seconds):
+        raise QueueFullError("queue full: 4 already waiting")
+
+    client.app.state.compiler.executor.run = raise_queue_full  # type: ignore[method-assign]
+
+    resp = client.post(
+        "/inverse-search",
+        json={"synctex_base64": _b64(b"x"), "page": 1, "x": 0.0, "y": 0.0},
+    )
+    assert resp.status_code == 503
+    assert resp.json()["error"] == "queue_full"
+
+
+def test_inverse_search_timeout_declines_rather_than_5xx():
+    client = make_client(inverse_search_fn=lambda **kwargs: None)
+
+    async def raise_timeout(fn, *, timeout_seconds):
+        raise JobTimeoutError("job exceeded budget")
+
+    client.app.state.compiler.executor.run = raise_timeout  # type: ignore[method-assign]
+
+    resp = client.post(
+        "/inverse-search",
+        json={"synctex_base64": _b64(b"x"), "page": 1, "x": 0.0, "y": 0.0},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"resolved": False, "file": None, "line": None}

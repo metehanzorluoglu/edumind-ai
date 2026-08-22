@@ -10,7 +10,7 @@ import type {
 } from 'education-assistant-client';
 import * as DocumentPicker from 'expo-document-picker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -32,7 +32,11 @@ import { TextField } from '@/components/ui/TextField';
 import { AskEduM8Panel } from '@/components/writing/AskEduM8Panel';
 import { BibliographyModal } from '@/components/writing/BibliographyModal';
 import { CompileDiagnostics } from '@/components/writing/CompileDiagnostics';
-import { CompiledPdfPreview } from '@/components/writing/CompiledPdfPreview';
+import {
+  CompiledPdfPreview,
+  type PreviewClickLocation,
+} from '@/components/writing/CompiledPdfPreview';
+import { DocumentOutlinePanel } from '@/components/writing/DocumentOutlinePanel';
 import { LatexCodeEditor, type LatexCodeEditorHandle } from '@/components/writing/LatexCodeEditor';
 import { NotesPanel } from '@/components/writing/NotesPanel';
 import { ReferencePickerModal } from '@/components/writing/ReferencePickerModal';
@@ -40,6 +44,7 @@ import { ReferencesPanel } from '@/components/writing/ReferencesPanel';
 import { SelectionQuickActions } from '@/components/writing/SelectionQuickActions';
 import { WritingAssetPreview } from '@/components/writing/WritingAssetPreview';
 import { WritingFileTree } from '@/components/writing/WritingFileTree';
+import { WritingToolsPanel } from '@/components/writing/WritingToolsPanel';
 import { useClient } from '@/lib/ClientProvider';
 import { downloadCompiledPdf, safeCompiledPdfFilename } from '@/lib/downloadCompiledPdf';
 import {
@@ -51,6 +56,7 @@ import { useFeatureFlags } from '@/lib/FeatureFlags';
 import { registerNavigationFlush } from '@/lib/navigationFlushGuard';
 import { getSessionNavState, setSessionNavState } from '@/lib/sessionNavCache';
 import { useWritingAsk } from '@/lib/useWritingAsk';
+import { useRegisterWritingDrawerContent } from '@/lib/WritingDrawerSlot';
 import {
   useTheme,
   usePreferences,
@@ -115,10 +121,49 @@ export function computePreviewSafeWidth(params: {
   return Math.min(targetWidth, Math.max(WRITING_PREVIEW_PANEL_WIDTH_MIN, available));
 }
 
+/**
+ * Writing UX Refinement milestone — real-browser validation found a
+ * fresh Writing session (no saved drag-resize width yet) always opened
+ * with Editor substantially wider than Preview: the ONLY default ever
+ * used for `previewPanelWidth` was the fixed
+ * `WRITING_PREVIEW_PANEL_WIDTH_DEFAULT` (420px) — a hard-coded pixel
+ * value with no relationship at all to the actual window width, so on
+ * any normal desktop screen Editor (a plain flex:1 that just claims
+ * whatever's left) ended up with most of the row.
+ *
+ * Computes an actual ~50/50 split of whatever room Editor and Preview
+ * together really have right now — window width minus NavRail minus
+ * the Writing drawer's own current width minus the same chrome margin
+ * `computePreviewSafeWidth` already accounts for — used ONLY as the
+ * lazy initial value the very first time this screen mounts with no
+ * session-cache width yet (see `previewPanelWidth`'s own useState
+ * initializer below); every render after that (including this very
+ * first one) still runs through `computePreviewSafeWidth` exactly as
+ * before, so Editor's own minimum width is never put at risk by this
+ * being "too generous" a starting guess, and nothing here is a
+ * hard-coded pixel width that could fail on a different monitor — it's
+ * always exactly half of whatever `windowWidth` actually is at mount
+ * time.
+ */
+export function computeDefaultPreviewPanelWidth(params: {
+  windowWidth: number;
+  drawerWidth: number;
+}): number {
+  const { windowWidth, drawerWidth } = params;
+  const available = windowWidth - NAV_RAIL_WIDTH_PX - drawerWidth - RESIZE_SAFETY_MARGIN_PX;
+  const half = available / 2;
+  return Math.min(WRITING_PREVIEW_PANEL_WIDTH_MAX, Math.max(WRITING_PREVIEW_PANEL_WIDTH_MIN, half));
+}
+
 // Milestone 5.5 Part 6 — "Ask EduM8" is now a 4th tab of the same
 // Research panel as Files/References/Notes, not a separately-positioned
 // drawer (see the panel/askOpen removal below).
-type PanelTab = 'project' | 'references' | 'notes' | 'ask';
+// Writing UX Refinement milestone — 'outline' and 'tools' are new;
+// 'ask' remains a valid value (see Preferences.tsx's own comment) but is
+// no longer offered as a pill in this panel's own tab strip — it's
+// reachable only via the header's dedicated "Ask EduM8" button/shortcut,
+// so the drawer itself reads as writing navigation, not a chat surface.
+type PanelTab = 'project' | 'references' | 'notes' | 'outline' | 'tools' | 'ask';
 type MobileTab = 'editor' | 'preview' | 'files' | 'references' | 'notes' | 'ask';
 
 /** Milestone 5.5.1 Part 25 — what this screen remembers about itself
@@ -163,6 +208,46 @@ function offsetForLine(content: string, line: number): { start: number; end: num
   return { start: offset, end: offset };
 }
 
+/** SyncTeX implementation (Writing UX Refinement milestone) — the
+ * SAME 1-indexed-line lookup as offsetForLine above, but returns a
+ * REAL range spanning the line's own text (start of line through its
+ * last character, excluding the trailing newline) rather than a
+ * collapsed cursor. Real-browser validation found the collapsed
+ * cursor offsetForLine returns (correct and unchanged for compiler
+ * diagnostics' own "go to line" — a genuinely different, pre-existing
+ * feature this deliberately doesn't touch) produced no VISIBLE native
+ * text selection for SyncTeX navigation, where `Line:` is authoritative
+ * but `Column:-1` means there is no real clicked-word range to select
+ * (see resolveSyncTexTarget's own docstring) — "the whole source line
+ * is the correct, honest granularity" is the product requirement this
+ * satisfies: a real, visible highlight of the ENTIRE resolved line,
+ * never a guessed sub-range within it. */
+function wholeLineOffsetRange(content: string, line: number): { start: number; end: number } {
+  const lines = content.split('\n');
+  const targetIndex = Math.max(0, Math.min(line - 1, lines.length - 1));
+  let start = 0;
+  for (let i = 0; i < targetIndex; i += 1) {
+    start += lines[i]!.length + 1;
+  }
+  const lineText = lines[targetIndex] ?? '';
+  return { start, end: start + lineText.length };
+}
+
+/** Writing UX Refinement milestone — the inverse of offsetForLine above:
+ * which 1-indexed line a character offset falls on. Used by the new
+ * Outline/Find & Replace/preview-double-click navigation, which all
+ * resolve directly to a character offset (not a line number the way
+ * compiler diagnostics do) but still drive LatexCodeEditor's `flashLine`
+ * prop, which flashes a whole LINE. */
+function lineForOffset(content: string, offset: number): number {
+  const clamped = Math.max(0, Math.min(offset, content.length));
+  let line = 1;
+  for (let i = 0; i < clamped; i += 1) {
+    if (content[i] === '\n') line += 1;
+  }
+  return line;
+}
+
 /**
  * Milestone 5 (Academic Writing & LaTeX Foundation) — the writing
  * project editor: LaTeX source (Part 6), debounced autosave with a
@@ -179,7 +264,21 @@ function offsetForLine(content: string, line: number): { start: number; end: num
  * functions (handleInsertCitationForDocument, addReferences) — the AI
  * response itself never touches `content` (Part 14).
  */
-export default function WritingProjectEditorScreen() {
+// Writing drawer/layout architecture correction — memoized (this route
+// component takes zero props, so a shallow-props-comparison bail-out
+// ALWAYS succeeds) specifically to stop a real infinite-render loop:
+// this component is a descendant of app/(tabs)/_layout.tsx (rendered
+// via expo-router's <Slot/>), and _layout.tsx re-renders every time the
+// Writing drawer slot's content changes (see lib/WritingDrawerSlot.tsx).
+// Without this memo, that re-render cascades down and re-renders this
+// component too — which recomputes `panel` as a new element and
+// re-registers it, changing the slot's content again, forever. `memo`
+// makes a parent-triggered re-render with no prop changes a genuine
+// no-op, while this component's OWN state/hook-driven re-renders (every
+// keystroke, every file switch, etc.) are completely unaffected — memo
+// only ever short-circuits re-renders caused by an unchanged-props
+// parent cascade, never a component's own updates.
+function WritingProjectEditorScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const theme = useTheme();
@@ -188,6 +287,12 @@ export default function WritingProjectEditorScreen() {
   const { width } = useWindowDimensions();
   const isWide = width >= WIDE_BREAKPOINT_PX;
   const { latexCompilation } = useFeatureFlags();
+  // Writing drawer/layout architecture correction — called unconditionally
+  // here (Rules of Hooks: this component has several early `return`s
+  // below, before `panel` is ever computed) — see
+  // lib/WritingDrawerSlot.tsx's own docstring for why the hook itself
+  // and the actual "here's the content" call are deliberately split.
+  const setWritingDrawerContent = useRegisterWritingDrawerContent();
   // Milestone 5.5 Part 9 — panel tab/preview-collapsed/panel-width state
   // all live in the existing local-preferences blob (same "remember
   // across visits, per-device, no server round trip" mechanism the app
@@ -331,8 +436,43 @@ export default function WritingProjectEditorScreen() {
   // on a failed re-compile, only ever replacing it on a new success.
   const [compiledPdfBlob, setCompiledPdfBlob] = useState<Blob | null>(null);
   const [compiledPdfSourceHash, setCompiledPdfSourceHash] = useState<string | null>(null);
+  // SyncTeX implementation (Writing UX Refinement milestone) — the
+  // compile_id the currently-shown compiledPdfBlob actually came from,
+  // needed to call the backend's inverse-search endpoint against the
+  // SAME compile's own SyncTeX artifact (never a stale/mismatched one —
+  // this is naturally kept in lockstep with compiledPdfBlob/
+  // compiledPdfSourceHash below, all three set together in
+  // handleCompile, all three left alone on a FAILED re-compile per
+  // Part 32's "never mislead the user" convention those two already
+  // follow).
+  const [compiledCompileId, setCompiledCompileId] = useState<string | null>(null);
   const [pdfFetching, setPdfFetching] = useState(false);
   const [pdfFetchError, setPdfFetchError] = useState<string | null>(null);
+  // SyncTeX implementation — a brief, non-blocking "couldn't resolve
+  // this click" signal (the UX spec's own "optionally show a subtle
+  // message" — never a hard error, since a double-click that can't
+  // resolve is an ordinary, expected outcome, not a failure). Clears
+  // itself automatically; never accumulates state across repeated
+  // clicks. Real-browser validation found bibliography/citation content
+  // (BibTeX's own generated main.bbl — see the backend's
+  // _is_generated_latex_artifact docstring) deserves a MORE SPECIFIC
+  // explanation than the generic "unavailable" — this carries whichever
+  // message actually applies, not just a boolean.
+  const [sourceLocationNotice, setSourceLocationNotice] = useState<{
+    token: number;
+    message: string;
+  } | null>(null);
+  const GENERIC_SOURCE_LOCATION_MESSAGE = 'Source location unavailable';
+  const GENERATED_CONTENT_SOURCE_LOCATION_MESSAGE =
+    'This is generated bibliography output — it has no exact source location.';
+  function showSourceLocationNotice(message: string): void {
+    setSourceLocationNotice({ token: Date.now(), message });
+  }
+  useEffect(() => {
+    if (sourceLocationNotice === null) return;
+    const timer = setTimeout(() => setSourceLocationNotice(null), 2500);
+    return () => clearTimeout(timer);
+  }, [sourceLocationNotice]);
   const previewCollapsed = preferences.writingPreviewCollapsed;
   const setPreviewCollapsed = useCallback(
     (next: boolean | ((prev: boolean) => boolean)) =>
@@ -342,6 +482,16 @@ export default function WritingProjectEditorScreen() {
       ),
     [update, preferences.writingPreviewCollapsed]
   );
+  // Writing UX Refinement milestone — "maximize preview": hides the
+  // Editor column (and the Research drawer, if it happened to be open)
+  // and gives Preview essentially the full available workspace width.
+  // Deliberately plain component state, not a Preferences field — same
+  // "session-scoped, never persisted pixel/layout state" reasoning
+  // previewPanelWidth below already documents for the Editor<->Preview
+  // split itself: a maximized view is a transient look-at-the-whole-
+  // document action, not a durable layout preference to restore on the
+  // next visit.
+  const [previewMaximized, setPreviewMaximized] = useState(false);
   // Milestone 5.5.1 Part 4/5 — the Research panel's own open/closed
   // state, independent of `panelTab` (Part 4: closing/reopening the
   // drawer must land back on the same tab, not reset it). Same
@@ -370,11 +520,23 @@ export default function WritingProjectEditorScreen() {
   // for this same durability tier), never written to the persisted
   // Preferences blob the Research panel's own width still uses. Read
   // once per mount; the drag hook itself owns all in-progress state.
-  const [previewPanelWidth, setPreviewPanelWidth] = useState(
-    () =>
-      getSessionNavState<number>('writing-preview-panel-width') ??
-      WRITING_PREVIEW_PANEL_WIDTH_DEFAULT
-  );
+  const [previewPanelWidth, setPreviewPanelWidth] = useState(() => {
+    const saved = getSessionNavState<number>('writing-preview-panel-width');
+    if (saved != null) return saved;
+    // Writing UX Refinement milestone — only the true "never resized,
+    // never even opened this session" state reaches here (an existing
+    // saved value always wins above); see computeDefaultPreviewPanelWidth's
+    // own docstring for why a fresh session computes an actual ~50/50
+    // split instead of reusing the old fixed-pixel default. Narrow/
+    // mobile keeps that fixed default — Preview is a full-screen TAB
+    // there, not a side-by-side split this 50/50 reasoning applies to.
+    return isWide
+      ? computeDefaultPreviewPanelWidth({
+          windowWidth: width,
+          drawerWidth: researchDrawerOpen ? preferences.writingResearchPanelWidth : 0,
+        })
+      : WRITING_PREVIEW_PANEL_WIDTH_DEFAULT;
+  });
   const previewPanelResize = useDragResizeWidth({
     width: previewPanelWidth,
     min: WRITING_PREVIEW_PANEL_WIDTH_MIN,
@@ -404,13 +566,22 @@ export default function WritingProjectEditorScreen() {
   // value across subsequent window-resize events). `width` always
   // reflects the true current window size, independent of any of this
   // screen's own layout state.
-  const previewSafeWidth = isWide
-    ? computePreviewSafeWidth({
-        windowWidth: width,
-        targetWidth: previewPanelResize.effectiveWidth,
-        researchPanelWidth: researchDrawerOpen ? researchPanelResize.effectiveWidth : 0,
-      })
-    : previewPanelResize.effectiveWidth;
+  // Writing UX Refinement milestone — "maximize preview": the Editor
+  // column (and the Research panel, if open) are hidden while
+  // maximized (see `panel`/editorWrap's own styles above), so Preview
+  // is safe to claim essentially the whole row — window width minus
+  // NavRail and the same small chrome margin computePreviewSafeWidth
+  // already accounts for, with no editor-floor/research-width
+  // subtraction since neither one is actually taking up space right now.
+  const previewSafeWidth = previewMaximized
+    ? Math.max(WRITING_PREVIEW_PANEL_WIDTH_MIN, width - NAV_RAIL_WIDTH_PX - RESIZE_SAFETY_MARGIN_PX)
+    : isWide
+      ? computePreviewSafeWidth({
+          windowWidth: width,
+          targetWidth: previewPanelResize.effectiveWidth,
+          researchPanelWidth: researchDrawerOpen ? researchPanelResize.effectiveWidth : 0,
+        })
+      : previewPanelResize.effectiveWidth;
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [downloadPdfError, setDownloadPdfError] = useState<string | null>(null);
   const [compileTransportError, setCompileTransportError] = useState<string | null>(null);
@@ -493,6 +664,14 @@ export default function WritingProjectEditorScreen() {
   // end-of-content fallbacks — "go to line" always wins the one time
   // it's actually requested.
   const pendingDiagnosticLineRef = useRef<number | null>(null);
+  // SyncTeX implementation — set alongside pendingDiagnosticLineRef ONLY
+  // by cross-file SyncTeX navigation (never by compiler diagnostics'
+  // own identical-looking "go to line", which keeps its existing
+  // collapsed-cursor behavior unchanged) — tells the load-effect below
+  // to select the WHOLE resolved line's text once the target file
+  // finishes loading, not just place a collapsed cursor at its start.
+  // See wholeLineOffsetRange's own docstring for why.
+  const pendingWholeLineSelectionRef = useRef(false);
   // Milestone 5.5.3 — "go to line" full-line flash highlight (see
   // LatexCodeEditor's own `flashLine` prop docstring). A fresh `token`
   // on every request (even a repeat of the same line) is what makes
@@ -526,7 +705,11 @@ export default function WritingProjectEditorScreen() {
       let next: { start: number; end: number };
       if (pendingLine != null) {
         pendingDiagnosticLineRef.current = null;
-        next = offsetForLine(activeFileContent, pendingLine);
+        const wholeLine = pendingWholeLineSelectionRef.current;
+        pendingWholeLineSelectionRef.current = false;
+        next = wholeLine
+          ? wholeLineOffsetRange(activeFileContent, pendingLine)
+          : offsetForLine(activeFileContent, pendingLine);
         // Milestone 5.5.3 — the cross-file leg of "go to line": the
         // same-file leg (handleOpenDiagnostic below) flashes
         // immediately since no load is needed; this is the other half,
@@ -646,6 +829,125 @@ export default function WritingProjectEditorScreen() {
     setActiveFileContent(next);
     setSelection({ start: nextCursor, end: nextCursor });
     editorRef.current?.focus();
+  }
+
+  // Writing UX Refinement milestone — the shared "jump within the
+  // currently open file" primitive for Outline entries, Find & Replace
+  // matches, and compiled-preview double-click navigation: all three
+  // already have a real character-offset range (unlike compiler
+  // diagnostics, which only have a 1-indexed line number — see
+  // handleOpenDiagnostic below, deliberately left as its own separate,
+  // unmodified code path since it also needs the cross-FILE "open a
+  // different file first" leg these three never do — every one of these
+  // three call sites only ever targets the file already open). Reuses
+  // exactly the same selection/flashLine mechanism handleOpenDiagnostic
+  // already uses, so the actual editor behavior — scroll into view,
+  // flash-highlight, place the cursor — is identical either way.
+  //
+  // Real-browser validation found a genuine race here: `editorRef.
+  // current?.focus()` used to be called synchronously, immediately,
+  // right alongside `setSelection`/`setFlashLine` above — i.e. BEFORE
+  // React has actually re-rendered and committed the new selection into
+  // the real DOM (LatexCodeEditor's own useLayoutEffect is what calls
+  // `el.setSelectionRange(...)` and corrects `el.scrollTop` to reveal
+  // it, and that only runs once this component's state update actually
+  // commits, asynchronously relative to this plain function call).
+  // Calling `.focus()` on the textarea BEFORE that commit means the
+  // browser focuses it while its real DOM selection is still wherever
+  // the user last left it — and browsers scroll a newly-focused text
+  // input to reveal ITS CURRENT (still-stale) caret, which can run
+  // after — and override — the correct scrollTop this component's own
+  // layout effect had just set moments earlier. That exactly matched
+  // the reported symptom: the correct text ends up genuinely selected
+  // (setSelectionRange itself was always right), but the viewport lands
+  // somewhere else (wherever the OLD, pre-navigation cursor happened to
+  // be). `handleOpenDiagnostic` below never had this bug for the same
+  // reason it never called focus() at all. Deferring the focus() call
+  // to the next animation frame — after React's commit and
+  // LatexCodeEditor's own layout effect have already run and settled
+  // the real selection/scroll — removes the race: whatever the browser
+  // does in response to focus, it's now reacting to the ALREADY-correct
+  // selection, not a stale one.
+  function navigateToOffsetRange(range: { start: number; end: number }): void {
+    setSelection(range);
+    if (activeFileId) cursorMemoryRef.current[activeFileId] = range;
+    setFlashLine({ line: lineForOffset(content, range.start), token: Date.now() });
+    requestAnimationFrame(() => editorRef.current?.focus());
+  }
+
+  // SyncTeX implementation (Writing UX Refinement milestone) — resolves
+  // a compiled-preview double-click's exact PAGE + PDF-POINT
+  // COORDINATES (never clicked TEXT — see PreviewClickLocation's own
+  // docstring in CompiledPdfPreview.tsx) to a real source file + line,
+  // via the backend's authoritative SyncTeX inverse-search endpoint.
+  // Replaces the prior best-effort text-search heuristic entirely (lib/
+  // writingPreviewSourceMap.ts, removed this milestone) — real-browser
+  // validation proved that heuristic unreliable for common/repeated
+  // words no matter how its scoring was tuned; SyncTeX resolves
+  // POSITION, which has no such ambiguity. Every "can't answer
+  // confidently" case (no successful compile yet, a transport failure,
+  // the compiler declining because no SyncTeX record exists at that
+  // exact position, or a result that no longer maps to any real
+  // project file) is a graceful no-op — the editor is left exactly
+  // where it was, NEVER a guessed jump — with only a brief, optional
+  // "Source location unavailable" note (see sourceLocationNotice
+  // above), never an error.
+  //
+  // Multi-file (\input/\include) support: if the resolved file isn't
+  // the one currently open, it's opened first — the SAME cross-file
+  // "go to line" mechanism handleOpenDiagnostic below already uses
+  // (pendingDiagnosticLineRef + the load-effect that consumes it once
+  // the newly-opened file's content actually arrives) — then the exact
+  // same navigation/scroll/highlight/focus behavior applies either way.
+  async function handlePreviewDoubleClick(location: PreviewClickLocation): Promise<void> {
+    if (!project || !compiledCompileId) return;
+    let result: Awaited<ReturnType<typeof client.inverseSearchCompiledPdf>>;
+    try {
+      result = await client.inverseSearchCompiledPdf(project.id, compiledCompileId, location);
+    } catch {
+      showSourceLocationNotice(GENERIC_SOURCE_LOCATION_MESSAGE);
+      return;
+    }
+    if (!result.resolved || !result.file_id || result.line == null) {
+      // SyncTeX implementation, real-browser validation — bibliography/
+      // citation content genuinely resolves (via SyncTeX) to BibTeX's
+      // own GENERATED main.bbl, never the real .bib source file (which
+      // LaTeX/BibTeX never \input's at all, so SyncTeX has no position
+      // data for it whatsoever — verified directly, see the backend's
+      // _is_generated_latex_artifact docstring). This is an honestly-
+      // explainable limitation, not a bug — distinguished from every
+      // other decline with a more specific message rather than one
+      // generic "unavailable" for both.
+      showSourceLocationNotice(
+        result.reason === 'generated_content'
+          ? GENERATED_CONTENT_SOURCE_LOCATION_MESSAGE
+          : GENERIC_SOURCE_LOCATION_MESSAGE
+      );
+      return;
+    }
+    // Reveal the editor first if it's currently hidden behind a
+    // maximized preview or (mobile) a non-editor tab — matches
+    // handleOpenDiagnostic's own "surface the editor even if a narrow
+    // viewport was showing Preview" precedent below.
+    if (previewMaximized) setPreviewMaximized(false);
+    if (!isWide) setMobileTab('editor');
+    if (result.file_id === activeFileId) {
+      if (isActiveFileEditable) {
+        // SyncTeX implementation, real-browser validation — SyncTeX's
+        // own `Column:-1` means there is no real clicked-word range to
+        // select; a collapsed cursor produced no VISIBLE highlight at
+        // all. wholeLineOffsetRange selects the ENTIRE resolved line's
+        // text — a real, visible native selection PLUS the existing
+        // whole-line flash band navigateToOffsetRange already applies —
+        // matching "line-level highlighting as the authoritative
+        // SyncTeX UX," never a guessed sub-range within it.
+        navigateToOffsetRange(wholeLineOffsetRange(content, result.line));
+      }
+    } else {
+      pendingDiagnosticLineRef.current = result.line;
+      pendingWholeLineSelectionRef.current = true;
+      void openFile(result.file_id);
+    }
   }
 
   function handleInsertCitation(citationKey: string): void {
@@ -960,6 +1262,7 @@ export default function WritingProjectEditorScreen() {
         const blob = await fetchCompiledPdf(result.compile_id);
         setCompiledPdfBlob(blob);
         setCompiledPdfSourceHash(result.source_hash);
+        setCompiledCompileId(result.compile_id);
       } catch (error) {
         setPdfFetchError(
           error instanceof Error ? error.message : 'Could not load the compiled PDF.'
@@ -1007,7 +1310,12 @@ export default function WritingProjectEditorScreen() {
   // (see the panelTab display-toggle comment below): [id].tsx itself
   // never unmounts on a tab switch, so this hook call is exactly as
   // durable as AskEduM8Panel's own used to be.
-  const ask = useWritingAsk(client, referenceDocumentIds);
+  // Writing UX Refinement milestone, Blocker 2 fix — "hasCurrentDocument"
+  // is what makes zero project references stop disabling Ask EduM8: the
+  // currently open (editable/text) file is always valid Writing context
+  // on its own, independent of whichever RAG scope is selected. See
+  // useWritingAsk's own updated `canAsk` comment for the full reasoning.
+  const ask = useWritingAsk(client, referenceDocumentIds, isActiveFileEditable);
 
   // Milestone 5.5.1 Part 15-19 — real completion data for the editor's
   // autocomplete: citation keys from the project's ACTUAL added
@@ -1210,7 +1518,13 @@ export default function WritingProjectEditorScreen() {
       style={[
         styles.panel,
         isWide && { width: researchPanelResize.effectiveWidth },
-        isWide && !researchDrawerOpen && styles.panelHidden,
+        // Writing UX Refinement milestone — "maximize preview" hides
+        // this column too (never unmounting it, same `display: 'none'`
+        // technique already used for the drawer's own closed state
+        // right below — the Research panel's tab/scroll state must
+        // survive a maximize/restore cycle exactly like it already
+        // survives an ordinary close/reopen).
+        isWide && (!researchDrawerOpen || previewMaximized) && styles.panelHidden,
       ]}
     >
       <View style={styles.panelInner}>
@@ -1227,6 +1541,17 @@ export default function WritingProjectEditorScreen() {
               active={panelTab === 'project'}
               onPress={() => setPanelTab('project')}
             />
+            {/* Writing UX Refinement milestone — Outline/Tools are new;
+                "Ask EduM8" is deliberately no longer a pill here (see
+                PanelTab's own type comment above) — it's reachable via
+                the header's dedicated "Ask EduM8" button/Ctrl-Cmd-K
+                shortcut instead, so this strip reads as pure writing
+                navigation rather than "one more chat-like tab." */}
+            <PanelTabButton
+              label="Outline"
+              active={panelTab === 'outline'}
+              onPress={() => setPanelTab('outline')}
+            />
             <PanelTabButton
               label="References"
               active={panelTab === 'references'}
@@ -1238,9 +1563,9 @@ export default function WritingProjectEditorScreen() {
               onPress={() => setPanelTab('notes')}
             />
             <PanelTabButton
-              label="Ask EduM8"
-              active={panelTab === 'ask'}
-              onPress={() => setPanelTab('ask')}
+              label="Tools"
+              active={panelTab === 'tools'}
+              onPress={() => setPanelTab('tools')}
             />
           </View>
         )}
@@ -1277,6 +1602,20 @@ export default function WritingProjectEditorScreen() {
             scrollRestoreKey={id ? `writing-filetree-scroll:${id}` : null}
           />
         </View>
+        {/* Writing UX Refinement milestone — STRUCTURE: a jump-list of
+            the currently open file's own \section/\subsection/\label
+            commands, reusing the exact same navigateToOffsetRange the
+            preview double-click and Find & Replace also use. */}
+        <View
+          style={[styles.panelBodyPadded, { display: panelTab === 'outline' ? 'flex' : 'none' }]}
+        >
+          <DocumentOutlinePanel
+            content={content}
+            editable={isActiveFileEditable}
+            onNavigateToOffset={(offset) => navigateToOffsetRange({ start: offset, end: offset })}
+            onViewBibliography={handleOpenBibliography}
+          />
+        </View>
         <View
           style={[styles.panelBodyPadded, { display: panelTab === 'references' ? 'flex' : 'none' }]}
         >
@@ -1302,6 +1641,20 @@ export default function WritingProjectEditorScreen() {
             onOpenSource={handleOpenSource}
           />
         </View>
+        {/* Writing UX Refinement milestone — TOOLS: word count, a small
+            Find & Replace, and a short list of common LaTeX snippets —
+            everything here reuses existing insertion/navigation
+            primitives (insertAtCursor, navigateToOffsetRange), nothing
+            new at the editor layer. */}
+        <View style={[styles.panelBodyPadded, { display: panelTab === 'tools' ? 'flex' : 'none' }]}>
+          <WritingToolsPanel
+            content={content}
+            editable={isActiveFileEditable}
+            onNavigateToOffsetRange={navigateToOffsetRange}
+            onReplaceContent={setActiveFileContent}
+            onInsertSnippet={insertAtCursor}
+          />
+        </View>
         <View style={[styles.panelAskWrap, { display: panelTab === 'ask' ? 'flex' : 'none' }]}>
           <AskEduM8Panel
             visible
@@ -1314,6 +1667,7 @@ export default function WritingProjectEditorScreen() {
             selectionStart={selection.start}
             selectionEnd={selection.end}
             activeFileContent={content}
+            hasCurrentDocument={isActiveFileEditable}
             ask={ask}
             onOpenSource={handleOpenEvidenceSource}
             onAddReference={(documentId) => addReferences([documentId]).then(() => undefined)}
@@ -1354,6 +1708,15 @@ export default function WritingProjectEditorScreen() {
       )}
     </View>
   );
+  // Writing drawer/layout architecture correction — hands this exact,
+  // unmodified `panel` element to the shared slot app/(tabs)/_layout.tsx
+  // renders beside NavRail IN PLACE of the Chat/Projects AppDrawer while
+  // this project is open (see lib/WritingDrawerSlot.tsx). A plain
+  // function call, not a hook — safe here even though several early
+  // `return`s above this point mean this line itself doesn't run on
+  // every render (see setWritingDrawerContent's own docstring for why
+  // that's fine).
+  setWritingDrawerContent(panel);
 
   // Milestone 5.5.3 continuation — "Preview is primary home" for
   // compile diagnostics: previously a full-width Notice banner spanning
@@ -1426,19 +1789,40 @@ export default function WritingProjectEditorScreen() {
                 onPress={() => void handleDownloadPdf()}
               />
             )}
-            <IconButton
-              label={previewCollapsed ? 'Expand preview' : 'Collapse preview'}
-              icon={
-                <ChevronIcon
-                  size={12}
-                  color={theme.subtext}
-                  style={{ transform: [{ rotate: previewCollapsed ? '180deg' : '0deg' }] }}
-                />
-              }
-              size="sm"
-              variant="outline"
-              onPress={() => setPreviewCollapsed((v) => !v)}
-            />
+            {/* Writing UX Refinement milestone — "compiled preview full-
+                size mode" (desktop/web only, same as the resize handle
+                above): the Editor column (and the Research panel, if
+                open) hide via the same never-unmount `display: 'none'`
+                technique used throughout this screen, and Preview's own
+                width claims essentially the whole row — see
+                `previewSafeWidth`'s own comment. Mutually exclusive with
+                the plain collapse toggle below, which would be a
+                confusing combined state (a full-width, collapsed-empty
+                preview) — maximized shows only its own "Restore split"
+                affordance instead. */}
+            {isWide && Platform.OS === 'web' && (
+              <Button
+                label={previewMaximized ? 'Restore split' : 'Maximize'}
+                variant="ghost"
+                size="sm"
+                onPress={() => setPreviewMaximized((v) => !v)}
+              />
+            )}
+            {!previewMaximized && (
+              <IconButton
+                label={previewCollapsed ? 'Expand preview' : 'Collapse preview'}
+                icon={
+                  <ChevronIcon
+                    size={12}
+                    color={theme.subtext}
+                    style={{ transform: [{ rotate: previewCollapsed ? '180deg' : '0deg' }] }}
+                  />
+                }
+                size="sm"
+                variant="outline"
+                onPress={() => setPreviewCollapsed((v) => !v)}
+              />
+            )}
           </View>
         </View>
         {!previewCollapsed && (
@@ -1467,6 +1851,7 @@ export default function WritingProjectEditorScreen() {
                   error={null}
                   stale={isPreviewStale}
                   emptyMessage="Compile to see a preview."
+                  onDoubleClickLocation={handlePreviewDoubleClick}
                 />
               </View>
             )}
@@ -1663,6 +2048,11 @@ export default function WritingProjectEditorScreen() {
           <Notice tone="danger" body={downloadPdfError} />
         </View>
       )}
+      {sourceLocationNotice !== null && (
+        <View style={styles.errorBar}>
+          <Notice tone="neutral" body={sourceLocationNotice.message} />
+        </View>
+      )}
       {!isWide && (
         // Milestone 5.5 Part 29 — real-browser validation at 390×844
         // caught this row squeezing 5-6 equal-width (flex: 1) tabs into
@@ -1724,14 +2114,31 @@ export default function WritingProjectEditorScreen() {
       )}
 
       <View style={styles.body}>
-        {isWide && panel}
+        {/* Writing drawer/layout architecture correction — desktop no
+            longer renders `panel` here as a second column: it's handed
+            to app/(tabs)/_layout.tsx's shared drawer slot instead (see
+            setWritingDrawerContent above), which shows it beside NavRail
+            in place of the Chat/Projects AppDrawer. Mobile is
+            unaffected — narrow viewports never had a persistent side
+            drawer at all; `panel` still renders inline, tab-gated,
+            exactly as it always did. */}
         {!isWide &&
           mobileTab !== 'editor' &&
           mobileTab !== 'preview' &&
           mobileTab !== 'ask' &&
           panel}
         {(isWide || mobileTab === 'editor') && (
-          <View style={styles.editorWrap}>
+          <View
+            style={[
+              styles.editorWrap,
+              // Writing UX Refinement milestone — hidden (never
+              // unmounted — autosave/selection/scroll state must
+              // survive) while the preview is maximized. Mobile is
+              // unaffected: `previewMaximized` only ever gets set true
+              // from the wide-web preview header's own button.
+              isWide && previewMaximized && styles.panelHidden,
+            ]}
+          >
             {/* Milestone 5.3 Part 13/20/21 — the editor area now shows
                 one of three things depending on what's active in the
                 file tree: the text editor (a .tex/.cls/.sty/.txt file),
@@ -1830,6 +2237,7 @@ export default function WritingProjectEditorScreen() {
                   error={null}
                   stale={isPreviewStale}
                   emptyMessage="Compile to see a preview."
+                  onDoubleClickLocation={handlePreviewDoubleClick}
                 />
               </View>
             )}
@@ -1849,6 +2257,7 @@ export default function WritingProjectEditorScreen() {
             selectionStart={selection.start}
             selectionEnd={selection.end}
             activeFileContent={content}
+            hasCurrentDocument={isActiveFileEditable}
             ask={ask}
             onOpenSource={handleOpenEvidenceSource}
             onAddReference={(documentId) => addReferences([documentId]).then(() => undefined)}
@@ -1881,6 +2290,8 @@ export default function WritingProjectEditorScreen() {
     </View>
   );
 }
+
+export default memo(WritingProjectEditorScreen);
 
 function PanelTabButton({
   label,

@@ -771,9 +771,11 @@ class _FakeCompilerClient:
     BACKEND route's own orchestration logic (ownership, rate limiting,
     size limits, single-flight-per-project, response mapping)."""
 
-    def __init__(self, outcome=None) -> None:
+    def __init__(self, outcome=None, *, inverse_search_outcome=None) -> None:
         self.outcome = outcome
+        self.inverse_search_outcome = inverse_search_outcome
         self.calls: list[dict] = []
+        self.inverse_search_calls: list[dict] = []
 
     def compile(self, *, job_id: str, main_tex: str, references_bib: str, extra_files=None):
         self.calls.append(
@@ -786,12 +788,25 @@ class _FakeCompilerClient:
         )
         return self.outcome
 
+    def inverse_search(self, *, synctex_bytes: bytes, page: int, x: float, y: float):
+        self.inverse_search_calls.append(
+            {"synctex_bytes": synctex_bytes, "page": page, "x": x, "y": y}
+        )
+        from app.core.latex_compiler_client import InverseSearchClientOutcome
 
-def _success_outcome(pdf_bytes: bytes = b"%PDF-fake-bytes"):
+        return self.inverse_search_outcome or InverseSearchClientOutcome(ok=True, resolved=False)
+
+
+def _success_outcome(pdf_bytes: bytes = b"%PDF-fake-bytes", synctex_bytes: bytes | None = None):
     from app.core.latex_compiler_client import CompileClientOutcome
 
     return CompileClientOutcome(
-        ok=True, status="success", pdf_bytes=pdf_bytes, duration_ms=42.0, page_count=1
+        ok=True,
+        status="success",
+        pdf_bytes=pdf_bytes,
+        duration_ms=42.0,
+        page_count=1,
+        synctex_bytes=synctex_bytes,
     )
 
 
@@ -1247,3 +1262,239 @@ class TestCompile:
         )
         after = client.get(refs_url).json()["source_hash"]
         assert before != after
+
+    # --- SyncTeX implementation: POST .../compile/{id}/inverse-search ----
+
+    def _compile_with_synctex(self, client, project_id, fake_compiler, synctex_bytes=b"fake-synctex"):
+        fake_compiler.outcome = _success_outcome(synctex_bytes=synctex_bytes)
+        resp = client.post(f"/writing-projects/{project_id}/compile")
+        assert resp.status_code == 200, resp.text
+        return resp.json()["compile_id"]
+
+    def test_inverse_search_resolves_to_root_file_id_for_main_tex(self, compile_harness) -> None:
+        from app.core.latex_compiler_client import InverseSearchClientOutcome
+
+        client, *_rest, fake_compiler = compile_harness
+        project = _create_project(client, title="Thesis")
+        compile_id = self._compile_with_synctex(client, project["id"], fake_compiler)
+        fake_compiler.inverse_search_outcome = InverseSearchClientOutcome(
+            ok=True, resolved=True, file="main.tex", line=4
+        )
+
+        resp = client.post(
+            f"/writing-projects/{project['id']}/compile/{compile_id}/inverse-search",
+            json={"page": 1, "x": 100.0, "y": 150.0},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["resolved"] is True
+        assert body["file_id"] == project["root_file_id"]
+        assert body["line"] == 4
+        # The compiler client is called with the SAME SyncTeX bytes this
+        # compile actually persisted — never re-fetched or re-derived.
+        assert fake_compiler.inverse_search_calls[0]["synctex_bytes"] == b"fake-synctex"
+        assert fake_compiler.inverse_search_calls[0]["page"] == 1
+
+    def test_inverse_search_resolves_to_a_secondary_file_id_for_multi_file_input(
+        self, compile_harness
+    ) -> None:
+        """Multi-file (\\input/\\include) regression — the SyncTeX
+        result names a SECONDARY .tex file, not main.tex, and this must
+        map to that file's own real id, never the root's."""
+        from app.core.latex_compiler_client import InverseSearchClientOutcome
+
+        client, *_rest, fake_compiler = compile_harness
+        project = _create_project(client, title="Thesis")
+        folder_resp = client.post(
+            f"/writing-projects/{project['id']}/files/folders", json={"name": "sections"}
+        )
+        folder_id = folder_resp.json()["file"]["id"]
+        intro_resp = client.post(
+            f"/writing-projects/{project['id']}/files/text",
+            json={
+                "name": "introduction.tex",
+                "parent_id": folder_id,
+                "content_text": "Intro text.",
+            },
+        )
+        intro_file_id = intro_resp.json()["file"]["id"]
+
+        compile_id = self._compile_with_synctex(client, project["id"], fake_compiler)
+        fake_compiler.inverse_search_outcome = InverseSearchClientOutcome(
+            ok=True, resolved=True, file="sections/introduction.tex", line=1
+        )
+
+        resp = client.post(
+            f"/writing-projects/{project['id']}/compile/{compile_id}/inverse-search",
+            json={"page": 1, "x": 100.0, "y": 150.0},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["resolved"] is True
+        assert body["file_id"] == intro_file_id
+        assert body["line"] == 1
+
+    def test_inverse_search_declines_when_compiler_finds_no_match(self, compile_harness) -> None:
+        from app.core.latex_compiler_client import InverseSearchClientOutcome
+
+        client, *_rest, fake_compiler = compile_harness
+        project = _create_project(client, title="Thesis")
+        compile_id = self._compile_with_synctex(client, project["id"], fake_compiler)
+        fake_compiler.inverse_search_outcome = InverseSearchClientOutcome(ok=True, resolved=False)
+
+        resp = client.post(
+            f"/writing-projects/{project['id']}/compile/{compile_id}/inverse-search",
+            json={"page": 1, "x": 0.0, "y": 0.0},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body == {"resolved": False, "file_id": None, "line": None, "reason": None}
+
+    def test_inverse_search_declines_when_synctex_result_maps_to_no_real_file(
+        self, compile_harness
+    ) -> None:
+        """A SyncTeX result naming a file that no longer exists in the
+        project (deleted/renamed since compile) declines rather than
+        guessing — never invents a file relationship."""
+        from app.core.latex_compiler_client import InverseSearchClientOutcome
+
+        client, *_rest, fake_compiler = compile_harness
+        project = _create_project(client, title="Thesis")
+        compile_id = self._compile_with_synctex(client, project["id"], fake_compiler)
+        fake_compiler.inverse_search_outcome = InverseSearchClientOutcome(
+            ok=True, resolved=True, file="sections/does-not-exist.tex", line=1
+        )
+
+        resp = client.post(
+            f"/writing-projects/{project['id']}/compile/{compile_id}/inverse-search",
+            json={"page": 1, "x": 0.0, "y": 0.0},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"resolved": False, "file_id": None, "line": None, "reason": None}
+
+    def test_inverse_search_declines_with_generated_content_reason_for_bibtex_output(
+        self, compile_harness
+    ) -> None:
+        """SyncTeX implementation, real-browser validation — verified
+        directly (real pdflatex + bibtex + synctex) that bibliography/
+        citation content resolves to the GENERATED `main.bbl`, never the
+        real `.bib` source file (BibTeX/LaTeX never `\\input`s it —
+        SyncTeX has no position records for it at all). This is a
+        genuine, honestly-explainable limitation, not a resolver bug —
+        distinguished from an ordinary decline via `reason=
+        "generated_content"` so the frontend can say so specifically."""
+        from app.core.latex_compiler_client import InverseSearchClientOutcome
+
+        client, *_rest, fake_compiler = compile_harness
+        project = _create_project(client, title="Thesis")
+        compile_id = self._compile_with_synctex(client, project["id"], fake_compiler)
+        fake_compiler.inverse_search_outcome = InverseSearchClientOutcome(
+            ok=True, resolved=True, file="main.bbl", line=4
+        )
+
+        resp = client.post(
+            f"/writing-projects/{project['id']}/compile/{compile_id}/inverse-search",
+            json={"page": 1, "x": 0.0, "y": 0.0},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "resolved": False,
+            "file_id": None,
+            "line": None,
+            "reason": "generated_content",
+        }
+
+    def test_inverse_search_resolves_a_real_bib_project_file_if_synctex_ever_names_one_directly(
+        self, compile_harness
+    ) -> None:
+        """Defensive completeness (the PO's own explicit ask), even
+        though real-browser + direct-subprocess validation found
+        classical BibTeX never actually produces this: file resolution
+        isn't restricted to `.tex` — a `.bib` file the project already
+        stores (uploaded as an ordinary project file, not the EduM8-
+        generated references.bib) resolves to its real file_id exactly
+        like any other secondary project file would, if SyncTeX ever
+        did report it directly."""
+        from app.core.latex_compiler_client import InverseSearchClientOutcome
+
+        client, *_rest, fake_compiler = compile_harness
+        project = _create_project(client, title="Thesis")
+        bib_resp = client.post(
+            f"/writing-projects/{project['id']}/files/text",
+            json={"name": "extra.bib", "content_text": "@misc{x, title={x}}"},
+        )
+        bib_file_id = bib_resp.json()["file"]["id"]
+        compile_id = self._compile_with_synctex(client, project["id"], fake_compiler)
+        fake_compiler.inverse_search_outcome = InverseSearchClientOutcome(
+            ok=True, resolved=True, file="extra.bib", line=1
+        )
+
+        resp = client.post(
+            f"/writing-projects/{project['id']}/compile/{compile_id}/inverse-search",
+            json={"page": 1, "x": 0.0, "y": 0.0},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["resolved"] is True
+        assert body["file_id"] == bib_file_id
+        assert body["line"] == 1
+
+    def test_inverse_search_declines_when_compile_has_no_synctex_data(
+        self, compile_harness
+    ) -> None:
+        """A compile that succeeded but produced no SyncTeX bytes (e.g.
+        it predates this feature) — never a 404 (the PDF artifact
+        itself is real), an honest decline instead."""
+        client, *_rest, fake_compiler = compile_harness
+        project = _create_project(client, title="Thesis")
+        fake_compiler.outcome = _success_outcome(synctex_bytes=None)
+        resp = client.post(f"/writing-projects/{project['id']}/compile")
+        compile_id = resp.json()["compile_id"]
+
+        resp = client.post(
+            f"/writing-projects/{project['id']}/compile/{compile_id}/inverse-search",
+            json={"page": 1, "x": 0.0, "y": 0.0},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"resolved": False, "file_id": None, "line": None, "reason": None}
+
+    def test_inverse_search_404_for_guessed_compile_id(self, compile_harness) -> None:
+        client, *_rest, fake_compiler = compile_harness
+        project = _create_project(client, title="Thesis")
+        resp = client.post(
+            f"/writing-projects/{project['id']}/compile/{uuid.uuid4().hex}/inverse-search",
+            json={"page": 1, "x": 0.0, "y": 0.0},
+        )
+        assert resp.status_code == 404
+
+    def test_inverse_search_404_for_wrong_owner(self, compile_harness) -> None:
+        client, app, _owner, other, fake_compiler = compile_harness
+        project = _create_project(client, title="Thesis")
+        compile_id = self._compile_with_synctex(client, project["id"], fake_compiler)
+
+        _as_user(app, other)
+        resp = client.post(
+            f"/writing-projects/{project['id']}/compile/{compile_id}/inverse-search",
+            json={"page": 1, "x": 0.0, "y": 0.0},
+        )
+        assert resp.status_code == 404
+
+    def test_inverse_search_rejects_non_positive_page_with_422(self, compile_harness) -> None:
+        client, *_rest, fake_compiler = compile_harness
+        project = _create_project(client, title="Thesis")
+        compile_id = self._compile_with_synctex(client, project["id"], fake_compiler)
+
+        resp = client.post(
+            f"/writing-projects/{project['id']}/compile/{compile_id}/inverse-search",
+            json={"page": 0, "x": 0.0, "y": 0.0},
+        )
+        assert resp.status_code == 422
+
+    def test_inverse_search_404_when_disabled(self, harness) -> None:
+        client, *_rest = harness
+        project = _create_project(client, title="Thesis")
+        resp = client.post(
+            f"/writing-projects/{project['id']}/compile/{uuid.uuid4().hex}/inverse-search",
+            json={"page": 1, "x": 0.0, "y": 0.0},
+        )
+        assert resp.status_code == 404

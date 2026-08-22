@@ -52,6 +52,30 @@ class CompileClientOutcome:
     pdf_bytes: bytes | None = None
     page_count: int | None = None
     failure: FailureReason | None = None
+    # SyncTeX implementation — the compiled manuscript's own SyncTeX
+    # database, decoded the same way pdf_bytes already is. None whenever
+    # the compiler service didn't produce one (never treated as fatal on
+    # its own — see latex-compiler/app/compiler.py's CompileOutcome.
+    # synctex_bytes docstring).
+    synctex_bytes: bytes | None = None
+
+
+@dataclass(frozen=True)
+class InverseSearchClientOutcome:
+    """SyncTeX implementation — the result of one inverse-search query
+    against the compiler service. `resolved=False` (with `file`/`line`
+    both None) is the ONLY shape for "no reliable answer" on the happy
+    (`ok=True`) path — this client, like the compiler service itself,
+    never guesses. `ok=False` covers genuine transport/service failures
+    (mirrors CompileClientOutcome's own ok/failure split) — the caller
+    (routes_writing.py) treats both `ok=False` and `resolved=False`
+    identically as "decline navigation," just logs them differently."""
+
+    ok: bool
+    resolved: bool = False
+    file: str | None = None
+    line: int | None = None
+    failure: FailureReason | None = None
 
 
 class _HttpPoster(Protocol):
@@ -140,6 +164,11 @@ class LatexCompilerClient:
                 import base64
 
                 pdf_bytes = base64.b64decode(body["pdf_base64"])
+            synctex_bytes = None
+            if body.get("synctex_base64"):
+                import base64
+
+                synctex_bytes = base64.b64decode(body["synctex_base64"])
             return CompileClientOutcome(
                 ok=True,
                 status=body["status"],
@@ -148,6 +177,53 @@ class LatexCompilerClient:
                 duration_ms=body.get("duration_ms", 0.0),
                 pdf_bytes=pdf_bytes,
                 page_count=body.get("page_count"),
+                synctex_bytes=synctex_bytes,
             )
         except (KeyError, ValueError, TypeError):
             return CompileClientOutcome(ok=False, failure="malformed_response")
+
+    def inverse_search(
+        self, *, synctex_bytes: bytes, page: int, x: float, y: float
+    ) -> InverseSearchClientOutcome:
+        """SyncTeX implementation — POSTs the SAME SyncTeX database the
+        caller already retrieved from its own artifact store (this
+        client, like the compiler service itself, never persists
+        anything between calls) plus the clicked page/coordinates.
+        Never raises for an ordinary "no reliable answer" outcome, same
+        posture as `compile()` above."""
+        import base64
+
+        payload = {
+            "synctex_base64": base64.b64encode(synctex_bytes).decode("ascii"),
+            "page": page,
+            "x": x,
+            "y": y,
+        }
+        try:
+            response = self._client.post(
+                f"{self._base_url}/inverse-search", json=payload, timeout=self._timeout_seconds
+            )
+        except httpx.TimeoutException:
+            return InverseSearchClientOutcome(ok=False, failure="timeout")
+        except httpx.ConnectError:
+            return InverseSearchClientOutcome(ok=False, failure="unavailable")
+        except httpx.HTTPError:
+            return InverseSearchClientOutcome(ok=False, failure="unknown_error")
+
+        if response.status_code == 503:
+            return InverseSearchClientOutcome(ok=False, failure="queue_full")
+        if response.status_code == 400:
+            return InverseSearchClientOutcome(ok=False, failure="invalid_request")
+        if response.status_code != 200:
+            return InverseSearchClientOutcome(ok=False, failure="unknown_error")
+
+        try:
+            body = response.json()
+            return InverseSearchClientOutcome(
+                ok=True,
+                resolved=bool(body["resolved"]),
+                file=body.get("file"),
+                line=body.get("line"),
+            )
+        except (KeyError, ValueError, TypeError):
+            return InverseSearchClientOutcome(ok=False, failure="malformed_response")

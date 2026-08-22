@@ -3,6 +3,7 @@ import { StyleSheet, View } from 'react-native';
 import type { DocumentHighlight } from 'education-assistant-client';
 import { useNearViewport } from '@/lib/useNearViewport';
 import { projectVisualAnchor, type PdfViewportLike } from '@/lib/pdfHighlightGeometry';
+import { PDF_TEXT_LAYER_CLASS_NAME } from '@/lib/pdfTextLayerStyles';
 import { useTheme } from '@/lib/Preferences';
 
 // pdf.js's own page/document types aren't imported statically (pdfjs-dist
@@ -190,7 +191,7 @@ export function PdfPageView({
         />
         <div
           ref={textLayerRef}
-          className="edum8-pdf-text-layer"
+          className={PDF_TEXT_LAYER_CLASS_NAME}
           style={pdfTextLayerInlineStyle(size ?? { width: 0, height: 0 })}
         />
         {size && (

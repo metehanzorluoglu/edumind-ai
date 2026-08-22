@@ -6,12 +6,14 @@ environment does not install TeX Live — see the Milestone 5.1 report's
 the built Docker image, as the authoritative validation of this exact
 code path)."""
 
+import re
 import shutil
 import subprocess
+import uuid
 
 import pytest
 
-from app.compiler import run_compile_job
+from app.compiler import run_compile_job, run_inverse_search_job
 from app.config import Settings
 
 pytestmark = pytest.mark.skipif(
@@ -372,3 +374,231 @@ async def test_extra_files_cleaned_up_after_compile(tmp_path):
         extra_files={"a.tex": b"hi"},
     )
     assert list(tmp_path.iterdir()) == []
+
+
+# --- SyncTeX implementation ------------------------------------------------
+
+
+def _synctex_forward_search(pdf_bytes: bytes, synctex_bytes: bytes, target: str, tmp_path):
+    """Round-trip helper: `synctex view` (forward search — a known line
+    -> PDF coordinates) using pdflatex's OWN bundled `synctex` CLI
+    directly, completely independent of this service's own inverse-
+    search code. Used to derive real, font-metric-correct x/y
+    coordinates for a test to feed into run_inverse_search_job, rather
+    than hardcoding pixel values that could silently drift with a TeX
+    Live version bump — the test asserts the FULL round trip (forward
+    then backward lands back on the same line), not a hardcoded coordinate.
+    `target` is "line:input" (e.g. "4:main.tex" or "1:sections/intro.tex") —
+    the column field synctex's own `-i line:column:input` syntax requires
+    is always passed as 0 ("not relevant"/positional-only lookup) here.
+    Each call gets its own fresh, uniquely-named scratch dir (a test
+    that forward-searches more than one line reuses the same
+    `tmp_path` fixture across multiple calls)."""
+    view_dir = tmp_path / f"synctex_view_{uuid.uuid4().hex}"
+    view_dir.mkdir()
+    (view_dir / "main.pdf").write_bytes(pdf_bytes)
+    (view_dir / "main.synctex.gz").write_bytes(synctex_bytes)
+    line, _, input_file = target.partition(":")
+    proc = subprocess.run(
+        ["synctex", "view", "-i", f"{line}:0:{input_file}", "-o", "main.pdf"],
+        cwd=view_dir,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    x_match = re.search(r"^x:([\d.]+)", proc.stdout, re.MULTILINE)
+    y_match = re.search(r"^y:([\d.]+)", proc.stdout, re.MULTILINE)
+    assert x_match and y_match, f"forward search produced no coordinates: {proc.stdout!r}"
+    return float(x_match.group(1)), float(y_match.group(1))
+
+
+async def test_synctex_gz_is_produced_on_successful_compile(tmp_path):
+    settings = _settings(working_root=str(tmp_path))
+    outcome = await run_compile_job(
+        main_tex="\\documentclass{article}\\begin{document}hello\\end{document}",
+        references_bib="",
+        settings=settings,
+    )
+    assert outcome.status == "success"
+    assert outcome.synctex_bytes is not None
+    assert len(outcome.synctex_bytes) > 0
+
+
+async def test_inverse_search_round_trip_resolves_correct_line(tmp_path):
+    """Reproduces the real regression class this milestone replaces
+    text-search heuristics for: a full compile -> forward search (known
+    line -> coordinates) -> inverse search (those coordinates -> line)
+    round trip, using ONLY real pdflatex/synctex — no text matching
+    anywhere in this path."""
+    settings = _settings(working_root=str(tmp_path))
+    main_tex = (
+        "\\documentclass{article}\n"
+        "\\begin{document}\n"
+        "\\section{Introduction}\n"
+        "This is one of the major difference between two things.\n"
+        "\\end{document}\n"
+    )
+    outcome = await run_compile_job(main_tex=main_tex, references_bib="", settings=settings)
+    assert outcome.status == "success"
+    assert outcome.pdf_bytes is not None
+    assert outcome.synctex_bytes is not None
+
+    x, y = _synctex_forward_search(outcome.pdf_bytes, outcome.synctex_bytes, "4:main.tex", tmp_path)
+    result = await run_inverse_search_job(
+        synctex_bytes=outcome.synctex_bytes, page=1, x=x, y=y, settings=settings
+    )
+    assert result.resolved is True
+    assert result.file == "main.tex"
+    assert result.line == 4
+
+
+async def test_inverse_search_resolves_a_multi_file_input_to_its_real_source_file(tmp_path):
+    """Multi-file (\\input) regression — the click's originating text
+    genuinely lives in a SECONDARY .tex file, not main.tex."""
+    settings = _settings(working_root=str(tmp_path))
+    main_tex = (
+        "\\documentclass{article}\n\\begin{document}\n\\input{sections/intro}\n\\end{document}\n"
+    )
+    outcome = await run_compile_job(
+        main_tex=main_tex,
+        references_bib="",
+        settings=settings,
+        extra_files={
+            "sections/intro.tex": (
+                b"\\section{From another file}\n"
+                b"Content that genuinely lives in this secondary file.\n"
+            )
+        },
+    )
+    assert outcome.status == "success"
+    assert outcome.pdf_bytes is not None
+    assert outcome.synctex_bytes is not None
+
+    x, y = _synctex_forward_search(
+        outcome.pdf_bytes, outcome.synctex_bytes, "2:sections/intro.tex", tmp_path
+    )
+    result = await run_inverse_search_job(
+        synctex_bytes=outcome.synctex_bytes, page=1, x=x, y=y, settings=settings
+    )
+    assert result.resolved is True
+    assert result.file == "sections/intro.tex"
+    assert result.line == 2
+
+
+async def test_inverse_search_declines_for_an_out_of_range_page(tmp_path):
+    settings = _settings(working_root=str(tmp_path))
+    outcome = await run_compile_job(
+        main_tex="\\documentclass{article}\\begin{document}hello\\end{document}",
+        references_bib="",
+        settings=settings,
+    )
+    assert outcome.synctex_bytes is not None
+
+    result = await run_inverse_search_job(
+        synctex_bytes=outcome.synctex_bytes, page=999, x=0.0, y=0.0, settings=settings
+    )
+    assert result.resolved is False
+    assert result.file is None
+    assert result.line is None
+
+
+async def test_inverse_search_declines_on_garbage_synctex_bytes(tmp_path):
+    settings = _settings(working_root=str(tmp_path))
+    result = await run_inverse_search_job(
+        synctex_bytes=b"this is not a real synctex.gz file",
+        page=1,
+        x=0.0,
+        y=0.0,
+        settings=settings,
+    )
+    assert result.resolved is False
+
+
+async def test_inverse_search_never_leaks_the_scratch_workdir_absolute_path(tmp_path):
+    """Security requirement — the raw SyncTeX `Input:` line is always an
+    absolute path (verified: SyncTeX echoes the compile-time cwd
+    verbatim); this asserts the PARSED result never contains it."""
+    settings = _settings(working_root=str(tmp_path))
+    main_tex = "\\documentclass{article}\\begin{document}hello world\\end{document}"
+    outcome = await run_compile_job(main_tex=main_tex, references_bib="", settings=settings)
+    assert outcome.pdf_bytes is not None
+    assert outcome.synctex_bytes is not None
+
+    x, y = _synctex_forward_search(outcome.pdf_bytes, outcome.synctex_bytes, "1:main.tex", tmp_path)
+    result = await run_inverse_search_job(
+        synctex_bytes=outcome.synctex_bytes, page=1, x=x, y=y, settings=settings
+    )
+    assert result.resolved is True
+    assert result.file == "main.tex"  # never "/tmp/jobs/<uuid>/./main.tex"
+    assert not result.file.startswith("/")
+    assert str(settings.working_root) not in result.file
+
+
+async def test_inverse_search_cleans_up_its_own_scratch_workdir(tmp_path):
+    settings = _settings(working_root=str(tmp_path))
+    outcome = await run_compile_job(
+        main_tex="\\documentclass{article}\\begin{document}hello\\end{document}",
+        references_bib="",
+        settings=settings,
+    )
+    assert outcome.synctex_bytes is not None
+
+    await run_inverse_search_job(
+        synctex_bytes=outcome.synctex_bytes, page=1, x=0.0, y=0.0, settings=settings
+    )
+    # run_compile_job already cleaned up its own workdir (a separate,
+    # already-tested guarantee) — this only needs to confirm the
+    # INVERSE-SEARCH job's own fresh scratch dir didn't leave anything
+    # behind either.
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_inverse_search_disambiguates_repeated_identical_text_by_position_alone(tmp_path):
+    """The exact regression class this milestone replaces text-search
+    heuristics for: the SAME word ("Example") appears twice, inside two
+    otherwise-identical `\\begin{proof}...\\end{proof}` blocks — a case
+    that defeated every text-matching heuristic tried in this app's own
+    history (see the frontend's now-removed lib/writingPreviewSourceMap.ts
+    and this milestone's own report). SyncTeX has no such ambiguity at
+    all: it resolves a PAGE POSITION, never a word, so the two clicks
+    below (at the two occurrences' own real, distinct coordinates,
+    obtained via real forward search) correctly resolve to their own
+    distinct lines even though the clicked text itself is identical."""
+    settings = _settings(working_root=str(tmp_path))
+    main_tex = "\n".join(
+        [
+            "\\documentclass{article}",
+            "\\begin{document}",
+            "\\section{Warm-up}",
+            "Example for proof text establishing the bound.",
+            "",
+            "\\section{Main result}",
+            "Example for proof text establishing the bound.",
+            "\\end{document}",
+        ]
+    )
+    outcome = await run_compile_job(main_tex=main_tex, references_bib="", settings=settings)
+    assert outcome.status == "success"
+    assert outcome.pdf_bytes is not None
+    assert outcome.synctex_bytes is not None
+
+    x1, y1 = _synctex_forward_search(outcome.pdf_bytes, outcome.synctex_bytes, "4:main.tex", tmp_path)
+    result1 = await run_inverse_search_job(
+        synctex_bytes=outcome.synctex_bytes, page=1, x=x1, y=y1, settings=settings
+    )
+    assert result1.resolved is True
+    assert result1.file == "main.tex"
+    assert result1.line == 4
+
+    x2, y2 = _synctex_forward_search(outcome.pdf_bytes, outcome.synctex_bytes, "7:main.tex", tmp_path)
+    result2 = await run_inverse_search_job(
+        synctex_bytes=outcome.synctex_bytes, page=1, x=x2, y=y2, settings=settings
+    )
+    assert result2.resolved is True
+    assert result2.file == "main.tex"
+    assert result2.line == 7
+
+    # The two clicks landed on textually-identical content but resolved
+    # to genuinely different lines — proving this is position-based, not
+    # a text match that happened to succeed twice.
+    assert result1.line != result2.line

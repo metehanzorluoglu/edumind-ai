@@ -15,10 +15,22 @@ from functools import lru_cache
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from app.compiler import CompileOutcome, run_compile_job, to_response
+from app.compiler import (
+    CompileOutcome,
+    InverseSearchOutcome,
+    run_compile_job,
+    run_inverse_search_job,
+    to_response,
+)
 from app.concurrency import BoundedJobExecutor, JobTimeoutError, QueueFullError
 from app.config import Settings
-from app.schemas import CompileRequest, ErrorResponse, HealthResponse
+from app.schemas import (
+    CompileRequest,
+    ErrorResponse,
+    HealthResponse,
+    InverseSearchRequest,
+    InverseSearchResponse,
+)
 
 logger = logging.getLogger("latex_compiler")
 
@@ -30,6 +42,10 @@ logger = logging.getLogger("latex_compiler")
 #: every environment that runs this test suite — mirrors evidence-
 #: service/app/main.py's ModelLoader seam.
 CompileFn = Callable[..., Awaitable[CompileOutcome]]
+#: SyncTeX implementation — same injectable-seam convention as CompileFn
+#: above, for the same reason (exercise the full request/response cycle
+#: without requiring a real TeX Live install in every test environment).
+InverseSearchFn = Callable[..., Awaitable[InverseSearchOutcome]]
 
 
 @lru_cache
@@ -46,10 +62,16 @@ class ServiceState:
 
 
 def create_app(
-    *, settings: Settings | None = None, compile_fn: CompileFn | None = None
+    *,
+    settings: Settings | None = None,
+    compile_fn: CompileFn | None = None,
+    inverse_search_fn: InverseSearchFn | None = None,
 ) -> FastAPI:
     resolved_settings = settings if settings is not None else get_settings()
     resolved_compile_fn: CompileFn = compile_fn if compile_fn is not None else run_compile_job
+    resolved_inverse_search_fn: InverseSearchFn = (
+        inverse_search_fn if inverse_search_fn is not None else run_inverse_search_job
+    )
     app = FastAPI(title="EduM8 LaTeX Compiler")
     app.state.compiler = ServiceState(resolved_settings)
 
@@ -182,6 +204,92 @@ def create_app(
             response.status,
             response.duration_ms,
             response.pdf_size_bytes,
+        )
+        return JSONResponse(status_code=200, content=response.model_dump())
+
+    # SyncTeX implementation — the compiled-preview double-click ->
+    # source-location inverse query. Stateless like every other endpoint
+    # here: the caller (rag-backend) sends the SAME SyncTeX database it
+    # already retrieved from ITS OWN artifact store (this service never
+    # remembers a prior compile once /compile has returned). Never a
+    # 4xx/5xx for "no reliable answer" at a given page/coordinate —
+    # InverseSearchResponse.resolved=False covers that; only genuinely
+    # oversized/malformed input gets a 400, matching /compile's own
+    # posture toward its two size-bounded inputs.
+    @app.post(
+        "/inverse-search",
+        responses={503: {"model": ErrorResponse}, 400: {"model": ErrorResponse}},
+    )
+    async def inverse_search(payload: InverseSearchRequest, request: Request) -> JSONResponse:
+        state: ServiceState = request.app.state.compiler
+        settings = state.settings
+
+        import base64
+        import binascii
+
+        if len(payload.synctex_base64) > settings.max_synctex_bytes * 2:
+            # A generous pre-decode length check (base64 expands ~33%) —
+            # rejects a wildly oversized body before ever spending a
+            # base64-decode pass on it, same "cheapest rejection first"
+            # posture /compile's own size checks already take.
+            return JSONResponse(
+                status_code=400,
+                content=ErrorResponse(
+                    error="synctex_too_large",
+                    detail=f"synctex_base64 exceeds {settings.max_synctex_bytes} decoded bytes",
+                ).model_dump(),
+            )
+        try:
+            synctex_bytes = base64.b64decode(payload.synctex_base64, validate=True)
+        except (binascii.Error, ValueError):
+            return JSONResponse(
+                status_code=400,
+                content=ErrorResponse(
+                    error="invalid_synctex_encoding",
+                    detail="synctex_base64 is not valid base64",
+                ).model_dump(),
+            )
+        if len(synctex_bytes) > settings.max_synctex_bytes:
+            return JSONResponse(
+                status_code=400,
+                content=ErrorResponse(
+                    error="synctex_too_large",
+                    detail=f"synctex_base64 exceeds {settings.max_synctex_bytes} decoded bytes",
+                ).model_dump(),
+            )
+
+        async def _job() -> InverseSearchOutcome:
+            return await resolved_inverse_search_fn(
+                synctex_bytes=synctex_bytes,
+                page=payload.page,
+                x=payload.x,
+                y=payload.y,
+                settings=settings,
+            )
+
+        try:
+            # Shares the SAME bounded executor/concurrency slot as
+            # /compile — a real query is a near-instant read-only
+            # operation (no TeX engine invoked at all), so this only
+            # ever meaningfully queues behind an actual compile, never
+            # the reverse; reusing the one already-hardened admission
+            # path is simpler and safer than a second, independent one.
+            outcome = await state.executor.run(  # type: ignore[arg-type]
+                _job, timeout_seconds=settings.synctex_edit_timeout_seconds
+            )
+        except QueueFullError as exc:
+            return JSONResponse(
+                status_code=503,
+                content=ErrorResponse(error="queue_full", detail=str(exc)).model_dump(),
+            )
+        except JobTimeoutError:
+            return JSONResponse(
+                status_code=200,
+                content=InverseSearchResponse(resolved=False).model_dump(),
+            )
+
+        response = InverseSearchResponse(
+            resolved=outcome.resolved, file=outcome.file, line=outcome.line
         )
         return JSONResponse(status_code=200, content=response.model_dump())
 

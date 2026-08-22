@@ -22,7 +22,17 @@ import { ClientProvider } from '@/lib/ClientProvider';
 import { FeatureFlagsProvider } from '@/lib/FeatureFlags';
 import * as navigationFlushGuard from '@/lib/navigationFlushGuard';
 import { __resetSessionNavCacheForTests } from '@/lib/sessionNavCache';
+import { useWritingDrawerContent, WritingDrawerSlotProvider } from '@/lib/WritingDrawerSlot';
 import WritingProjectEditorScreen from '../[id]';
+
+/** See [id].desktopWorkspace.test.tsx's identical helper's own comment —
+ * [id].tsx registers its Files/Outline/References/Notes/Tools panel into
+ * this shared slot instead of rendering it inline on desktop; a test
+ * that renders [id].tsx outside the real app shell (app/(tabs)/_layout.tsx)
+ * has to provide both the slot and a render site itself. */
+function WritingDrawerSlotRenderer() {
+  return <>{useWritingDrawerContent()}</>;
+}
 
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(),
@@ -194,7 +204,10 @@ async function mountScreen(routes: FetchRoute[]): Promise<ReactTestRenderer> {
       <AuthProvider>
         <ClientProvider>
           <FeatureFlagsProvider>
-            <WritingProjectEditorScreen />
+            <WritingDrawerSlotProvider>
+              <WritingProjectEditorScreen />
+              <WritingDrawerSlotRenderer />
+            </WritingDrawerSlotProvider>
           </FeatureFlagsProvider>
         </ClientProvider>
       </AuthProvider>
@@ -329,7 +342,10 @@ describe('WritingProjectEditorScreen — cross-navigation continuity (Milestone 
         <AuthProvider>
           <ClientProvider>
             <FeatureFlagsProvider>
-              <WritingProjectEditorScreen />
+              <WritingDrawerSlotProvider>
+                <WritingProjectEditorScreen />
+                <WritingDrawerSlotRenderer />
+              </WritingDrawerSlotProvider>
             </FeatureFlagsProvider>
           </ClientProvider>
         </AuthProvider>

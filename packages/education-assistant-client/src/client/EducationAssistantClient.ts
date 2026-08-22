@@ -112,6 +112,7 @@ import type {
   CreateWritingProjectFolderRequest,
   CreateWritingProjectRequest,
   CreateWritingProjectTextFileRequest,
+  InverseSearchResult,
   MoveWritingProjectFileRequest,
   RenameWritingProjectFileRequest,
   SwitchWritingProjectToEdum8ReferencesRequest,
@@ -2068,6 +2069,35 @@ export class EducationAssistantClient {
     }
 
     return response.blob();
+  }
+
+  /**
+   * SyncTeX implementation (Writing UX Refinement milestone) — POST
+   * /writing-projects/{id}/compile/{compileId}/inverse-search. A
+   * rendered-PDF double-click's page + coordinates (already converted
+   * from pdf.js viewport pixels to PDF points by the caller — see
+   * CompiledPdfPreview's own click handler), resolved server-side via
+   * real SyncTeX to an exact source file + line. Never throws for an
+   * ordinary "couldn't resolve a location" outcome — `resolved: false`
+   * on the returned InverseSearchResult covers that as a plain,
+   * renderable value (the caller must decline navigation, never guess);
+   * this only rejects for a genuine transport failure or an ownership/
+   * not-found 404, same as every other writing-project call.
+   */
+  async inverseSearchCompiledPdf(
+    projectId: string,
+    compileId: string,
+    location: { page: number; x: number; y: number },
+    options: RequestOptions = {}
+  ): Promise<InverseSearchResult> {
+    const { data } = await requestJson<InverseSearchResult>(this.context, {
+      method: 'POST',
+      path: `/writing-projects/${encodeURIComponent(projectId)}/compile/${encodeURIComponent(compileId)}/inverse-search`,
+      body: location,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+    });
+    return data;
   }
 
   /**

@@ -80,6 +80,21 @@ export type CompileWritingProjectResponse =
   components['schemas']['CompileWritingProjectResponse'];
 
 /**
+ * SyncTeX implementation (Writing UX Refinement milestone) — the
+ * authoritative result of POST /writing-projects/{id}/compile/
+ * {compileId}/inverse-search: a rendered-PDF double-click's page/
+ * coordinates resolved to an EXACT source file + line via real
+ * SyncTeX, never a text-matching guess. `resolved: false` (with
+ * `fileId`/`line` both null) is the only shape for "no reliable
+ * answer" — the frontend must never fall back to guessing a location
+ * when this happens; see CompiledPdfPreview/[id].tsx's own handling.
+ * Fields are snake_case, matching the backend response verbatim (no
+ * camelCase transform layer exists in this SDK) — `resolved`,
+ * `file_id`, `line`.
+ */
+export type InverseSearchResult = components['schemas']['InverseSearchResponse'];
+
+/**
  * Milestone 5.3 (LaTeX Project Workspace & File Management) — one real
  * (database-backed) file or folder in a Writing Project's tree.
  * `references.bib` is NEVER represented here (see GeneratedFileNode

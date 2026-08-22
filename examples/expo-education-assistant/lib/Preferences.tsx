@@ -62,11 +62,19 @@ export interface Preferences {
    * once doesn't need to be repeated on every citation popover open. */
   citationStyle: CitationStyle;
   /** Milestone 5.5 Part 9 — the Writing workspace's left "Research" panel
-   * (Files/References/Notes/Ask EduM8) restores its last-open tab, so
-   * returning to a project (or coming back from the Reader — Part 19)
-   * lands where the researcher left off rather than always resetting to
-   * References. */
-  writingPanelTab: 'project' | 'references' | 'notes' | 'ask';
+   * (Files/Outline/References/Notes/Tools; Ask EduM8 is a separate
+   * header-level action, not a tab of this panel — see the Writing UX
+   * Refinement milestone) restores its last-open tab, so returning to a
+   * project (or coming back from the Reader — Part 19) lands where the
+   * researcher left off rather than always resetting to References.
+   * `'outline'` and `'tools'` are additive (Writing UX Refinement
+   * milestone); `'ask'` is kept as a valid stored value for backward
+   * compatibility with preferences persisted before that milestone (a
+   * user who last had the Ask EduM8 view open still lands there), even
+   * though it's no longer offered as a pill in the tab strip itself —
+   * it's still reachable via the header's own "Ask EduM8" button, which
+   * sets this same field. */
+  writingPanelTab: 'project' | 'references' | 'notes' | 'outline' | 'tools' | 'ask';
   /** Milestone 5.5.1 Part 4/5 — the Research panel (Files/References/
    * Notes/Ask EduM8) is a true collapsible drawer, not an always-visible
    * column: this is that drawer's own open/closed state, independent of
@@ -103,7 +111,19 @@ export const WRITING_RESEARCH_PANEL_WIDTH_MIN = 240;
 export const WRITING_RESEARCH_PANEL_WIDTH_MAX = 480;
 export const WRITING_RESEARCH_PANEL_WIDTH_DEFAULT = 320;
 export const WRITING_PREVIEW_PANEL_WIDTH_MIN = 280;
-export const WRITING_PREVIEW_PANEL_WIDTH_MAX = 640;
+// Writing UX Refinement milestone — this used to be a hard 640px cap,
+// well short of "the compiled preview can expand to use the full
+// available workspace size" (the actual product requirement). The real
+// ceiling that matters — never letting the Editor column get squeezed
+// below EDITOR_MIN_WIDTH_PX — is already enforced dynamically by
+// computePreviewSafeWidth in app/(tabs)/writing/[id].tsx, which reacts
+// to the live window width and the Research panel's own width. This
+// constant only needs to stop being the *binding* constraint; it no
+// longer needs to be a realistic pixel value in its own right, so it's
+// set high enough that no real desktop window width will ever hit it
+// first (computePreviewSafeWidth's own arithmetic always wins before
+// this would).
+export const WRITING_PREVIEW_PANEL_WIDTH_MAX = 4000;
 export const WRITING_PREVIEW_PANEL_WIDTH_DEFAULT = 420;
 
 export const DEFAULT_PREFERENCES: Preferences = {
@@ -186,6 +206,8 @@ function parseStoredPreferences(raw: string | null): Preferences {
         parsed.writingPanelTab === 'project' ||
         parsed.writingPanelTab === 'references' ||
         parsed.writingPanelTab === 'notes' ||
+        parsed.writingPanelTab === 'outline' ||
+        parsed.writingPanelTab === 'tools' ||
         parsed.writingPanelTab === 'ask'
           ? parsed.writingPanelTab
           : DEFAULT_PREFERENCES.writingPanelTab,
